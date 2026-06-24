@@ -1,0 +1,25 @@
+# Flutter
+mobile_app/.dart_tool/
+mobile_app/build/
+mobile_app/.flutter-plugins
+mobile_app/.flutter-plugins-dependencies
+
+# Android/Gradle
+mobile_app/android/.gradle/
+mobile_app/android/local.properties
+
+# Python
+backend/venv/
+__pycache__/
+*.pyc
+
+# Secrets
+*.env
+backend/firebase-service-account.json
+mobile_app/android/app/google-services.json
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
