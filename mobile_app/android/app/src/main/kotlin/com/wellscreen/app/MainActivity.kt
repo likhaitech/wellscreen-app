@@ -1,4 +1,4 @@
-package com.wellscreen.mobile_app
+package com.wellscreen.app
 
 import io.flutter.embedding.android.FlutterActivity
 
