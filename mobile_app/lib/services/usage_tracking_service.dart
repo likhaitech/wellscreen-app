@@ -9,9 +9,9 @@ class UsageTrackingService {
   UsageTrackingService({
     UsageReportService? usageReportService,
     LocalUsageReportCacheService? localUsageReportCacheService,
-  }) : _usageReportService = usageReportService ?? UsageReportService(),
-       _localUsageReportCacheService =
-           localUsageReportCacheService ?? LocalUsageReportCacheService();
+  })  : _usageReportService = usageReportService ?? UsageReportService(),
+        _localUsageReportCacheService =
+            localUsageReportCacheService ?? LocalUsageReportCacheService();
 
   final UsageReportService _usageReportService;
   final LocalUsageReportCacheService _localUsageReportCacheService;
@@ -56,7 +56,9 @@ class UsageTrackingService {
       );
     }
 
-    summaries.sort((a, b) => b.usageDuration.compareTo(a.usageDuration));
+    summaries.sort(
+      (a, b) => b.usageDuration.compareTo(a.usageDuration),
+    );
 
     return summaries.take(10).toList();
   }
@@ -68,6 +70,10 @@ class UsageTrackingService {
     await _localUsageReportCacheService.saveTodayReport(report);
 
     return report;
+  }
+
+  Future<UsageReport?> getCachedTodayUsageReport() {
+    return _localUsageReportCacheService.getCachedTodayReport();
   }
 
   Future<Map<String, dynamic>?> getCachedTodayUsageReportData() {

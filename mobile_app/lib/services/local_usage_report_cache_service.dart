@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/app_usage_summary.dart';
 import '../models/usage_report.dart';
 
 class LocalUsageReportCacheService {
@@ -40,6 +41,51 @@ class LocalUsageReportCacheService {
     }
 
     return decodedValue;
+  }
+
+  Future<UsageReport?> getCachedTodayReport() async {
+    final data = await getCachedTodayReportData();
+
+    if (data == null) {
+      return null;
+    }
+
+    final topUsedAppPackageName = data['topUsedAppPackageName'] as String?;
+    final topUsedAppDisplayName = data['topUsedAppDisplayName'] as String?;
+    final topUsedAppUsageDurationMs =
+        data['topUsedAppUsageDurationMs'] as int?;
+
+    AppUsageSummary? topUsedApp;
+
+    if (topUsedAppPackageName != null &&
+        topUsedAppDisplayName != null &&
+        topUsedAppUsageDurationMs != null) {
+      topUsedApp = AppUsageSummary(
+        packageName: topUsedAppPackageName,
+        displayName: topUsedAppDisplayName,
+        usageDuration: Duration(milliseconds: topUsedAppUsageDurationMs),
+      );
+    }
+
+    final patternStatusName = data['patternStatus'] as String? ?? 'healthy';
+
+    final patternStatus = UsagePatternStatus.values.firstWhere(
+      (status) => status.name == patternStatusName,
+      orElse: () => UsagePatternStatus.healthy,
+    );
+
+    return UsageReport(
+      totalUsageDuration: Duration(
+        milliseconds: data['totalUsageDurationMs'] as int? ?? 0,
+      ),
+      topUsedApp: topUsedApp,
+      unhealthyAppCount: data['unhealthyAppCount'] as int? ?? 0,
+      generatedAt: DateTime.tryParse(data['generatedAt'] as String? ?? '') ??
+          DateTime.now(),
+      patternStatus: patternStatus,
+      recommendationMessage: data['recommendationMessage'] as String? ??
+          'No recommendation available.',
+    );
   }
 
   Future<void> clearTodayReport() async {
