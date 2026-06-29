@@ -7,16 +7,24 @@ import 'package:app/services/usage_tracking_service.dart';
 
 void main() {
   group('UsageDashboardService', () {
-    test('returns cached data when usage permission is missing', () async {
-      final cachedData = {
-        'patternStatus': 'warning',
-        'recommendationMessage': 'Cached report available.',
-      };
+    test('returns cached report when usage permission is missing', () async {
+      final cachedReport = UsageReport(
+        totalUsageDuration: const Duration(hours: 3),
+        topUsedApp: AppUsageSummary(
+          packageName: 'com.zhiliaoapp.musically',
+          displayName: 'TikTok',
+          usageDuration: const Duration(hours: 2),
+        ),
+        unhealthyAppCount: 1,
+        generatedAt: DateTime(2026, 6, 30),
+        patternStatus: UsagePatternStatus.warning,
+        recommendationMessage: 'Cached report available.',
+      );
 
       final service = UsageDashboardService(
         usageTrackingService: FakeUsageTrackingService(
           hasPermission: false,
-          cachedData: cachedData,
+          cachedReport: cachedReport,
         ),
       );
 
@@ -24,8 +32,7 @@ void main() {
 
       expect(result.hasUsagePermission, false);
       expect(result.isUsingCachedData, true);
-      expect(result.report, isNull);
-      expect(result.cachedReportData, cachedData);
+      expect(result.report, cachedReport);
       expect(result.errorMessage, isNotNull);
     });
 
@@ -35,7 +42,7 @@ void main() {
         final service = UsageDashboardService(
           usageTrackingService: FakeUsageTrackingService(
             hasPermission: false,
-            cachedData: null,
+            cachedReport: null,
           ),
         );
 
@@ -44,7 +51,6 @@ void main() {
         expect(result.hasUsagePermission, false);
         expect(result.isUsingCachedData, false);
         expect(result.report, isNull);
-        expect(result.cachedReportData, isNull);
         expect(
           result.errorMessage,
           'Usage access permission is required to generate today’s report.',
@@ -79,21 +85,28 @@ void main() {
       expect(result.hasUsagePermission, true);
       expect(result.isUsingCachedData, false);
       expect(result.report, liveReport);
-      expect(result.cachedReportData, isNull);
       expect(result.errorMessage, isNull);
     });
 
-    test('returns cached data when live usage tracking fails', () async {
-      final cachedData = {
-        'patternStatus': 'warning',
-        'recommendationMessage': 'Showing cached report.',
-      };
+    test('returns cached report when live usage tracking fails', () async {
+      final cachedReport = UsageReport(
+        totalUsageDuration: const Duration(hours: 4),
+        topUsedApp: AppUsageSummary(
+          packageName: 'com.roblox.client',
+          displayName: 'Roblox',
+          usageDuration: const Duration(hours: 2),
+        ),
+        unhealthyAppCount: 2,
+        generatedAt: DateTime(2026, 6, 30),
+        patternStatus: UsagePatternStatus.warning,
+        recommendationMessage: 'Showing cached report.',
+      );
 
       final service = UsageDashboardService(
         usageTrackingService: FakeUsageTrackingService(
           hasPermission: true,
           shouldThrowReportError: true,
-          cachedData: cachedData,
+          cachedReport: cachedReport,
         ),
       );
 
@@ -101,8 +114,7 @@ void main() {
 
       expect(result.hasUsagePermission, true);
       expect(result.isUsingCachedData, true);
-      expect(result.report, isNull);
-      expect(result.cachedReportData, cachedData);
+      expect(result.report, cachedReport);
       expect(
         result.errorMessage,
         'Showing the last cached usage report because live usage tracking failed.',
@@ -136,14 +148,14 @@ class FakeUsageTrackingService extends UsageTrackingService {
   FakeUsageTrackingService({
     required this.hasPermission,
     this.liveReport,
-    this.cachedData,
+    this.cachedReport,
     this.usageList = const [],
     this.shouldThrowReportError = false,
   });
 
   final bool hasPermission;
   final UsageReport? liveReport;
-  final Map<String, dynamic>? cachedData;
+  final UsageReport? cachedReport;
   final List<AppUsageSummary> usageList;
   final bool shouldThrowReportError;
 
@@ -171,8 +183,8 @@ class FakeUsageTrackingService extends UsageTrackingService {
   }
 
   @override
-  Future<Map<String, dynamic>?> getCachedTodayUsageReportData() async {
-    return cachedData;
+  Future<UsageReport?> getCachedTodayUsageReport() async {
+    return cachedReport;
   }
 
   @override

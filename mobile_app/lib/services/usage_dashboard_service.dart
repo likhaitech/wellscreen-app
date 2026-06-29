@@ -7,14 +7,12 @@ class UsageDashboardResult {
     required this.hasUsagePermission,
     required this.isUsingCachedData,
     required this.report,
-    required this.cachedReportData,
     required this.errorMessage,
   });
 
   final bool hasUsagePermission;
   final bool isUsingCachedData;
   final UsageReport? report;
-  final Map<String, dynamic>? cachedReportData;
   final String? errorMessage;
 }
 
@@ -28,15 +26,14 @@ class UsageDashboardService {
     final hasPermission = await _usageTrackingService.hasUsagePermission();
 
     if (!hasPermission) {
-      final cachedData = await _usageTrackingService
-          .getCachedTodayUsageReportData();
+      final cachedReport = await _usageTrackingService
+          .getCachedTodayUsageReport();
 
       return UsageDashboardResult(
         hasUsagePermission: false,
-        isUsingCachedData: cachedData != null,
-        report: null,
-        cachedReportData: cachedData,
-        errorMessage: cachedData == null
+        isUsingCachedData: cachedReport != null,
+        report: cachedReport,
+        errorMessage: cachedReport == null
             ? 'Usage access permission is required to generate today’s report.'
             : 'Showing the last cached usage report because usage permission is missing.',
       );
@@ -49,19 +46,17 @@ class UsageDashboardService {
         hasUsagePermission: true,
         isUsingCachedData: false,
         report: report,
-        cachedReportData: null,
         errorMessage: null,
       );
     } catch (_) {
-      final cachedData = await _usageTrackingService
-          .getCachedTodayUsageReportData();
+      final cachedReport = await _usageTrackingService
+          .getCachedTodayUsageReport();
 
       return UsageDashboardResult(
         hasUsagePermission: true,
-        isUsingCachedData: cachedData != null,
-        report: null,
-        cachedReportData: cachedData,
-        errorMessage: cachedData == null
+        isUsingCachedData: cachedReport != null,
+        report: cachedReport,
+        errorMessage: cachedReport == null
             ? 'Unable to load today’s usage report.'
             : 'Showing the last cached usage report because live usage tracking failed.',
       );
