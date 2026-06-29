@@ -2,13 +2,19 @@ import 'package:usage_stats/usage_stats.dart';
 
 import '../models/app_usage_summary.dart';
 import '../models/usage_report.dart';
+import 'local_usage_report_cache_service.dart';
 import 'usage_report_service.dart';
 
 class UsageTrackingService {
-  UsageTrackingService({UsageReportService? usageReportService})
-    : _usageReportService = usageReportService ?? UsageReportService();
+  UsageTrackingService({
+    UsageReportService? usageReportService,
+    LocalUsageReportCacheService? localUsageReportCacheService,
+  }) : _usageReportService = usageReportService ?? UsageReportService(),
+       _localUsageReportCacheService =
+           localUsageReportCacheService ?? LocalUsageReportCacheService();
 
   final UsageReportService _usageReportService;
+  final LocalUsageReportCacheService _localUsageReportCacheService;
 
   Future<bool> hasUsagePermission() async {
     final granted = await UsageStats.checkUsagePermission();
@@ -57,7 +63,15 @@ class UsageTrackingService {
 
   Future<UsageReport> getTodayUsageReport() async {
     final summaries = await getTodayUsage();
-    return _usageReportService.generateFromSummaries(summaries);
+    final report = _usageReportService.generateFromSummaries(summaries);
+
+    await _localUsageReportCacheService.saveTodayReport(report);
+
+    return report;
+  }
+
+  Future<Map<String, dynamic>?> getCachedTodayUsageReportData() {
+    return _localUsageReportCacheService.getCachedTodayReportData();
   }
 
   String _makeReadableAppName(String packageName) {
