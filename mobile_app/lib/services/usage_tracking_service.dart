@@ -1,7 +1,14 @@
 import 'package:usage_stats/usage_stats.dart';
+
 import '../models/app_usage_summary.dart';
+import '../models/usage_report.dart';
+import 'usage_report_service.dart';
 
 class UsageTrackingService {
+  UsageTrackingService({UsageReportService? usageReportService})
+    : _usageReportService = usageReportService ?? UsageReportService();
+
+  final UsageReportService _usageReportService;
 
   Future<bool> hasUsagePermission() async {
     final granted = await UsageStats.checkUsagePermission();
@@ -27,10 +34,8 @@ class UsageTrackingService {
       final packageName = entry.key;
       final usageInfo = entry.value;
 
-      final usageMilliseconds = int.tryParse(
-            usageInfo.totalTimeInForeground ?? '0',
-         ) ??
-         0;
+      final usageMilliseconds =
+          int.tryParse(usageInfo.totalTimeInForeground ?? '0') ?? 0;
 
       if (usageMilliseconds <= 0) {
         continue;
@@ -45,11 +50,14 @@ class UsageTrackingService {
       );
     }
 
-    summaries.sort(
-        (a, b) => b.usageDuration.compareTo(a.usageDuration),
-    );
+    summaries.sort((a, b) => b.usageDuration.compareTo(a.usageDuration));
 
     return summaries.take(10).toList();
+  }
+
+  Future<UsageReport> getTodayUsageReport() async {
+    final summaries = await getTodayUsage();
+    return _usageReportService.generateFromSummaries(summaries);
   }
 
   String _makeReadableAppName(String packageName) {
@@ -67,7 +75,4 @@ class UsageTrackingService {
 
     return appName[0].toUpperCase() + appName.substring(1);
   }
-
-
-
-}//end
+}
