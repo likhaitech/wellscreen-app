@@ -53,12 +53,51 @@ void main() {
       );
     });
 
+    test('reconstructs cached today usage report as UsageReport', () async {
+      final service = LocalUsageReportCacheService();
+
+      final report = UsageReport(
+        totalUsageDuration: const Duration(hours: 4, minutes: 20),
+        topUsedApp: AppUsageSummary(
+          packageName: 'com.zhiliaoapp.musically',
+          displayName: 'TikTok',
+          usageDuration: const Duration(hours: 2),
+        ),
+        unhealthyAppCount: 2,
+        generatedAt: DateTime(2026, 6, 30, 10, 30),
+        patternStatus: UsagePatternStatus.warning,
+        recommendationMessage:
+            'Some social media or gaming apps have high usage.',
+      );
+
+      await service.saveTodayReport(report);
+
+      final cachedReport = await service.getCachedTodayReport();
+
+      expect(cachedReport, isNotNull);
+      expect(
+        cachedReport?.totalUsageDuration,
+        const Duration(hours: 4, minutes: 20),
+      );
+      expect(cachedReport?.topUsedApp?.packageName, 'com.zhiliaoapp.musically');
+      expect(cachedReport?.topUsedApp?.displayName, 'TikTok');
+      expect(cachedReport?.topUsedApp?.usageDuration, const Duration(hours: 2));
+      expect(cachedReport?.unhealthyAppCount, 2);
+      expect(cachedReport?.patternStatus, UsagePatternStatus.warning);
+      expect(
+        cachedReport?.recommendationMessage,
+        'Some social media or gaming apps have high usage.',
+      );
+    });
+
     test('returns null when no today usage report is cached', () async {
       final service = LocalUsageReportCacheService();
 
       final cachedData = await service.getCachedTodayReportData();
+      final cachedReport = await service.getCachedTodayReport();
 
       expect(cachedData, isNull);
+      expect(cachedReport, isNull);
     });
 
     test('clears cached today usage report data', () async {
@@ -78,8 +117,10 @@ void main() {
       await service.clearTodayReport();
 
       final cachedData = await service.getCachedTodayReportData();
+      final cachedReport = await service.getCachedTodayReport();
 
       expect(cachedData, isNull);
+      expect(cachedReport, isNull);
     });
   });
 }
