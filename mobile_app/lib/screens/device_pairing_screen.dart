@@ -1,6 +1,6 @@
-import 'dart:math';
-
 import 'package:flutter/material.dart';
+
+import '../services/pairing_service.dart';
 
 class DevicePairingScreen extends StatefulWidget {
   const DevicePairingScreen({super.key});
@@ -10,29 +10,53 @@ class DevicePairingScreen extends StatefulWidget {
 }
 
 class _DevicePairingScreenState extends State<DevicePairingScreen> {
-  late String _pairingCode;
+  final _pairingService = PairingService();
+
+  String _pairingCode = '------';
+  bool _isLoadingCode = true;
 
   @override
   void initState() {
     super.initState();
-    _pairingCode = _generatePairingCode();
+    _createPairingCode(showSnackBar: false);
   }
 
-  String _generatePairingCode() {
-    final random = Random();
-    return List.generate(6, (_) => random.nextInt(10)).join();
-  }
-
-  void _generateNewCode() {
+  Future<void> _createPairingCode({required bool showSnackBar}) async {
     setState(() {
-      _pairingCode = _generatePairingCode();
+      _isLoadingCode = true;
     });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('New pairing code generated.'),
-      ),
-    );
+    try {
+      final code = await _pairingService.createPairingCode();
+
+      if (!mounted) return;
+
+      setState(() {
+        _pairingCode = code;
+      });
+
+      if (showSnackBar) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('New pairing code saved to Firestore.'),
+          ),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Pairing code error: $error'),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoadingCode = false;
+        });
+      }
+    }
   }
 
   void _useQrCode() {
@@ -46,7 +70,7 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
   void _finishPairing() {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('Device pairing page is ready.'),
+        content: Text('Pairing code has been saved to Firestore.'),
       ),
     );
 
@@ -155,11 +179,17 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
                         ),
                         const SizedBox(height: 16),
                         TextButton(
-                          onPressed: _generateNewCode,
-                          child: const Text(
-                            'Generate new code in 00:44',
+                          onPressed: _isLoadingCode
+                              ? null
+                              : () {
+                            _createPairingCode(showSnackBar: true);
+                          },
+                          child: Text(
+                            _isLoadingCode
+                                ? 'Generating code...'
+                                : 'Generate new code in 00:44',
                             textAlign: TextAlign.center,
-                            style: TextStyle(
+                            style: const TextStyle(
                               color: Color(0xFF6B7280),
                               fontSize: 16,
                               fontWeight: FontWeight.w600,
@@ -168,7 +198,7 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
                         ),
                         const SizedBox(height: 6),
                         TextButton(
-                          onPressed: _useQrCode,
+                          onPressed: _isLoadingCode ? null : _useQrCode,
                           child: const Text(
                             'Use QR Code',
                             style: TextStyle(
@@ -183,14 +213,23 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
                         SizedBox(
                           height: 52,
                           child: FilledButton(
-                            onPressed: _finishPairing,
+                            onPressed: _isLoadingCode ? null : _finishPairing,
                             style: FilledButton.styleFrom(
                               backgroundColor: purple,
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(14),
                               ),
                             ),
-                            child: const Text(
+                            child: _isLoadingCode
+                                ? const SizedBox(
+                              height: 22,
+                              width: 22,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                                : const Text(
                               'Done',
                               style: TextStyle(
                                 fontSize: 16,
