@@ -16,7 +16,8 @@ class AuthService {
     required String email,
     required String password,
     required String role,
-  }) async {
+  }
+  ) async {
     UserCredential? userCredential;
 
     try {
@@ -74,5 +75,14 @@ class AuthService {
 
       rethrow;
     }
+  }
+  Future<UserCredential> loginUser({
+    required String email,
+    required String password,
+  }) async {
+    return _firebaseAuth.signInWithEmailAndPassword(
+      email: email,
+      password: password,
+    );
   }
 }
