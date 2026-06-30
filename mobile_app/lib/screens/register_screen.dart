@@ -1,4 +1,8 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+
+import '../services/auth_service.dart';
+import 'verify_email_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -9,6 +13,7 @@ class RegisterScreen extends StatefulWidget {
 
 class _RegisterScreenState extends State<RegisterScreen> {
   final _formKey = GlobalKey<FormState>();
+  final _authService = AuthService();
 
   final _fullNameController = TextEditingController();
   final _emailController = TextEditingController();
@@ -18,6 +23,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   String _role = 'Parent';
   bool _hidePassword = true;
   bool _hideConfirmPassword = true;
+  bool _isLoading = false;
 
   @override
   void dispose() {
@@ -36,18 +42,72 @@ class _RegisterScreenState extends State<RegisterScreen> {
     return null;
   }
 
-  void _sendOtpCode() {
+  Future<void> _sendOtpCode() async {
     FocusScope.of(context).unfocus();
 
     if (!_formKey.currentState!.validate()) {
       return;
     }
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('OTP screen will be connected next.'),
-      ),
-    );
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      await _authService.registerUser(
+        fullName: _fullNameController.text.trim(),
+        email: _emailController.text.trim(),
+        password: _passwordController.text.trim(),
+        role: _role,
+      );
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Account created and saved to Firestore successfully.',
+          ),
+        ),
+      );
+
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => VerifyEmailScreen(
+            email: _emailController.text.trim(),
+          ),
+        ),
+      );
+    } on FirebaseAuthException catch (error) {
+      if (!mounted) return;
+
+      String message = 'Registration failed. Please try again.';
+
+      if (error.code == 'email-already-in-use') {
+        message = 'This email is already registered.';
+      } else if (error.code == 'weak-password') {
+        message = 'Password is too weak. Use at least 6 characters.';
+      } else if (error.code == 'invalid-email') {
+        message = 'Please enter a valid email address.';
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    } catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Registration error: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
   }
 
   @override
@@ -296,7 +356,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     SizedBox(
                       height: 52,
                       child: FilledButton(
-                        onPressed: _sendOtpCode,
+                        onPressed: _isLoading ? null : _sendOtpCode,
                         style: FilledButton.styleFrom(
                           backgroundColor: purple,
                           shape: RoundedRectangleBorder(
