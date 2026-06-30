@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'register_screen.dart';
 import 'role_selection_screen.dart';
 
 class LoginScreen extends StatelessWidget {
@@ -57,6 +58,18 @@ class LoginScreen extends StatelessWidget {
                   },
                   child: const Text('Continue'),
                 ),
+              ),
+              const SizedBox(height: 12),
+              TextButton(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const RegisterScreen(),
+                    ),
+                  );
+                },
+                child: const Text('Create parent account'),
               ),
             ],
           ),

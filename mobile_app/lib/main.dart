@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import 'screens/splash_screen.dart';
 
 void main() {
@@ -15,8 +16,9 @@ class WellScreenApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF2563EB),
+          seedColor: const Color(0xFF5B2BBF),
         ),
+        scaffoldBackgroundColor: Colors.white,
         useMaterial3: true,
       ),
       home: const SplashScreen(),
