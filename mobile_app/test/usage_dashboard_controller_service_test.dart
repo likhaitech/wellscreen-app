@@ -2,13 +2,15 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:app/models/app_usage_summary.dart';
 import 'package:app/models/usage_report.dart';
+import 'package:app/services/daily_screen_time_limit_service.dart';
 import 'package:app/services/intervention_recommendation_service.dart';
+import 'package:app/services/screen_time_goal_service.dart';
 import 'package:app/services/usage_dashboard_controller_service.dart';
 import 'package:app/services/usage_dashboard_service.dart';
 
 void main() {
   group('UsageDashboardControllerService', () {
-    test('loads dashboard state with view model and app usage list', () async {
+    test('loads dashboard state with goal result and app usage list', () async {
       final report = UsageReport(
         totalUsageDuration: const Duration(hours: 3, minutes: 20),
         topUsedApp: const AppUsageSummary(
@@ -49,6 +51,9 @@ void main() {
           ),
           appUsageList: appUsageList,
         ),
+        dailyScreenTimeLimitService: FakeDailyScreenTimeLimitService(
+          dailyLimit: const Duration(hours: 3),
+        ),
       );
 
       final state = await service.loadTodayDashboardState();
@@ -58,37 +63,49 @@ void main() {
       expect(state.viewModel.topUsedAppLabel, 'TikTok • 2h 0m');
       expect(state.viewModel.interventionTitle, 'App Limit Recommended');
       expect(state.appUsageList, appUsageList);
+      expect(state.dailyScreenTimeLimit, const Duration(hours: 3));
+      expect(state.screenTimeGoalResult, isNotNull);
+      expect(state.screenTimeGoalResult?.status, ScreenTimeGoalStatus.exceeded);
+      expect(state.screenTimeGoalResult?.isExceeded, true);
     });
 
-    test('returns empty app usage list when permission is missing', () async {
-      const result = UsageDashboardResult(
-        hasUsagePermission: false,
-        isUsingCachedData: false,
-        report: null,
-        interventionRecommendation: null,
-        errorMessage:
-            'Usage access permission is required to generate today’s report.',
-      );
+    test(
+      'returns empty app usage list and no goal result when report is missing',
+      () async {
+        const result = UsageDashboardResult(
+          hasUsagePermission: false,
+          isUsingCachedData: false,
+          report: null,
+          interventionRecommendation: null,
+          errorMessage:
+              'Usage access permission is required to generate today’s report.',
+        );
 
-      final service = UsageDashboardControllerService(
-        usageDashboardService: FakeUsageDashboardService(
-          result: result,
-          appUsageList: const [
-            AppUsageSummary(
-              packageName: 'com.roblox.client',
-              displayName: 'Roblox',
-              usageDuration: Duration(hours: 1),
-            ),
-          ],
-        ),
-      );
+        final service = UsageDashboardControllerService(
+          usageDashboardService: FakeUsageDashboardService(
+            result: result,
+            appUsageList: const [
+              AppUsageSummary(
+                packageName: 'com.roblox.client',
+                displayName: 'Roblox',
+                usageDuration: Duration(hours: 1),
+              ),
+            ],
+          ),
+          dailyScreenTimeLimitService: FakeDailyScreenTimeLimitService(
+            dailyLimit: const Duration(hours: 3),
+          ),
+        );
 
-      final state = await service.loadTodayDashboardState();
+        final state = await service.loadTodayDashboardState();
 
-      expect(state.viewModel.statusLabel, 'No Report');
-      expect(state.viewModel.hasUsagePermission, false);
-      expect(state.appUsageList, isEmpty);
-    });
+        expect(state.viewModel.statusLabel, 'No Report');
+        expect(state.viewModel.hasUsagePermission, false);
+        expect(state.appUsageList, isEmpty);
+        expect(state.dailyScreenTimeLimit, const Duration(hours: 3));
+        expect(state.screenTimeGoalResult, isNull);
+      },
+    );
   });
 }
 
@@ -106,5 +123,16 @@ class FakeUsageDashboardService extends UsageDashboardService {
   @override
   Future<List<AppUsageSummary>> loadTodayAppUsageList() async {
     return appUsageList;
+  }
+}
+
+class FakeDailyScreenTimeLimitService extends DailyScreenTimeLimitService {
+  FakeDailyScreenTimeLimitService({required this.dailyLimit});
+
+  final Duration dailyLimit;
+
+  @override
+  Future<Duration> getDailyLimit() async {
+    return dailyLimit;
   }
 }
