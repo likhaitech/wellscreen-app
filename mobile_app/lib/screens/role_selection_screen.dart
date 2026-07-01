@@ -15,7 +15,8 @@ class RoleSelectionScreen extends StatelessWidget {
           children: [
             RoleCard(
               title: 'Parent / Guardian',
-              description: 'View usage reports, set limits, and receive alerts.',
+              description:
+                  'View usage reports, set limits, and receive alerts.',
               icon: Icons.family_restroom,
               onTap: () {
                 Navigator.push(

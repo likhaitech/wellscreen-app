@@ -1,6 +1,8 @@
-import 'package:flutter/material.dart';
+import 'dart:math';
 
-import '../services/pairing_service.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
 
 class DevicePairingScreen extends StatefulWidget {
   const DevicePairingScreen({super.key});
@@ -10,280 +12,220 @@ class DevicePairingScreen extends StatefulWidget {
 }
 
 class _DevicePairingScreenState extends State<DevicePairingScreen> {
-  final _pairingService = PairingService();
+  static const Color purple = Color(0xFF5B2BBF);
+  static const Color darkText = Color(0xFF111827);
+  static const Color grayText = Color(0xFF4B5563);
 
-  String _pairingCode = '------';
-  bool _isLoadingCode = true;
+  final childNameController = TextEditingController(text: 'Child Profile');
+  final ageController = TextEditingController(text: '12');
+
+  String? pairingCode;
+  bool isSaving = false;
 
   @override
-  void initState() {
-    super.initState();
-    _createPairingCode(showSnackBar: false);
+  void dispose() {
+    childNameController.dispose();
+    ageController.dispose();
+    super.dispose();
   }
 
-  Future<void> _createPairingCode({required bool showSnackBar}) async {
-    setState(() {
-      _isLoadingCode = true;
-    });
+  String generateCode() {
+    final random = Random();
+    return (100000 + random.nextInt(900000)).toString();
+  }
+
+  Future<void> createPairingCode() async {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      showMessage('Please log in again.');
+      return;
+    }
+
+    final childName = childNameController.text.trim();
+    final ageText = ageController.text.trim();
+
+    if (childName.isEmpty || ageText.isEmpty) {
+      showMessage('Please enter child profile details.');
+      return;
+    }
+
+    setState(() => isSaving = true);
 
     try {
-      final code = await _pairingService.createPairingCode();
+      final code = generateCode();
 
-      if (!mounted) return;
+      final childRef = FirebaseFirestore.instance
+          .collection('child_profiles')
+          .doc();
 
-      setState(() {
-        _pairingCode = code;
+      await childRef.set({
+        'childId': childRef.id,
+        'parentId': user.uid,
+        'name': childName,
+        'age': int.tryParse(ageText) ?? 0,
+        'createdAt': FieldValue.serverTimestamp(),
       });
 
-      if (showSnackBar) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('New pairing code saved to Firestore.'),
-          ),
-        );
-      }
-    } catch (error) {
-      if (!mounted) return;
+      await FirebaseFirestore.instance
+          .collection('pairing_codes')
+          .doc(code)
+          .set({
+            'pairingCode': code,
+            'parentId': user.uid,
+            'childId': childRef.id,
+            'status': 'active',
+            'createdAt': FieldValue.serverTimestamp(),
+            'expiresAt': Timestamp.fromDate(
+              DateTime.now().add(const Duration(minutes: 30)),
+            ),
+          });
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Pairing code error: $error'),
-        ),
-      );
+      setState(() => pairingCode = code);
+
+      showMessage('Pairing code generated successfully.');
+    } catch (e) {
+      showMessage('Pairing error: $e');
     } finally {
       if (mounted) {
-        setState(() {
-          _isLoadingCode = false;
-        });
+        setState(() => isSaving = false);
       }
     }
   }
 
-  void _useQrCode() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('QR code pairing will be connected later.'),
-      ),
-    );
-  }
+  void showMessage(String message) {
+    if (!mounted) return;
 
-  void _finishPairing() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Pairing code has been saved to Firestore.'),
-      ),
-    );
-
-    Navigator.pop(context);
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
   Widget build(BuildContext context) {
-    const purple = Color(0xFF5B2BBF);
-    const darkText = Color(0xFF111827);
-
-    final codeDigits = _pairingCode.split('');
+    final code = pairingCode ?? '------';
 
     return Scaffold(
       backgroundColor: Colors.white,
-      body: SafeArea(
-        child: Column(
-          children: [
-            Container(
-              height: 58,
-              padding: const EdgeInsets.symmetric(horizontal: 18),
-              color: purple,
-              child: const Row(
-                children: [
-                  Icon(
-                    Icons.health_and_safety_rounded,
-                    color: Colors.white,
-                    size: 32,
-                  ),
-                  SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      'WellScreen',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 21,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ),
-                  Icon(
-                    Icons.notifications_none_rounded,
-                    color: Colors.white,
-                    size: 28,
-                  ),
-                ],
+      appBar: AppBar(
+        title: const Text(
+          'Device Pairing',
+          style: TextStyle(fontWeight: FontWeight.w800),
+        ),
+        backgroundColor: Colors.white,
+        foregroundColor: darkText,
+        elevation: 0,
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(24),
+        children: [
+          const Text(
+            'Create or Select Child Profile',
+            style: TextStyle(
+              fontSize: 25,
+              fontWeight: FontWeight.w900,
+              color: darkText,
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Generate a pairing code or QR option to connect the monitored Android device to this parent account.',
+            style: TextStyle(color: grayText, height: 1.4),
+          ),
+          const SizedBox(height: 24),
+
+          TextField(
+            controller: childNameController,
+            decoration: InputDecoration(
+              labelText: 'Child Profile Name',
+              prefixIcon: const Icon(Icons.child_care_rounded),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(14),
               ),
             ),
-            Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(24, 44, 24, 24),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 430),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        const Text(
-                          'Connect to Child',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: darkText,
-                            fontSize: 32,
-                            fontWeight: FontWeight.w900,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        const Text(
-                          'Enter this 6 digit code to\nyour child device.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: Color(0xFF4B5563),
-                            fontSize: 17,
-                            height: 1.3,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        const SizedBox(height: 28),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: codeDigits.map((digit) {
-                            return Container(
-                              width: 48,
-                              height: 48,
-                              margin: const EdgeInsets.symmetric(horizontal: 4),
-                              alignment: Alignment.center,
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                border: Border.all(
-                                  color: const Color(0xFF111827),
-                                  width: 1.2,
-                                ),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Text(
-                                digit,
-                                style: const TextStyle(
-                                  color: darkText,
-                                  fontSize: 26,
-                                  fontWeight: FontWeight.w900,
-                                ),
-                              ),
-                            );
-                          }).toList(),
-                        ),
-                        const SizedBox(height: 16),
-                        TextButton(
-                          onPressed: _isLoadingCode
-                              ? null
-                              : () {
-                            _createPairingCode(showSnackBar: true);
-                          },
-                          child: Text(
-                            _isLoadingCode
-                                ? 'Generating code...'
-                                : 'Generate new code in 00:44',
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              color: Color(0xFF6B7280),
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        TextButton(
-                          onPressed: _isLoadingCode ? null : _useQrCode,
-                          child: const Text(
-                            'Use QR Code',
-                            style: TextStyle(
-                              color: purple,
-                              fontSize: 17,
-                              fontWeight: FontWeight.w700,
-                              decoration: TextDecoration.underline,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        SizedBox(
-                          height: 52,
-                          child: FilledButton(
-                            onPressed: _isLoadingCode ? null : _finishPairing,
-                            style: FilledButton.styleFrom(
-                              backgroundColor: purple,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(14),
-                              ),
-                            ),
-                            child: _isLoadingCode
-                                ? const SizedBox(
-                              height: 22,
-                              width: 22,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white,
-                              ),
-                            )
-                                : const Text(
-                              'Done',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 32),
-                        Container(
-                          height: 190,
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF1ECFF),
-                            borderRadius: BorderRadius.circular(28),
-                          ),
-                          child: const Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(
-                                Icons.phonelink_lock_rounded,
-                                color: purple,
-                                size: 72,
-                              ),
-                              SizedBox(height: 14),
-                              Text(
-                                'Secure child-device pairing',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  color: darkText,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                              SizedBox(height: 6),
-                              Text(
-                                'Use the code or QR option to connect\nthe child device safely.',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  color: Color(0xFF6B7280),
-                                  fontSize: 13,
-                                  height: 1.35,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
+          ),
+
+          const SizedBox(height: 16),
+
+          TextField(
+            controller: ageController,
+            keyboardType: TextInputType.number,
+            decoration: InputDecoration(
+              labelText: 'Age',
+              prefixIcon: const Icon(Icons.cake_rounded),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 24),
+
+          Container(
+            padding: const EdgeInsets.all(22),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF4F0FF),
+              borderRadius: BorderRadius.circular(22),
+            ),
+            child: Column(
+              children: [
+                const Icon(Icons.qr_code_2_rounded, color: purple, size: 84),
+                const SizedBox(height: 14),
+                const Text(
+                  'Pairing Code',
+                  style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18),
+                ),
+                const SizedBox(height: 10),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 18),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: Colors.black12),
+                  ),
+                  child: Text(
+                    code,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 31,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 8,
                     ),
                   ),
                 ),
+                const SizedBox(height: 14),
+                Text(
+                  pairingCode == null
+                      ? 'Generate a code before setting up the child device.'
+                      : 'Status: Waiting for child device to complete pairing.',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: grayText, height: 1.4),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 24),
+
+          SizedBox(
+            height: 54,
+            child: FilledButton.icon(
+              onPressed: isSaving ? null : createPairingCode,
+              style: FilledButton.styleFrom(
+                backgroundColor: purple,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+              ),
+              icon: const Icon(Icons.add_link_rounded),
+              label: Text(
+                isSaving ? 'Generating...' : 'Generate Pairing Code',
+                style: const TextStyle(fontWeight: FontWeight.w800),
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
