@@ -1,8 +1,9 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-import '../services/usage_dashboard_view_model_service.dart';
 import '../services/usage_dashboard_controller_service.dart';
+import '../services/usage_dashboard_view_model_service.dart';
 import 'alerts_reports_screen.dart';
 import 'device_pairing_screen.dart';
 import 'login_screen.dart';
@@ -141,61 +142,10 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                         : Colors.red,
                   ),
 
-                Card(
-                  elevation: 3,
-                  shadowColor: Colors.black12,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(18),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(18),
-                    child: Row(
-                      children: [
-                        const CircleAvatar(
-                          radius: 30,
-                          backgroundColor: _softPurple,
-                          child: Icon(
-                            Icons.child_care_rounded,
-                            color: _purple,
-                            size: 34,
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                'Child Device Overview',
-                                style: TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w900,
-                                  color: _darkText,
-                                ),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                _getDeviceStatusText(viewModel),
-                                style: const TextStyle(
-                                  color: _grayText,
-                                  height: 1.3,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Icon(
-                          viewModel?.hasUsagePermission == true
-                              ? Icons.check_circle_rounded
-                              : Icons.info_rounded,
-                          color: viewModel?.hasUsagePermission == true
-                              ? Colors.green
-                              : Colors.orange,
-                          size: 28,
-                        ),
-                      ],
-                    ),
-                  ),
+                ParentChildDeviceOverview(
+                  parentId: user?.uid,
+                  usageStatusText: _getDeviceStatusText(viewModel),
+                  hasUsagePermission: viewModel?.hasUsagePermission == true,
                 ),
 
                 const SizedBox(height: 16),
@@ -335,18 +285,18 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
 
   String _getDeviceStatusText(UsageDashboardViewModel? viewModel) {
     if (viewModel == null) {
-      return 'Status: Loading child-device usage data';
+      return 'Loading child-device usage data';
     }
 
     if (!viewModel.hasUsagePermission) {
-      return 'Status: Usage access permission needed';
+      return 'Usage access permission needed';
     }
 
     if (viewModel.isUsingCachedData) {
-      return 'Status: Showing last cached child-device report';
+      return 'Showing last cached child-device report';
     }
 
-    return 'Status: Connected to parent account';
+    return 'Usage access connected';
   }
 
   String _getGoalSummary(UsageDashboardControllerState? state) {
@@ -390,6 +340,186 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
       default:
         return _purple;
     }
+  }
+}
+
+class ParentChildDeviceOverview extends StatelessWidget {
+  const ParentChildDeviceOverview({
+    super.key,
+    required this.parentId,
+    required this.usageStatusText,
+    required this.hasUsagePermission,
+  });
+
+  final String? parentId;
+  final String usageStatusText;
+  final bool hasUsagePermission;
+
+  @override
+  Widget build(BuildContext context) {
+    if (parentId == null) {
+      return const DashboardStatusCard(
+        icon: Icons.info_outline_rounded,
+        title: 'No Parent Account',
+        message: 'Please log in again to view paired child devices.',
+        color: Colors.orange,
+      );
+    }
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('child_profiles')
+          .where('parentId', isEqualTo: parentId)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const DashboardStatusCard(
+            icon: Icons.hourglass_top_rounded,
+            title: 'Loading Child Devices',
+            message:
+                'Checking paired child profiles for this parent account...',
+            color: _purple,
+          );
+        }
+
+        if (snapshot.hasError) {
+          return DashboardStatusCard(
+            icon: Icons.error_outline_rounded,
+            title: 'Unable to Load Child Devices',
+            message: snapshot.error.toString(),
+            color: Colors.red,
+          );
+        }
+
+        final docs = snapshot.data?.docs ?? [];
+
+        if (docs.isEmpty) {
+          return const DashboardStatusCard(
+            icon: Icons.link_off_rounded,
+            title: 'No Paired Child Device Yet',
+            message:
+                'Generate a pairing code and let the child device enter it to connect.',
+            color: Colors.orange,
+          );
+        }
+
+        return Column(
+          children: docs.map((doc) {
+            final data = doc.data();
+
+            return ChildDeviceOverviewCard(
+              data: data,
+              usageStatusText: usageStatusText,
+              hasUsagePermission: hasUsagePermission,
+            );
+          }).toList(),
+        );
+      },
+    );
+  }
+}
+
+class ChildDeviceOverviewCard extends StatelessWidget {
+  const ChildDeviceOverviewCard({
+    super.key,
+    required this.data,
+    required this.usageStatusText,
+    required this.hasUsagePermission,
+  });
+
+  final Map<String, dynamic> data;
+  final String usageStatusText;
+  final bool hasUsagePermission;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = data['name'] as String? ?? 'Child Profile';
+    final ageValue = data['age'];
+    final age = ageValue is num ? ageValue.toInt() : 0;
+    final pairingStatus = data['pairingStatus'] as String? ?? 'waiting';
+    final deviceStatus = data['deviceStatus'] as String? ?? 'not_connected';
+    final childEmail = data['childEmail'] as String?;
+    final deviceName = data['deviceName'] as String?;
+    final pairingCode = data['pairingCode'] as String?;
+
+    final isPaired = pairingStatus == 'paired' || deviceStatus == 'connected';
+    final ageText = age > 0 ? 'Age $age' : 'Age not set';
+
+    return Card(
+      elevation: 3,
+      shadowColor: Colors.black12,
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Row(
+          children: [
+            CircleAvatar(
+              radius: 30,
+              backgroundColor: _softPurple,
+              child: Icon(
+                isPaired
+                    ? Icons.phone_android_rounded
+                    : Icons.child_care_rounded,
+                color: isPaired ? Colors.green : _purple,
+                size: 34,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Child Device Overview',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                      color: _darkText,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '$name • $ageText',
+                    style: const TextStyle(
+                      color: _darkText,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Pairing: ${_formatStatus(pairingStatus)}\n'
+                    'Device Status: ${_formatStatus(deviceStatus)}\n'
+                    'Child Email: ${childEmail ?? 'Not linked yet'}\n'
+                    'Device Name: ${deviceName ?? 'Not available'}\n'
+                    'Pairing Code: ${pairingCode ?? 'No active code'}\n'
+                    'Usage Data: $usageStatusText',
+                    style: const TextStyle(color: _grayText, height: 1.35),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              isPaired
+                  ? Icons.check_circle_rounded
+                  : hasUsagePermission
+                  ? Icons.schedule_rounded
+                  : Icons.info_rounded,
+              color: isPaired
+                  ? Colors.green
+                  : hasUsagePermission
+                  ? Colors.orange
+                  : Colors.orange,
+              size: 28,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _formatStatus(String value) {
+    return value.replaceAll('_', ' ').toUpperCase();
   }
 }
 
