@@ -153,6 +153,98 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  Widget _buildDeviceAndRulesSection(String childUserId) {
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('child_devices')
+          .doc(childUserId)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const ChildStatusCard(
+            icon: Icons.hourglass_top_rounded,
+            iconColor: purple,
+            title: 'Checking pairing status',
+            subtitle: 'Preparing child device information...',
+          );
+        }
+
+        if (snapshot.hasError) {
+          return ChildStatusCard(
+            icon: Icons.error_outline_rounded,
+            iconColor: Colors.red,
+            title: 'Unable to load device status',
+            subtitle: snapshot.error.toString(),
+          );
+        }
+
+        final data = snapshot.data?.data();
+
+        if (data == null) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: const [
+              ChildStatusCard(
+                icon: Icons.link_off_rounded,
+                iconColor: Colors.orange,
+                title: 'Not paired yet',
+                subtitle:
+                    'Enter the parent pairing code above to connect this device.',
+              ),
+              SizedBox(height: 16),
+              Text(
+                'Parent Rules',
+                style: TextStyle(
+                  fontSize: 21,
+                  fontWeight: FontWeight.w900,
+                  color: darkText,
+                ),
+              ),
+              SizedBox(height: 12),
+              ChildStatusCard(
+                icon: Icons.rule_rounded,
+                iconColor: Colors.orange,
+                title: 'No parent rules available',
+                subtitle:
+                    'Pair this device first so the parent’s saved restrictions can appear here.',
+              ),
+            ],
+          );
+        }
+
+        final pairingStatus = data['pairingStatus'] as String? ?? 'waiting';
+        final deviceStatus = data['deviceStatus'] as String? ?? 'not_connected';
+        final childEmail = data['childEmail'] as String? ?? 'Child user';
+        final code = data['pairingCode'] as String? ?? 'No code';
+        final parentId = data['parentId'] as String?;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ChildStatusCard(
+              icon: Icons.check_circle_rounded,
+              iconColor: Colors.green,
+              title: 'Connected to Parent Account',
+              subtitle:
+                  'Account: $childEmail\nPairing: ${_formatStatus(pairingStatus)}\nDevice: ${_formatStatus(deviceStatus)}\nCode: $code',
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Parent Rules',
+              style: TextStyle(
+                fontSize: 21,
+                fontWeight: FontWeight.w900,
+                color: darkText,
+              ),
+            ),
+            const SizedBox(height: 12),
+            ParentRulesSection(parentId: parentId),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
@@ -185,7 +277,6 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
             style: TextStyle(color: grayText, height: 1.4),
           ),
           const SizedBox(height: 24),
-
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
@@ -261,9 +352,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
               ],
             ),
           ),
-
           const SizedBox(height: 24),
-
           const Text(
             'Device Status',
             style: TextStyle(
@@ -273,7 +362,6 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
             ),
           ),
           const SizedBox(height: 12),
-
           if (user == null)
             const ChildStatusCard(
               icon: Icons.info_outline_rounded,
@@ -282,85 +370,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
               subtitle: 'Please log in again before pairing this device.',
             )
           else
-            StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-              stream: FirebaseFirestore.instance
-                  .collection('child_devices')
-                  .doc(user.uid)
-                  .snapshots(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const ChildStatusCard(
-                    icon: Icons.hourglass_top_rounded,
-                    iconColor: purple,
-                    title: 'Checking pairing status',
-                    subtitle: 'Preparing child device information...',
-                  );
-                }
-
-                if (snapshot.hasError) {
-                  return ChildStatusCard(
-                    icon: Icons.error_outline_rounded,
-                    iconColor: Colors.red,
-                    title: 'Unable to load device status',
-                    subtitle: snapshot.error.toString(),
-                  );
-                }
-
-                final data = snapshot.data?.data();
-
-                if (data == null) {
-                  return const ChildStatusCard(
-                    icon: Icons.link_off_rounded,
-                    iconColor: Colors.orange,
-                    title: 'Not paired yet',
-                    subtitle:
-                        'Enter the parent pairing code above to connect this device.',
-                  );
-                }
-
-                final pairingStatus =
-                    data['pairingStatus'] as String? ?? 'waiting';
-                final deviceStatus =
-                    data['deviceStatus'] as String? ?? 'not_connected';
-                final childEmail =
-                    data['childEmail'] as String? ?? 'Child user';
-                final code = data['pairingCode'] as String? ?? 'No code';
-
-                return ChildStatusCard(
-                  icon: Icons.check_circle_rounded,
-                  iconColor: Colors.green,
-                  title: 'Connected to Parent Account',
-                  subtitle:
-                      'Account: $childEmail\nPairing: ${_formatStatus(pairingStatus)}\nDevice: ${_formatStatus(deviceStatus)}\nCode: $code',
-                );
-              },
-            ),
-
-          const SizedBox(height: 16),
-
-          const ChildStatusCard(
-            icon: Icons.flag_rounded,
-            iconColor: purple,
-            title: 'Screen Goals',
-            subtitle:
-                'Daily screen-time goals and reminders will appear here after the parent configures rules.',
-          ),
-
-          const ChildStatusCard(
-            icon: Icons.notifications_active_rounded,
-            iconColor: Colors.orange,
-            title: 'Reminders',
-            subtitle:
-                'Break reminders and cooldown prompts will appear here during prototype testing.',
-          ),
-
-          const ChildStatusCard(
-            icon: Icons.lock_clock_rounded,
-            iconColor: purple,
-            title: 'Focus Mode',
-            subtitle:
-                'Focus mode and scheduled lock status will be shown here once restrictions are active.',
-          ),
+            _buildDeviceAndRulesSection(user.uid),
         ],
       ),
     );
@@ -368,6 +378,214 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
 
   String _formatStatus(String value) {
     return value.replaceAll('_', ' ').toUpperCase();
+  }
+}
+
+class ParentRulesSection extends StatelessWidget {
+  const ParentRulesSection({super.key, required this.parentId});
+
+  final String? parentId;
+
+  static const Color purple = Color(0xFF5B2BBF);
+
+  @override
+  Widget build(BuildContext context) {
+    if (parentId == null || parentId!.isEmpty) {
+      return const ChildStatusCard(
+        icon: Icons.rule_rounded,
+        iconColor: Colors.orange,
+        title: 'Parent rules unavailable',
+        subtitle:
+            'This device is paired, but the parent account reference is missing.',
+      );
+    }
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('restriction_settings')
+          .doc(parentId)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const ChildStatusCard(
+            icon: Icons.hourglass_top_rounded,
+            iconColor: purple,
+            title: 'Loading parent rules',
+            subtitle: 'Preparing saved restrictions from the parent account...',
+          );
+        }
+
+        if (snapshot.hasError) {
+          return ChildStatusCard(
+            icon: Icons.error_outline_rounded,
+            iconColor: Colors.red,
+            title: 'Unable to load parent rules',
+            subtitle: snapshot.error.toString(),
+          );
+        }
+
+        final data = snapshot.data?.data();
+
+        if (data == null) {
+          return const ChildStatusCard(
+            icon: Icons.rule_rounded,
+            iconColor: Colors.orange,
+            title: 'No rules saved yet',
+            subtitle:
+                'Parent rules will appear here after the parent saves restriction settings.',
+          );
+        }
+
+        final limitMinutesValue = data['limitMinutes'];
+        final limitMinutes = limitMinutesValue is num
+            ? limitMinutesValue.toInt()
+            : 120;
+
+        final appBlocking = _readBool(data, 'appBlocking', true);
+        final focusMode = _readBool(data, 'focusMode', true);
+        final cooldownTimer = _readBool(data, 'cooldownTimer', true);
+        final scheduledLock = _readBool(data, 'scheduledLock', false);
+        final categoryRestriction = _readBool(
+          data,
+          'categoryRestriction',
+          true,
+        );
+        final emergencyAccess = _readBool(data, 'emergencyAccess', true);
+
+        return Column(
+          children: [
+            ChildStatusCard(
+              icon: Icons.flag_rounded,
+              iconColor: purple,
+              title: 'Screen Goals',
+              subtitle:
+                  'Daily screen-time limit: ${_formatMinutes(limitMinutes)}.',
+            ),
+            ParentRuleCard(
+              icon: Icons.block_rounded,
+              title: 'App Blocking',
+              isEnabled: appBlocking,
+              enabledMessage: 'Selected apps may be blocked after limits.',
+              disabledMessage: 'App blocking is currently disabled.',
+            ),
+            ParentRuleCard(
+              icon: Icons.school_rounded,
+              title: 'Focus Mode',
+              isEnabled: focusMode,
+              enabledMessage:
+                  'Distracting apps may be limited during study or rest time.',
+              disabledMessage: 'Focus mode is currently disabled.',
+            ),
+            ParentRuleCard(
+              icon: Icons.notifications_active_rounded,
+              title: 'Cooldown Timer',
+              isEnabled: cooldownTimer,
+              enabledMessage:
+                  'Break reminders may appear after long continuous usage.',
+              disabledMessage: 'Cooldown reminders are currently disabled.',
+            ),
+            ParentRuleCard(
+              icon: Icons.lock_clock_rounded,
+              title: 'Scheduled Lock Session',
+              isEnabled: scheduledLock,
+              enabledMessage:
+                  'Restrictions may apply during selected scheduled sessions.',
+              disabledMessage:
+                  'Scheduled lock sessions are currently disabled.',
+            ),
+            ParentRuleCard(
+              icon: Icons.category_rounded,
+              title: 'Harmful Category Restriction',
+              isEnabled: categoryRestriction,
+              enabledMessage:
+                  'Supported harmful or restricted category events may be limited.',
+              disabledMessage: 'Category restriction is currently disabled.',
+            ),
+            ParentRuleCard(
+              icon: Icons.emergency_rounded,
+              title: 'Emergency Access',
+              isEnabled: emergencyAccess,
+              enabledMessage:
+                  'Essential functions are allowed during restrictions.',
+              disabledMessage:
+                  'Emergency access is currently disabled by the parent.',
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  bool _readBool(Map<String, dynamic> data, String key, bool defaultValue) {
+    final value = data[key];
+
+    if (value is bool) {
+      return value;
+    }
+
+    return defaultValue;
+  }
+
+  String _formatMinutes(int minutes) {
+    final duration = Duration(minutes: minutes);
+    final hours = duration.inHours;
+    final remainingMinutes = duration.inMinutes.remainder(60);
+
+    if (hours > 0) {
+      return '${hours}h ${remainingMinutes}m';
+    }
+
+    return '${duration.inMinutes}m';
+  }
+}
+
+class ParentRuleCard extends StatelessWidget {
+  const ParentRuleCard({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.isEnabled,
+    required this.enabledMessage,
+    required this.disabledMessage,
+  });
+
+  final IconData icon;
+  final String title;
+  final bool isEnabled;
+  final String enabledMessage;
+  final String disabledMessage;
+
+  static const Color darkText = Color(0xFF111827);
+  static const Color grayText = Color(0xFF4B5563);
+  static const Color purple = Color(0xFF5B2BBF);
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 1.5,
+      shadowColor: Colors.black12,
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: ListTile(
+        contentPadding: const EdgeInsets.all(18),
+        leading: Icon(icon, color: isEnabled ? purple : Colors.grey, size: 34),
+        title: Text(
+          title,
+          style: const TextStyle(color: darkText, fontWeight: FontWeight.w900),
+        ),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Text(
+            isEnabled ? enabledMessage : disabledMessage,
+            style: const TextStyle(color: grayText, height: 1.4),
+          ),
+        ),
+        trailing: Icon(
+          isEnabled ? Icons.check_circle_rounded : Icons.cancel_rounded,
+          color: isEnabled ? Colors.green : Colors.grey,
+        ),
+      ),
+    );
   }
 }
 
