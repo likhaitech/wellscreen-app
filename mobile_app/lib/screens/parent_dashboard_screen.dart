@@ -12,11 +12,15 @@ class ParentDashboardScreen extends StatelessWidget {
   const ParentDashboardScreen({super.key});
 
   static const Color purple = Color(0xFF5B2BBF);
+  static const Color deepPurple = Color(0xFF3F1E8A);
+  static const Color teal = Color(0xFF57C49B);
   static const Color darkText = Color(0xFF111827);
   static const Color grayText = Color(0xFF4B5563);
   static const Color softPurple = Color(0xFFF4F0FF);
   static const Color softGreen = Color(0xFFEAFBF0);
   static const Color softOrange = Color(0xFFFFF4E5);
+  static const Color softBlue = Color(0xFFEFF6FF);
+  static const Color softRed = Color(0xFFFFEFEF);
 
   Future<void> logout(BuildContext context) async {
     await FirebaseAuth.instance.signOut();
@@ -55,10 +59,44 @@ class ParentDashboardScreen extends StatelessWidget {
       final year = date.year.toString();
       final hour = date.hour.toString().padLeft(2, '0');
       final minute = date.minute.toString().padLeft(2, '0');
+
       return '$month/$day/$year $hour:$minute';
     }
 
     return 'Not available';
+  }
+
+  String locationText(Map<String, dynamic> data) {
+    final latestLocation = data['latestLocation'];
+
+    if (latestLocation is Map) {
+      final latitude = latestLocation['latitude'];
+      final longitude = latestLocation['longitude'];
+
+      if (latitude != null && longitude != null) {
+        return '${formatCoordinate(latitude)}, ${formatCoordinate(longitude)}';
+      }
+    }
+
+    return 'Not shared yet';
+  }
+
+  String formatCoordinate(dynamic value) {
+    if (value is num) {
+      return value.toStringAsFixed(5);
+    }
+
+    return value.toString();
+  }
+
+  String locationUpdatedText(Map<String, dynamic> data) {
+    final updatedAt = data['locationUpdatedAt'];
+
+    if (updatedAt is Timestamp) {
+      return formatDate(updatedAt);
+    }
+
+    return 'Waiting for update';
   }
 
   @override
@@ -90,7 +128,7 @@ class ParentDashboardScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text(
           'Parent Dashboard',
-          style: TextStyle(fontWeight: FontWeight.w800),
+          style: TextStyle(fontWeight: FontWeight.w900),
         ),
         backgroundColor: Colors.white,
         foregroundColor: darkText,
@@ -117,200 +155,51 @@ class ParentDashboardScreen extends StatelessWidget {
           }).toList();
 
           return ListView(
-            padding: const EdgeInsets.all(24),
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
             children: [
-              const Text(
-                'Welcome, Parent',
-                style: TextStyle(
-                  fontSize: 26,
-                  fontWeight: FontWeight.w900,
-                  color: darkText,
-                ),
-              ),
-
-              const SizedBox(height: 6),
-
-              Text(
-                parentEmail,
-                style: const TextStyle(
-                  color: purple,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-
-              const SizedBox(height: 8),
-
-              const Text(
-                'Review paired child devices, usage summaries, alerts, recommendations, restrictions, and reports.',
-                style: TextStyle(color: grayText, height: 1.4),
-              ),
-
-              const SizedBox(height: 24),
+              _headerCard(parentEmail),
+              const SizedBox(height: 18),
 
               Row(
                 children: [
                   Expanded(
-                    child: DashboardMiniCard(
-                      icon: Icons.child_care_rounded,
+                    child: DashboardStatCard(
+                      icon: Icons.verified_rounded,
                       title: 'Paired',
                       value: '${connectedChildren.length}',
-                      color: Colors.green,
-                      onTap: () {},
+                      color: teal,
+                      backgroundColor: softGreen,
                     ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
-                    child: DashboardMiniCard(
+                    child: DashboardStatCard(
                       icon: Icons.pending_actions_rounded,
                       title: 'Waiting',
                       value: '${waitingChildren.length}',
                       color: Colors.orange,
-                      onTap: () {},
-                    ),
-                  ),
-                ],
-              ),
-
-              const SizedBox(height: 18),
-
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text(
-                    'Child Devices',
-                    style: TextStyle(
-                      color: darkText,
-                      fontSize: 21,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                  TextButton.icon(
-                    onPressed: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const DevicePairingScreen(),
-                        ),
-                      );
-                    },
-                    icon: const Icon(Icons.add_link_rounded),
-                    label: const Text(
-                      'Add',
-                      style: TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                  ),
-                ],
-              ),
-
-              const SizedBox(height: 8),
-
-              if (snapshot.connectionState == ConnectionState.waiting)
-                const Center(
-                  child: Padding(
-                    padding: EdgeInsets.all(24),
-                    child: CircularProgressIndicator(color: purple),
-                  ),
-                )
-              else if (childDocs.isEmpty)
-                _emptyDeviceCard(context)
-              else
-                ...childDocs.map((doc) {
-                  final data = doc.data();
-                  return _childDeviceCard(context, data);
-                }),
-
-              const SizedBox(height: 20),
-
-              Row(
-                children: [
-                  Expanded(
-                    child: DashboardMiniCard(
-                      icon: Icons.timer_rounded,
-                      title: 'Screen Time',
-                      value: '4h 20m',
-                      color: purple,
-                      onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const UsageSummaryScreen(),
-                          ),
-                        );
-                      },
+                      backgroundColor: softOrange,
                     ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
-                    child: DashboardMiniCard(
-                      icon: Icons.warning_amber_rounded,
-                      title: 'Alerts',
-                      value: '3 New',
-                      color: Colors.orange,
-                      onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const AlertsReportsScreen(),
-                          ),
-                        );
-                      },
+                    child: DashboardStatCard(
+                      icon: Icons.devices_rounded,
+                      title: 'Total',
+                      value: '${childDocs.length}',
+                      color: purple,
+                      backgroundColor: softPurple,
                     ),
                   ),
                 ],
               ),
 
-              const SizedBox(height: 12),
-
-              const Card(
-                elevation: 2,
-                shadowColor: Colors.black12,
-                child: ListTile(
-                  contentPadding: EdgeInsets.all(18),
-                  leading: Icon(Icons.apps_rounded, color: purple, size: 34),
-                  title: Text(
-                    'Most Used App',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w900,
-                      color: darkText,
-                    ),
-                  ),
-                  subtitle: Text(
-                    'YouTube - 1 hour 45 minutes today',
-                    style: TextStyle(color: grayText),
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 12),
-
-              const Card(
-                elevation: 2,
-                shadowColor: Colors.black12,
-                child: ListTile(
-                  contentPadding: EdgeInsets.all(18),
-                  leading: Icon(
-                    Icons.lightbulb_rounded,
-                    color: purple,
-                    size: 34,
-                  ),
-                  title: Text(
-                    'Recommendation',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w900,
-                      color: darkText,
-                    ),
-                  ),
-                  subtitle: Text(
-                    'Set a cooldown timer after long app sessions.',
-                    style: TextStyle(color: grayText),
-                  ),
-                ),
-              ),
-
               const SizedBox(height: 22),
 
-              FilledButton.icon(
-                onPressed: () {
+              _sectionHeader(
+                title: 'Child Devices',
+                actionLabel: 'Add',
+                onTap: () {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
@@ -318,42 +207,103 @@ class ParentDashboardScreen extends StatelessWidget {
                     ),
                   );
                 },
-                style: FilledButton.styleFrom(
-                  backgroundColor: purple,
-                  minimumSize: const Size(double.infinity, 52),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14),
+              ),
+
+              const SizedBox(height: 10),
+
+              if (snapshot.connectionState == ConnectionState.waiting)
+                _loadingDeviceCard()
+              else if (childDocs.isEmpty)
+                _emptyDeviceCard(context)
+              else
+                ...childDocs.map((doc) {
+                  return _childDeviceCard(doc.data());
+                }),
+
+              const SizedBox(height: 22),
+
+              const Text(
+                'Usage Snapshot',
+                style: TextStyle(
+                  color: darkText,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+
+              const SizedBox(height: 10),
+
+              _usageOverviewCard(),
+
+              const SizedBox(height: 22),
+
+              const Text(
+                'Quick Actions',
+                style: TextStyle(
+                  color: darkText,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+
+              const SizedBox(height: 10),
+
+              Row(
+                children: [
+                  Expanded(
+                    child: _quickActionCard(
+                      context: context,
+                      icon: Icons.add_link_rounded,
+                      title: 'Pair Device',
+                      subtitle: 'Connect child phone',
+                      color: purple,
+                      backgroundColor: softPurple,
+                      destination: const DevicePairingScreen(),
+                    ),
                   ),
-                ),
-                icon: const Icon(Icons.add_link_rounded),
-                label: const Text(
-                  'Device Pairing',
-                  style: TextStyle(fontWeight: FontWeight.w800),
-                ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _quickActionCard(
+                      context: context,
+                      icon: Icons.bar_chart_rounded,
+                      title: 'Usage',
+                      subtitle: 'View reports',
+                      color: teal,
+                      backgroundColor: softGreen,
+                      destination: const UsageSummaryScreen(),
+                    ),
+                  ),
+                ],
               ),
 
               const SizedBox(height: 12),
 
-              OutlinedButton.icon(
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => const RuleSettingsScreen(),
+              Row(
+                children: [
+                  Expanded(
+                    child: _quickActionCard(
+                      context: context,
+                      icon: Icons.rule_rounded,
+                      title: 'Rules',
+                      subtitle: 'Set restrictions',
+                      color: Colors.orange,
+                      backgroundColor: softOrange,
+                      destination: const RuleSettingsScreen(),
                     ),
-                  );
-                },
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size(double.infinity, 52),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14),
                   ),
-                ),
-                icon: const Icon(Icons.rule_rounded),
-                label: const Text(
-                  'Rule Settings',
-                  style: TextStyle(fontWeight: FontWeight.w800),
-                ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _quickActionCard(
+                      context: context,
+                      icon: Icons.notifications_active_rounded,
+                      title: 'Alerts',
+                      subtitle: 'Review events',
+                      color: Colors.redAccent,
+                      backgroundColor: softRed,
+                      destination: const AlertsReportsScreen(),
+                    ),
+                  ),
+                ],
               ),
             ],
           );
@@ -362,11 +312,118 @@ class ParentDashboardScreen extends StatelessWidget {
     );
   }
 
+  Widget _headerCard(String email) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [purple, deepPurple],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(26),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x225B2BBF),
+            blurRadius: 16,
+            offset: Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 62,
+            height: 62,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: const Icon(
+              Icons.family_restroom_rounded,
+              color: purple,
+              size: 36,
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Welcome, Parent',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 24,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  email,
+                  style: const TextStyle(
+                    color: Color(0xFFE9DDFF),
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Monitor paired child devices, review alerts, and guide healthy screen habits.',
+                  style: TextStyle(color: Colors.white, height: 1.35),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _sectionHeader({
+    required String title,
+    required String actionLabel,
+    required VoidCallback onTap,
+  }) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            title,
+            style: const TextStyle(
+              color: darkText,
+              fontSize: 20,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ),
+        TextButton.icon(
+          onPressed: onTap,
+          icon: const Icon(Icons.add_rounded),
+          label: Text(
+            actionLabel,
+            style: const TextStyle(fontWeight: FontWeight.w900),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _loadingDeviceCard() {
+    return Container(
+      height: 120,
+      decoration: BoxDecoration(
+        color: softPurple,
+        borderRadius: BorderRadius.circular(22),
+      ),
+      child: const Center(child: CircularProgressIndicator(color: purple)),
+    );
+  }
+
   Widget _emptyDeviceCard(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
-        color: softPurple,
+        color: softBlue,
         borderRadius: BorderRadius.circular(22),
       ),
       child: Column(
@@ -383,7 +440,7 @@ class ParentDashboardScreen extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           const Text(
-            'Create a child profile and generate a pairing code to connect a child Android device.',
+            'Create a child profile and generate a pairing code to connect a monitored Android device.',
             textAlign: TextAlign.center,
             style: TextStyle(color: grayText, height: 1.4),
           ),
@@ -397,14 +454,15 @@ class ParentDashboardScreen extends StatelessWidget {
             },
             style: FilledButton.styleFrom(
               backgroundColor: purple,
+              minimumSize: const Size(double.infinity, 52),
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14),
+                borderRadius: BorderRadius.circular(16),
               ),
             ),
             icon: const Icon(Icons.add_link_rounded),
             label: const Text(
               'Pair Child Device',
-              style: TextStyle(fontWeight: FontWeight.w800),
+              style: TextStyle(fontWeight: FontWeight.w900),
             ),
           ),
         ],
@@ -412,120 +470,145 @@ class ParentDashboardScreen extends StatelessWidget {
     );
   }
 
-  Widget _childDeviceCard(BuildContext context, Map<String, dynamic> data) {
+  Widget _childDeviceCard(Map<String, dynamic> data) {
     final childName = (data['name'] ?? 'Child Profile').toString();
     final age = (data['age'] ?? '').toString();
     final childEmail = (data['childEmail'] ?? 'No child email connected yet')
         .toString();
     final childAccountId = (data['childAccountId'] ?? '').toString();
     final pairingStatus = (data['pairingStatus'] ?? 'waiting').toString();
+
+    final connected = isChildConnected(data);
+    final statusText = connected ? 'Connected' : 'Waiting';
+    final statusColor = connected ? teal : Colors.orange;
+    final statusBg = connected ? softGreen : softOrange;
+
     final connectedAt = formatDate(data['connectedAt']);
     final createdAt = formatDate(data['createdAt']);
 
-    final connected = isChildConnected(data);
-
-    final statusText = connected ? 'Connected' : 'Waiting for child device';
-    final statusColor = connected ? Colors.green : Colors.orange;
-    final statusBg = connected ? softGreen : softOrange;
-
-    return Card(
-      elevation: 3,
-      shadowColor: Colors.black12,
+    return Container(
       margin: const EdgeInsets.only(bottom: 14),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                CircleAvatar(
-                  radius: 30,
-                  backgroundColor: statusBg,
-                  child: Icon(
-                    connected
-                        ? Icons.verified_rounded
-                        : Icons.pending_actions_rounded,
-                    color: statusColor,
-                    size: 34,
-                  ),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: const Color(0xFFE5E7EB)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x11000000),
+            blurRadius: 12,
+            offset: Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              CircleAvatar(
+                radius: 31,
+                backgroundColor: statusBg,
+                child: Icon(
+                  connected
+                      ? Icons.verified_rounded
+                      : Icons.pending_actions_rounded,
+                  color: statusColor,
+                  size: 34,
                 ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        childName,
-                        style: const TextStyle(
-                          color: darkText,
-                          fontSize: 18,
-                          fontWeight: FontWeight.w900,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        age.isEmpty ? 'Age not set' : 'Age: $age',
-                        style: const TextStyle(color: grayText, height: 1.3),
-                      ),
-                    ],
-                  ),
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: statusBg,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    statusText,
-                    style: TextStyle(
-                      color: statusColor,
-                      fontWeight: FontWeight.w900,
-                      fontSize: 12,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 16),
-
-            _deviceInfoRow(
-              icon: Icons.email_rounded,
-              label: 'Child Email',
-              value: childEmail,
-            ),
-
-            _deviceInfoRow(
-              icon: Icons.phone_android_rounded,
-              label: 'Device',
-              value: connected ? 'Android Device' : 'Not connected yet',
-            ),
-
-            _deviceInfoRow(
-              icon: Icons.link_rounded,
-              label: 'Pairing Status',
-              value: pairingStatus,
-            ),
-
-            _deviceInfoRow(
-              icon: Icons.access_time_rounded,
-              label: connected ? 'Connected At' : 'Profile Created',
-              value: connected ? connectedAt : createdAt,
-            ),
-
-            if (childAccountId.isNotEmpty)
-              _deviceInfoRow(
-                icon: Icons.badge_rounded,
-                label: 'Child Account ID',
-                value: childAccountId,
               ),
-          ],
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      childName,
+                      style: const TextStyle(
+                        color: darkText,
+                        fontSize: 19,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      age.isEmpty ? 'Age not set' : 'Age: $age',
+                      style: const TextStyle(
+                        color: grayText,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              _statusPill(
+                text: statusText,
+                textColor: statusColor,
+                backgroundColor: statusBg,
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 16),
+
+          _deviceInfoRow(
+            icon: Icons.email_rounded,
+            label: 'Child Email',
+            value: childEmail,
+          ),
+          _deviceInfoRow(
+            icon: Icons.phone_android_rounded,
+            label: 'Device',
+            value: connected ? 'Android Device' : 'Not connected yet',
+          ),
+          _deviceInfoRow(
+            icon: Icons.link_rounded,
+            label: 'Pairing',
+            value: pairingStatus,
+          ),
+          _deviceInfoRow(
+            icon: Icons.location_on_rounded,
+            label: 'Location',
+            value: locationText(data),
+          ),
+          _deviceInfoRow(
+            icon: Icons.update_rounded,
+            label: 'GPS Updated',
+            value: locationUpdatedText(data),
+          ),
+          _deviceInfoRow(
+            icon: Icons.access_time_rounded,
+            label: connected ? 'Connected At' : 'Created At',
+            value: connected ? connectedAt : createdAt,
+          ),
+
+          if (childAccountId.isNotEmpty)
+            _deviceInfoRow(
+              icon: Icons.badge_rounded,
+              label: 'Child UID',
+              value: childAccountId,
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _statusPill({
+    required String text,
+    required Color textColor,
+    required Color backgroundColor,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(50),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: textColor,
+          fontWeight: FontWeight.w900,
+          fontSize: 12,
         ),
       ),
     );
@@ -544,7 +627,7 @@ class ParentDashboardScreen extends StatelessWidget {
           Icon(icon, color: purple, size: 20),
           const SizedBox(width: 10),
           SizedBox(
-            width: 115,
+            width: 105,
             child: Text(
               label,
               style: const TextStyle(
@@ -567,59 +650,175 @@ class ParentDashboardScreen extends StatelessWidget {
       ),
     );
   }
+
+  Widget _usageOverviewCard() {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: softPurple,
+        borderRadius: BorderRadius.circular(22),
+      ),
+      child: Column(
+        children: [
+          _usageRow(
+            icon: Icons.timer_rounded,
+            title: 'Today’s Screen Time',
+            value: '4h 20m',
+            color: purple,
+          ),
+          const Divider(height: 24),
+          _usageRow(
+            icon: Icons.apps_rounded,
+            title: 'Most Used App',
+            value: 'YouTube - 1h 45m',
+            color: teal,
+          ),
+          const Divider(height: 24),
+          _usageRow(
+            icon: Icons.warning_amber_rounded,
+            title: 'Latest Alert',
+            value: 'Late-night use detected',
+            color: Colors.orange,
+          ),
+          const Divider(height: 24),
+          _usageRow(
+            icon: Icons.lightbulb_rounded,
+            title: 'Recommendation',
+            value: 'Set a cooldown timer',
+            color: purple,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _usageRow({
+    required IconData icon,
+    required String title,
+    required String value,
+    required Color color,
+  }) {
+    return Row(
+      children: [
+        CircleAvatar(
+          radius: 22,
+          backgroundColor: Colors.white,
+          child: Icon(icon, color: color),
+        ),
+        const SizedBox(width: 13),
+        Expanded(
+          child: Text(
+            title,
+            style: const TextStyle(
+              color: grayText,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        Text(
+          value,
+          textAlign: TextAlign.right,
+          style: const TextStyle(color: darkText, fontWeight: FontWeight.w900),
+        ),
+      ],
+    );
+  }
+
+  Widget _quickActionCard({
+    required BuildContext context,
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required Color color,
+    required Color backgroundColor,
+    required Widget destination,
+  }) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(22),
+      onTap: () {
+        Navigator.push(context, MaterialPageRoute(builder: (_) => destination));
+      },
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: backgroundColor,
+          borderRadius: BorderRadius.circular(22),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, color: color, size: 32),
+            const SizedBox(height: 14),
+            Text(
+              title,
+              style: const TextStyle(
+                color: darkText,
+                fontWeight: FontWeight.w900,
+                fontSize: 16,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              subtitle,
+              style: const TextStyle(
+                color: grayText,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
-class DashboardMiniCard extends StatelessWidget {
-  const DashboardMiniCard({
+class DashboardStatCard extends StatelessWidget {
+  const DashboardStatCard({
     super.key,
     required this.icon,
     required this.title,
     required this.value,
     required this.color,
-    required this.onTap,
+    required this.backgroundColor,
   });
 
   final IconData icon;
   final String title;
   final String value;
   final Color color;
-  final VoidCallback onTap;
+  final Color backgroundColor;
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      elevation: 2,
-      shadowColor: Colors.black12,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(18),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(18),
-          child: Column(
-            children: [
-              Icon(icon, color: color, size: 34),
-              const SizedBox(height: 10),
-              Text(
-                title,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Color(0xFF4B5563),
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                value,
-                style: const TextStyle(
-                  color: Color(0xFF111827),
-                  fontWeight: FontWeight.w900,
-                  fontSize: 20,
-                ),
-              ),
-            ],
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 15),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, color: color, size: 28),
+          const SizedBox(height: 8),
+          Text(
+            value,
+            style: const TextStyle(
+              color: Color(0xFF111827),
+              fontWeight: FontWeight.w900,
+              fontSize: 22,
+            ),
           ),
-        ),
+          const SizedBox(height: 2),
+          Text(
+            title,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: Color(0xFF4B5563),
+              fontWeight: FontWeight.w700,
+              fontSize: 12,
+            ),
+          ),
+        ],
       ),
     );
   }
