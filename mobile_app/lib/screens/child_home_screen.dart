@@ -13,9 +13,15 @@ class ChildHomeScreen extends StatefulWidget {
 
 class _ChildHomeScreenState extends State<ChildHomeScreen> {
   static const Color purple = Color(0xFF5B2BBF);
+  static const Color deepPurple = Color(0xFF3F1E8A);
+  static const Color teal = Color(0xFF57C49B);
   static const Color darkText = Color(0xFF111827);
   static const Color grayText = Color(0xFF4B5563);
   static const Color softPurple = Color(0xFFF4F0FF);
+  static const Color softGreen = Color(0xFFEAFBF0);
+  static const Color softOrange = Color(0xFFFFF4E5);
+  static const Color softBlue = Color(0xFFEFF6FF);
+  static const Color softRed = Color(0xFFFFEFEF);
 
   final pairingCodeController = TextEditingController();
 
@@ -56,7 +62,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
           throw Exception('Pairing code not found.');
         }
 
-        final codeData = codeSnapshot.data() as Map<String, dynamic>;
+        final codeData = codeSnapshot.data() ?? <String, dynamic>{};
 
         final status = (codeData['status'] ?? '').toString();
         final parentId = (codeData['parentId'] ?? '').toString();
@@ -73,6 +79,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
 
         if (expiresAt is Timestamp) {
           final expiryDate = expiresAt.toDate();
+
           if (DateTime.now().isAfter(expiryDate)) {
             throw Exception('This pairing code has expired.');
           }
@@ -145,6 +152,21 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  String formatDate(dynamic value) {
+    if (value is Timestamp) {
+      final date = value.toDate();
+      final month = date.month.toString().padLeft(2, '0');
+      final day = date.day.toString().padLeft(2, '0');
+      final year = date.year.toString();
+      final hour = date.hour.toString().padLeft(2, '0');
+      final minute = date.minute.toString().padLeft(2, '0');
+
+      return '$month/$day/$year $hour:$minute';
+    }
+
+    return 'Not available';
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
@@ -171,8 +193,8 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
       backgroundColor: Colors.white,
       appBar: AppBar(
         title: const Text(
-          'Child Device',
-          style: TextStyle(fontWeight: FontWeight.w800),
+          'Child Dashboard',
+          style: TextStyle(fontWeight: FontWeight.w900),
         ),
         backgroundColor: Colors.white,
         foregroundColor: darkText,
@@ -191,7 +213,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
             .doc(user.uid)
             .snapshots(),
         builder: (context, snapshot) {
-          final data = snapshot.data?.data() ?? {};
+          final data = snapshot.data?.data() ?? <String, dynamic>{};
 
           final fullName =
               (data['fullName'] ?? user.displayName ?? 'Child User').toString();
@@ -206,32 +228,21 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
               data['pairedParentId'] != null ||
               data['pairedChildProfileId'] != null;
 
+          final pairedAt = formatDate(data['pairedAt']);
+
           return ListView(
-            padding: const EdgeInsets.all(24),
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
             children: [
-              Text(
-                'Hello, $fullName',
-                style: const TextStyle(
-                  color: darkText,
-                  fontSize: 26,
-                  fontWeight: FontWeight.w900,
-                ),
+              _headerCard(
+                fullName: fullName,
+                email: email,
+                isConnected: isConnected,
               ),
-              const SizedBox(height: 6),
-              Text(
-                email,
-                style: const TextStyle(
-                  color: purple,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'This page is used to connect the child account or child device to a parent account using a pairing code.',
-                style: TextStyle(color: grayText, height: 1.4),
-              ),
-              const SizedBox(height: 24),
-              if (isConnected) _buildConnectedView() else _buildPairingView(),
+              const SizedBox(height: 18),
+              if (isConnected)
+                _connectedDashboard(data: data, pairedAt: pairedAt)
+              else
+                _pairingDashboard(),
             ],
           );
         },
@@ -239,25 +250,124 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
     );
   }
 
-  Widget _buildPairingView() {
+  Widget _headerCard({
+    required String fullName,
+    required String email,
+    required bool isConnected,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: isConnected
+              ? const [teal, Color(0xFF2F9E78)]
+              : const [purple, deepPurple],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(26),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x225B2BBF),
+            blurRadius: 16,
+            offset: Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 62,
+            height: 62,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Icon(
+              isConnected ? Icons.verified_rounded : Icons.child_care_rounded,
+              color: isConnected ? teal : purple,
+              size: 36,
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Hello, $fullName',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 23,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  email,
+                  style: const TextStyle(
+                    color: Color(0xFFE9DDFF),
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  isConnected
+                      ? 'Connected to parent account for digital wellness support.'
+                      : 'Enter the parent pairing code to connect this child device.',
+                  style: const TextStyle(color: Colors.white, height: 1.35),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _pairingDashboard() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        Row(
+          children: const [
+            Expanded(
+              child: ChildStatCard(
+                icon: Icons.link_off_rounded,
+                title: 'Status',
+                value: 'Not Paired',
+                color: Colors.orange,
+                backgroundColor: softOrange,
+              ),
+            ),
+            SizedBox(width: 12),
+            Expanded(
+              child: ChildStatCard(
+                icon: Icons.privacy_tip_rounded,
+                title: 'Privacy',
+                value: 'Protected',
+                color: purple,
+                backgroundColor: softPurple,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 18),
         Container(
           padding: const EdgeInsets.all(22),
           decoration: BoxDecoration(
             color: softPurple,
-            borderRadius: BorderRadius.circular(22),
+            borderRadius: BorderRadius.circular(26),
           ),
           child: Column(
             children: [
-              const Icon(Icons.link_rounded, color: purple, size: 74),
+              const Icon(Icons.qr_code_2_rounded, color: purple, size: 76),
               const SizedBox(height: 14),
               const Text(
                 'Connect to Parent',
                 style: TextStyle(
                   color: darkText,
-                  fontSize: 21,
+                  fontSize: 22,
                   fontWeight: FontWeight.w900,
                 ),
               ),
@@ -267,41 +377,47 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
                 textAlign: TextAlign.center,
                 style: TextStyle(color: grayText, height: 1.4),
               ),
-              const SizedBox(height: 18),
+              const SizedBox(height: 20),
               TextField(
                 controller: pairingCodeController,
                 keyboardType: TextInputType.number,
                 maxLength: 6,
                 textAlign: TextAlign.center,
                 style: const TextStyle(
-                  fontSize: 24,
+                  fontSize: 26,
                   fontWeight: FontWeight.w900,
-                  letterSpacing: 6,
+                  letterSpacing: 7,
                 ),
                 decoration: InputDecoration(
                   counterText: '',
                   hintText: '000000',
+                  filled: true,
+                  fillColor: Colors.white,
                   border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    borderSide: const BorderSide(color: purple, width: 2),
                   ),
                 ),
               ),
               const SizedBox(height: 18),
               SizedBox(
-                height: 52,
+                height: 54,
                 width: double.infinity,
                 child: FilledButton.icon(
                   onPressed: isPairing ? null : pairWithParent,
                   style: FilledButton.styleFrom(
                     backgroundColor: purple,
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
+                      borderRadius: BorderRadius.circular(16),
                     ),
                   ),
                   icon: const Icon(Icons.check_circle_rounded),
                   label: Text(
-                    isPairing ? 'Connecting...' : 'Pair Device',
-                    style: const TextStyle(fontWeight: FontWeight.w800),
+                    isPairing ? 'Connecting...' : 'Pair Child Device',
+                    style: const TextStyle(fontWeight: FontWeight.w900),
                   ),
                 ),
               ),
@@ -311,29 +427,60 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
         const SizedBox(height: 16),
         _infoCard(
           icon: Icons.privacy_tip_rounded,
+          iconColor: purple,
+          backgroundColor: softBlue,
           title: 'Privacy Reminder',
           subtitle:
-              'WellScreen connects usage-related monitoring only. It does not read private messages, passwords, calls, or sensitive files.',
-          iconColor: purple,
+              'WellScreen monitors usage-related behavior only. It does not read messages, passwords, calls, photos, or sensitive files.',
         ),
       ],
     );
   }
 
-  Widget _buildConnectedView() {
+  Widget _connectedDashboard({
+    required Map<String, dynamic> data,
+    required String pairedAt,
+  }) {
+    final pairingCode = (data['pairingCode'] ?? 'Not available').toString();
+
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        Row(
+          children: const [
+            Expanded(
+              child: ChildStatCard(
+                icon: Icons.timer_rounded,
+                title: 'Goal',
+                value: '2h left',
+                color: purple,
+                backgroundColor: softPurple,
+              ),
+            ),
+            SizedBox(width: 12),
+            Expanded(
+              child: ChildStatCard(
+                icon: Icons.self_improvement_rounded,
+                title: 'Focus',
+                value: 'Ready',
+                color: Colors.orange,
+                backgroundColor: softOrange,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 18),
         Container(
           padding: const EdgeInsets.all(22),
           decoration: BoxDecoration(
-            color: softPurple,
-            borderRadius: BorderRadius.circular(22),
+            color: softGreen,
+            borderRadius: BorderRadius.circular(26),
           ),
-          child: const Column(
+          child: Column(
             children: [
-              Icon(Icons.verified_rounded, color: Colors.green, size: 78),
-              SizedBox(height: 14),
-              Text(
+              const Icon(Icons.verified_rounded, color: teal, size: 78),
+              const SizedBox(height: 14),
+              const Text(
                 'Connected to Parent',
                 style: TextStyle(
                   color: darkText,
@@ -341,34 +488,77 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
                   fontWeight: FontWeight.w900,
                 ),
               ),
-              SizedBox(height: 8),
+              const SizedBox(height: 8),
               Text(
-                'This child account is already linked to a parent account for monitoring and digital wellness guidance.',
+                'Pairing code: $pairingCode\nPaired at: $pairedAt',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: grayText, height: 1.4),
+                style: const TextStyle(
+                  color: grayText,
+                  height: 1.4,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ],
           ),
         ),
-        const SizedBox(height: 16),
-        _infoCard(
-          icon: Icons.timer_rounded,
-          title: 'Today’s Goal',
-          subtitle: 'Stay within the screen-time goal set by the parent.',
-          iconColor: purple,
+        const SizedBox(height: 18),
+        const Text(
+          'Device Status',
+          style: TextStyle(
+            color: darkText,
+            fontSize: 20,
+            fontWeight: FontWeight.w900,
+          ),
         ),
+        const SizedBox(height: 10),
         _infoCard(
-          icon: Icons.self_improvement_rounded,
-          title: 'Focus Status',
-          subtitle: 'Focus mode and cooldown reminders will appear here.',
-          iconColor: Colors.orange,
+          icon: Icons.phone_android_rounded,
+          iconColor: purple,
+          backgroundColor: softPurple,
+          title: 'Android Device',
+          subtitle: 'This child account is linked to the parent dashboard.',
         ),
         _infoCard(
           icon: Icons.sync_rounded,
+          iconColor: teal,
+          backgroundColor: softGreen,
           title: 'Sync Status',
           subtitle:
               'Usage records will sync to the parent dashboard when internet is available.',
-          iconColor: Colors.green,
+        ),
+        _infoCard(
+          icon: Icons.notifications_active_rounded,
+          iconColor: Colors.orange,
+          backgroundColor: softOrange,
+          title: 'Reminder Status',
+          subtitle:
+              'Break reminders, cooldown timers, and focus mode notices will appear here.',
+        ),
+        _infoCard(
+          icon: Icons.location_on_rounded,
+          iconColor: Colors.redAccent,
+          backgroundColor: softRed,
+          title: 'Location Support',
+          subtitle:
+              'GPS sharing UI is ready. Backend location permission and saving will be connected next.',
+        ),
+        const SizedBox(height: 8),
+        FilledButton.icon(
+          onPressed: () {
+            showMessage('GPS function will be connected by backend.');
+          },
+          style: FilledButton.styleFrom(
+            backgroundColor: purple,
+            minimumSize: const Size(double.infinity, 54),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+          ),
+          icon: const Icon(Icons.my_location_rounded),
+          label: const Text(
+            'Share Current Location',
+            style: TextStyle(fontWeight: FontWeight.w900),
+          ),
         ),
       ],
     );
@@ -376,29 +566,104 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
 
   Widget _infoCard({
     required IconData icon,
+    required Color iconColor,
+    required Color backgroundColor,
     required String title,
     required String subtitle,
-    required Color iconColor,
   }) {
-    return Card(
-      elevation: 2,
-      shadowColor: Colors.black12,
+    return Container(
       margin: const EdgeInsets.only(bottom: 14),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      child: ListTile(
-        contentPadding: const EdgeInsets.all(18),
-        leading: Icon(icon, color: iconColor, size: 34),
-        title: Text(
-          title,
-          style: const TextStyle(color: darkText, fontWeight: FontWeight.w900),
-        ),
-        subtitle: Padding(
-          padding: const EdgeInsets.only(top: 6),
-          child: Text(
-            subtitle,
-            style: const TextStyle(color: grayText, height: 1.4),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(22),
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 25,
+            backgroundColor: Colors.white,
+            child: Icon(icon, color: iconColor, size: 28),
           ),
-        ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: darkText,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 16,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  subtitle,
+                  style: const TextStyle(
+                    color: grayText,
+                    height: 1.35,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class ChildStatCard extends StatelessWidget {
+  const ChildStatCard({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.value,
+    required this.color,
+    required this.backgroundColor,
+  });
+
+  final IconData icon;
+  final String title;
+  final String value;
+  final Color color;
+  final Color backgroundColor;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(22),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, color: color, size: 31),
+          const SizedBox(height: 9),
+          Text(
+            value,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: Color(0xFF111827),
+              fontWeight: FontWeight.w900,
+              fontSize: 18,
+            ),
+          ),
+          const SizedBox(height: 3),
+          Text(
+            title,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: Color(0xFF4B5563),
+              fontWeight: FontWeight.w700,
+              fontSize: 12,
+            ),
+          ),
+        ],
       ),
     );
   }
