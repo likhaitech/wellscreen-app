@@ -2,6 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../models/usage_report.dart';
+import '../services/firestore_child_usage_report_service.dart';
 import '../services/usage_dashboard_controller_service.dart';
 import '../services/usage_dashboard_view_model_service.dart';
 import 'alerts_reports_screen.dart';
@@ -25,21 +27,28 @@ class ParentDashboardScreen extends StatefulWidget {
 class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
   final UsageDashboardControllerService _controllerService =
       UsageDashboardControllerService();
+  final FirestoreChildUsageReportService _childUsageReportService =
+      FirestoreChildUsageReportService();
 
   late Future<UsageDashboardControllerState> _dashboardFuture;
+  late Future<FirestoreChildUsageReportSnapshot?> _latestChildReportFuture;
 
   @override
   void initState() {
     super.initState();
     _dashboardFuture = _controllerService.loadTodayDashboardState();
+    _latestChildReportFuture = _childUsageReportService
+        .getLatestReportForCurrentParent();
   }
 
   Future<void> _refreshDashboard() async {
     setState(() {
       _dashboardFuture = _controllerService.loadTodayDashboardState();
+      _latestChildReportFuture = _childUsageReportService
+          .getLatestReportForCurrentParent();
     });
 
-    await _dashboardFuture;
+    await Future.wait([_dashboardFuture, _latestChildReportFuture]);
   }
 
   Future<void> _logout(BuildContext context) async {
@@ -150,12 +159,18 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
 
                 const SizedBox(height: 16),
 
+                LatestChildUsageReportSection(
+                  latestReportFuture: _latestChildReportFuture,
+                ),
+
+                const SizedBox(height: 16),
+
                 Row(
                   children: [
                     Expanded(
                       child: DashboardMiniCard(
                         icon: Icons.timer_rounded,
-                        title: 'Screen Time',
+                        title: 'Local Screen Time',
                         value: viewModel?.totalUsageLabel ?? '0s',
                         color: _purple,
                         onTap: () {
@@ -172,7 +187,7 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                     Expanded(
                       child: DashboardMiniCard(
                         icon: Icons.warning_amber_rounded,
-                        title: 'Status',
+                        title: 'Local Status',
                         value: viewModel?.statusLabel ?? 'No Report',
                         color: _getStatusColor(viewModel?.statusLabel),
                         onTap: () {
@@ -192,7 +207,7 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
 
                 DashboardInfoCard(
                   icon: Icons.apps_rounded,
-                  title: 'Most Used App',
+                  title: 'Local Most Used App',
                   subtitle:
                       viewModel?.topUsedAppLabel ?? 'No app usage recorded',
                 ),
@@ -201,7 +216,7 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
 
                 DashboardInfoCard(
                   icon: Icons.lightbulb_rounded,
-                  title: 'Recommendation',
+                  title: 'Local Recommendation',
                   subtitle:
                       viewModel?.recommendationMessage ??
                       'No usage report available yet.',
@@ -419,6 +434,183 @@ class ParentChildDeviceOverview extends StatelessWidget {
   }
 }
 
+class LatestChildUsageReportSection extends StatelessWidget {
+  const LatestChildUsageReportSection({
+    super.key,
+    required this.latestReportFuture,
+  });
+
+  final Future<FirestoreChildUsageReportSnapshot?> latestReportFuture;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<FirestoreChildUsageReportSnapshot?>(
+      future: latestReportFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const DashboardStatusCard(
+            icon: Icons.hourglass_top_rounded,
+            title: 'Loading Synced Usage Report',
+            message:
+                'Checking the latest usage report synced by the child device...',
+            color: _purple,
+          );
+        }
+
+        if (snapshot.hasError) {
+          return DashboardStatusCard(
+            icon: Icons.error_outline_rounded,
+            title: 'Unable to Load Synced Report',
+            message: snapshot.error.toString(),
+            color: Colors.red,
+          );
+        }
+
+        final reportSnapshot = snapshot.data;
+
+        if (reportSnapshot == null) {
+          return const DashboardStatusCard(
+            icon: Icons.cloud_off_rounded,
+            title: 'No Synced Child Usage Report Yet',
+            message:
+                'Ask the child device to tap Sync Usage Report after pairing and enabling Usage Access.',
+            color: Colors.orange,
+          );
+        }
+
+        return Column(
+          children: [
+            SyncedChildUsageReportCard(reportSnapshot: reportSnapshot),
+            const SizedBox(height: 12),
+            SyncedAppUsagePreviewCard(reportSnapshot: reportSnapshot),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class SyncedChildUsageReportCard extends StatelessWidget {
+  const SyncedChildUsageReportCard({super.key, required this.reportSnapshot});
+
+  final FirestoreChildUsageReportSnapshot reportSnapshot;
+
+  @override
+  Widget build(BuildContext context) {
+    final report = reportSnapshot.report;
+    final topUsedApp = report.topUsedApp;
+    final topUsedAppLabel = topUsedApp == null
+        ? 'No top app recorded'
+        : '${topUsedApp.displayName} • ${topUsedApp.usageLabel}';
+
+    return Card(
+      elevation: 3,
+      shadowColor: Colors.black12,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            CircleAvatar(
+              radius: 30,
+              backgroundColor: _softPurple,
+              child: Icon(
+                Icons.cloud_done_rounded,
+                color: _getPatternColor(report.patternStatus),
+                size: 34,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Latest Synced Child Usage',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                      color: _darkText,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    reportSnapshot.childLabel,
+                    style: const TextStyle(
+                      color: _darkText,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Report Date: ${reportSnapshot.reportDate}\n'
+                    'Screen Time: ${report.totalUsageLabel}\n'
+                    'Top App: $topUsedAppLabel\n'
+                    'Status: ${report.patternStatus.label}\n'
+                    'Recommendation: ${report.recommendationMessage}',
+                    style: const TextStyle(color: _grayText, height: 1.35),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              _getPatternIcon(report.patternStatus),
+              color: _getPatternColor(report.patternStatus),
+              size: 28,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  IconData _getPatternIcon(UsagePatternStatus status) {
+    switch (status) {
+      case UsagePatternStatus.healthy:
+        return Icons.check_circle_rounded;
+      case UsagePatternStatus.warning:
+        return Icons.warning_amber_rounded;
+      case UsagePatternStatus.unhealthy:
+        return Icons.error_rounded;
+    }
+  }
+
+  Color _getPatternColor(UsagePatternStatus status) {
+    switch (status) {
+      case UsagePatternStatus.healthy:
+        return Colors.green;
+      case UsagePatternStatus.warning:
+        return Colors.orange;
+      case UsagePatternStatus.unhealthy:
+        return Colors.red;
+    }
+  }
+}
+
+class SyncedAppUsagePreviewCard extends StatelessWidget {
+  const SyncedAppUsagePreviewCard({super.key, required this.reportSnapshot});
+
+  final FirestoreChildUsageReportSnapshot reportSnapshot;
+
+  @override
+  Widget build(BuildContext context) {
+    final apps = reportSnapshot.appUsageList.take(5).toList();
+
+    final subtitle = apps.isEmpty
+        ? 'No synced app breakdown is available yet.'
+        : apps
+              .map((app) => '${app.displayName} - ${app.usageLabel}')
+              .join('\n');
+
+    return DashboardInfoCard(
+      icon: Icons.list_alt_rounded,
+      title: 'Synced App Usage Breakdown',
+      subtitle: subtitle,
+    );
+  }
+}
+
 class ChildDeviceOverviewCard extends StatelessWidget {
   const ChildDeviceOverviewCard({
     super.key,
@@ -441,6 +633,7 @@ class ChildDeviceOverviewCard extends StatelessWidget {
     final childEmail = data['childEmail'] as String?;
     final deviceName = data['deviceName'] as String?;
     final pairingCode = data['pairingCode'] as String?;
+    final lastReportDate = data['lastUsageReportDate'] as String?;
 
     final isPaired = pairingStatus == 'paired' || deviceStatus == 'connected';
     final ageText = age > 0 ? 'Age $age' : 'Age not set';
@@ -493,6 +686,7 @@ class ChildDeviceOverviewCard extends StatelessWidget {
                     'Child Email: ${childEmail ?? 'Not linked yet'}\n'
                     'Device Name: ${deviceName ?? 'Not available'}\n'
                     'Pairing Code: ${pairingCode ?? 'No active code'}\n'
+                    'Last Synced Report: ${lastReportDate ?? 'No report yet'}\n'
                     'Usage Data: $usageStatusText',
                     style: const TextStyle(color: _grayText, height: 1.35),
                   ),
