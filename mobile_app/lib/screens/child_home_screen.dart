@@ -20,9 +20,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
   static const Color darkText = Color(0xFF111827);
   static const Color grayText = Color(0xFF4B5563);
   static const Color pageBg = Color(0xFFF3F4F6);
-  static const Color softPurple = Color(0xFFF4F0FF);
   static const Color softGreen = Color(0xFFEAFBF0);
-  static const Color softOrange = Color(0xFFFFF4E5);
   static const Color softBlue = Color(0xFFEFF6FF);
   static const Color softRed = Color(0xFFFFEFEF);
 
@@ -234,9 +232,9 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
             textAlign: TextAlign.center,
             style: TextStyle(color: darkText, fontWeight: FontWeight.w900),
           ),
-          content: Column(
+          content: const Column(
             mainAxisSize: MainAxisSize.min,
-            children: const [
+            children: [
               CircleAvatar(
                 radius: 42,
                 backgroundColor: softGreen,
