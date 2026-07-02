@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'child_home_screen.dart';
 import 'parent_dashboard_screen.dart';
 import 'register_screen.dart';
 
@@ -30,7 +31,7 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
-  Future<void> loginParent() async {
+  Future<void> loginUser() async {
     final email = emailController.text.trim();
     final password = passwordController.text.trim();
 
@@ -54,20 +55,50 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
 
+      final userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+
+      if (!userDoc.exists) {
+        await FirebaseAuth.instance.signOut();
+
+        if (!mounted) return;
+
+        showMessage(
+          'Account role not found. Please register or set up the account role first.',
+        );
+        return;
+      }
+
+      final userData = userDoc.data();
+      final role = (userData?['role'] ?? '').toString().trim().toLowerCase();
+
       await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
-        'uid': user.uid,
-        'email': user.email,
-        'role': 'parent',
         'lastLoginAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
 
       if (!mounted) return;
 
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute(builder: (_) => const ParentDashboardScreen()),
-        (route) => false,
-      );
+      if (role == 'parent' || role == 'guardian') {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const ParentDashboardScreen()),
+          (route) => false,
+        );
+      } else if (role == 'child') {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const ChildHomeScreen()),
+          (route) => false,
+        );
+      } else {
+        await FirebaseAuth.instance.signOut();
+
+        if (!mounted) return;
+
+        showMessage('Invalid account role: $role');
+      }
     } on FirebaseAuthException catch (e) {
       showMessage(e.message ?? 'Invalid email or password.');
     } catch (e) {
@@ -87,6 +118,30 @@ class _LoginScreenState extends State<LoginScreen> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  Widget buildLogo() {
+    return Image.asset(
+      'assets/icons/wellscreen_icon.png',
+      width: 110,
+      height: 110,
+      fit: BoxFit.contain,
+      errorBuilder: (context, error, stackTrace) {
+        return Container(
+          width: 110,
+          height: 110,
+          decoration: BoxDecoration(
+            color: const Color(0xFFF4F0FF),
+            borderRadius: BorderRadius.circular(28),
+          ),
+          child: const Icon(
+            Icons.health_and_safety_rounded,
+            color: purple,
+            size: 58,
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -97,14 +152,7 @@ class _LoginScreenState extends State<LoginScreen> {
           children: [
             const SizedBox(height: 34),
 
-            Center(
-              child: Image.asset(
-                'assets/icons/wellscreen_icon.png',
-                width: 110,
-                height: 110,
-                fit: BoxFit.contain,
-              ),
-            ),
+            Center(child: buildLogo()),
 
             const SizedBox(height: 18),
 
@@ -169,7 +217,7 @@ class _LoginScreenState extends State<LoginScreen> {
             SizedBox(
               height: 54,
               child: FilledButton(
-                onPressed: isLoading ? null : loginParent,
+                onPressed: isLoading ? null : loginUser,
                 style: FilledButton.styleFrom(
                   backgroundColor: purple,
                   shape: RoundedRectangleBorder(
@@ -198,12 +246,16 @@ class _LoginScreenState extends State<LoginScreen> {
             const SizedBox(height: 18),
 
             TextButton(
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const RegisterScreen()),
-                );
-              },
+              onPressed: isLoading
+                  ? null
+                  : () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const RegisterScreen(),
+                        ),
+                      );
+                    },
               child: const Text(
                 'Create Parent / Guardian Account',
                 style: TextStyle(color: purple, fontWeight: FontWeight.w800),

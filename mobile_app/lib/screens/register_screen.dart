@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'child_home_screen.dart';
 import 'parent_dashboard_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
@@ -13,11 +14,14 @@ class RegisterScreen extends StatefulWidget {
 
 class _RegisterScreenState extends State<RegisterScreen> {
   static const Color purple = Color(0xFF5B2BBF);
+  static const Color darkText = Color(0xFF111827);
   static const Color grayText = Color(0xFF4B5563);
 
   final nameController = TextEditingController();
   final emailController = TextEditingController();
   final passwordController = TextEditingController();
+
+  String selectedRole = 'parent';
 
   bool isLoading = false;
   bool obscurePassword = true;
@@ -30,7 +34,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     super.dispose();
   }
 
-  Future<void> registerParent() async {
+  Future<void> registerUser() async {
     final fullName = nameController.text.trim();
     final email = emailController.text.trim();
     final password = passwordController.text.trim();
@@ -60,22 +64,47 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
       await user.updateDisplayName(fullName);
 
-      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+      final userData = <String, dynamic>{
         'uid': user.uid,
         'fullName': fullName,
         'email': email,
-        'role': 'parent',
+        'role': selectedRole,
         'createdAt': FieldValue.serverTimestamp(),
         'lastLoginAt': FieldValue.serverTimestamp(),
-      });
+      };
+
+      if (selectedRole == 'child') {
+        userData.addAll({
+          'pairingStatus': 'not_paired',
+          'pairedParentId': null,
+          'pairedChildProfileId': null,
+        });
+      }
+
+      if (selectedRole == 'parent') {
+        userData.addAll({'childrenCount': 0});
+      }
+
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .set(userData);
 
       if (!mounted) return;
 
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute(builder: (_) => const ParentDashboardScreen()),
-        (route) => false,
-      );
+      if (selectedRole == 'parent') {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const ParentDashboardScreen()),
+          (route) => false,
+        );
+      } else {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const ChildHomeScreen()),
+          (route) => false,
+        );
+      }
     } on FirebaseAuthException catch (e) {
       showMessage(e.message ?? 'Registration failed.');
     } catch (e) {
@@ -95,8 +124,18 @@ class _RegisterScreenState extends State<RegisterScreen> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  String get roleDescription {
+    if (selectedRole == 'parent') {
+      return 'This account will create child profiles, pair monitored Android devices, receive alerts, and configure restrictions.';
+    }
+
+    return 'This account will be used on the child device and can be connected to a parent account using a pairing code.';
+  }
+
   @override
   Widget build(BuildContext context) {
+    final isParent = selectedRole == 'parent';
+
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
@@ -105,26 +144,28 @@ class _RegisterScreenState extends State<RegisterScreen> {
           style: TextStyle(fontWeight: FontWeight.w800),
         ),
         backgroundColor: Colors.white,
-        foregroundColor: const Color(0xFF111827),
+        foregroundColor: darkText,
         elevation: 0,
       ),
       body: ListView(
         padding: const EdgeInsets.all(24),
         children: [
-          const Text(
-            'Create Parent / Guardian Account',
-            style: TextStyle(fontSize: 26, fontWeight: FontWeight.w900),
+          Text(
+            isParent
+                ? 'Create Parent / Guardian Account'
+                : 'Create Child Account',
+            style: const TextStyle(
+              fontSize: 26,
+              fontWeight: FontWeight.w900,
+              color: darkText,
+            ),
           ),
-
           const SizedBox(height: 8),
-
-          const Text(
-            'This account will be used to create child profiles, pair monitored Android devices, receive alerts, and configure restrictions.',
-            style: TextStyle(color: grayText, height: 1.4),
+          Text(
+            roleDescription,
+            style: const TextStyle(color: grayText, height: 1.4),
           ),
-
           const SizedBox(height: 28),
-
           TextField(
             controller: nameController,
             decoration: InputDecoration(
@@ -135,9 +176,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
               ),
             ),
           ),
-
           const SizedBox(height: 16),
-
           TextField(
             controller: emailController,
             keyboardType: TextInputType.emailAddress,
@@ -149,9 +188,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
               ),
             ),
           ),
-
           const SizedBox(height: 16),
-
           TextField(
             controller: passwordController,
             obscureText: obscurePassword,
@@ -173,27 +210,53 @@ class _RegisterScreenState extends State<RegisterScreen> {
               ),
             ),
           ),
-
           const SizedBox(height: 16),
-
-          TextField(
-            enabled: false,
+          DropdownButtonFormField<String>(
+            initialValue: selectedRole,
             decoration: InputDecoration(
               labelText: 'Role',
-              hintText: 'Parent / Guardian',
               prefixIcon: const Icon(Icons.family_restroom_rounded),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(14),
               ),
             ),
+            items: const [
+              DropdownMenuItem(
+                value: 'parent',
+                child: Text('Parent / Guardian'),
+              ),
+              DropdownMenuItem(value: 'child', child: Text('Child')),
+            ],
+            onChanged: isLoading
+                ? null
+                : (value) {
+                    if (value == null) return;
+                    setState(() => selectedRole = value);
+                  },
           ),
-
+          const SizedBox(height: 18),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF4F0FF),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Text(
+              selectedRole == 'parent'
+                  ? 'After registration, this account will open the Parent Dashboard.'
+                  : 'After registration, this account will open the Child Device Setup page where the pairing code can be entered.',
+              style: const TextStyle(
+                color: darkText,
+                height: 1.4,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
           const SizedBox(height: 26),
-
           SizedBox(
             height: 54,
             child: FilledButton(
-              onPressed: isLoading ? null : registerParent,
+              onPressed: isLoading ? null : registerUser,
               style: FilledButton.styleFrom(
                 backgroundColor: purple,
                 shape: RoundedRectangleBorder(
@@ -209,9 +272,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
                         color: Colors.white,
                       ),
                     )
-                  : const Text(
-                      'Create Account',
-                      style: TextStyle(
+                  : Text(
+                      isParent
+                          ? 'Create Parent Account'
+                          : 'Create Child Account',
+                      style: const TextStyle(
                         fontWeight: FontWeight.w800,
                         fontSize: 16,
                       ),

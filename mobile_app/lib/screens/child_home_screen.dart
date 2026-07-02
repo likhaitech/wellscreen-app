@@ -1,7 +1,8 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
-import '../services/pairing_service.dart';
+import 'login_screen.dart';
 
 class ChildHomeScreen extends StatefulWidget {
   const ChildHomeScreen({super.key});
@@ -11,269 +12,392 @@ class ChildHomeScreen extends StatefulWidget {
 }
 
 class _ChildHomeScreenState extends State<ChildHomeScreen> {
-  final _codeController = TextEditingController();
-  final _pairingService = PairingService();
+  static const Color purple = Color(0xFF5B2BBF);
+  static const Color darkText = Color(0xFF111827);
+  static const Color grayText = Color(0xFF4B5563);
+  static const Color softPurple = Color(0xFFF4F0FF);
 
-  bool _isConnecting = false;
-  bool _isConnected = false;
+  final pairingCodeController = TextEditingController();
+
+  bool isPairing = false;
 
   @override
   void dispose() {
-    _codeController.dispose();
+    pairingCodeController.dispose();
     super.dispose();
   }
 
-  Future<void> _connectToParent() async {
-    final code = _codeController.text.trim();
+  Future<void> pairWithParent() async {
+    final code = pairingCodeController.text.trim().replaceAll(' ', '');
+    final user = FirebaseAuth.instance.currentUser;
 
-    if (code.length != 6) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Please enter the 6-digit pairing code.'),
-        ),
-      );
+    if (user == null) {
+      showMessage('Please log in again.');
       return;
     }
 
-    setState(() {
-      _isConnecting = true;
-    });
+    if (code.length != 6) {
+      showMessage('Please enter a valid 6-digit pairing code.');
+      return;
+    }
+
+    setState(() => isPairing = true);
 
     try {
-      await _pairingService.connectChildWithPairingCode(code: code);
+      final firestore = FirebaseFirestore.instance;
 
-      if (!mounted) return;
+      final codeRef = firestore.collection('pairing_codes').doc(code);
+      final userRef = firestore.collection('users').doc(user.uid);
 
-      setState(() {
-        _isConnected = true;
+      await firestore.runTransaction((transaction) async {
+        final codeSnapshot = await transaction.get(codeRef);
+
+        if (!codeSnapshot.exists) {
+          throw Exception('Pairing code not found.');
+        }
+
+        final codeData = codeSnapshot.data() as Map<String, dynamic>;
+
+        final status = (codeData['status'] ?? '').toString();
+        final parentId = (codeData['parentId'] ?? '').toString();
+        final childProfileId = (codeData['childId'] ?? '').toString();
+        final expiresAt = codeData['expiresAt'];
+
+        if (status != 'active') {
+          throw Exception('This pairing code is no longer active.');
+        }
+
+        if (parentId.isEmpty || childProfileId.isEmpty) {
+          throw Exception('Invalid pairing code data.');
+        }
+
+        if (expiresAt is Timestamp) {
+          final expiryDate = expiresAt.toDate();
+          if (DateTime.now().isAfter(expiryDate)) {
+            throw Exception('This pairing code has expired.');
+          }
+        }
+
+        final childProfileRef = firestore
+            .collection('child_profiles')
+            .doc(childProfileId);
+
+        transaction.set(userRef, {
+          'uid': user.uid,
+          'email': user.email,
+          'fullName': user.displayName ?? 'Child User',
+          'role': 'child',
+          'pairingStatus': 'connected',
+          'pairedParentId': parentId,
+          'pairedChildProfileId': childProfileId,
+          'pairingCode': code,
+          'pairedAt': FieldValue.serverTimestamp(),
+          'lastLoginAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+
+        transaction.set(codeRef, {
+          'status': 'connected',
+          'childAccountId': user.uid,
+          'childEmail': user.email,
+          'connectedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+
+        transaction.set(childProfileRef, {
+          'childAccountId': user.uid,
+          'childEmail': user.email,
+          'pairingStatus': 'connected',
+          'connectedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
       });
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Child device connected to parent successfully.'),
-        ),
-      );
-    } catch (error) {
+      pairingCodeController.clear();
+
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Connection failed: $error'),
-        ),
-      );
+      showMessage('Child device connected to parent successfully.');
+    } catch (e) {
+      final message = e.toString().replaceFirst('Exception: ', '');
+      showMessage(message);
     } finally {
       if (mounted) {
-        setState(() {
-          _isConnecting = false;
-        });
+        setState(() => isPairing = false);
       }
     }
   }
 
+  Future<void> logout() async {
+    await FirebaseAuth.instance.signOut();
+
+    if (!mounted) return;
+
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (_) => const LoginScreen()),
+      (route) => false,
+    );
+  }
+
+  void showMessage(String message) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
   @override
   Widget build(BuildContext context) {
-    const purple = Color(0xFF5B2BBF);
-    const darkText = Color(0xFF111827);
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      return Scaffold(
+        backgroundColor: Colors.white,
+        body: Center(
+          child: FilledButton(
+            onPressed: () {
+              Navigator.pushAndRemoveUntil(
+                context,
+                MaterialPageRoute(builder: (_) => const LoginScreen()),
+                (route) => false,
+              );
+            },
+            child: const Text('Return to Login'),
+          ),
+        ),
+      );
+    }
 
     return Scaffold(
       backgroundColor: Colors.white,
-      body: SafeArea(
-        child: Column(
-          children: [
-            Container(
-              height: 58,
-              padding: const EdgeInsets.symmetric(horizontal: 18),
-              color: purple,
-              child: const Row(
-                children: [
-                  Icon(
-                    Icons.health_and_safety_rounded,
-                    color: Colors.white,
-                    size: 32,
-                  ),
-                  SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      'WellScreen',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 21,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ),
-                  Icon(
-                    Icons.notifications_none_rounded,
-                    color: Colors.white,
-                    size: 28,
-                  ),
-                ],
+      appBar: AppBar(
+        title: const Text(
+          'Child Device',
+          style: TextStyle(fontWeight: FontWeight.w800),
+        ),
+        backgroundColor: Colors.white,
+        foregroundColor: darkText,
+        elevation: 0,
+        actions: [
+          IconButton(
+            tooltip: 'Logout',
+            icon: const Icon(Icons.logout_rounded),
+            onPressed: logout,
+          ),
+        ],
+      ),
+      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+        stream: FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .snapshots(),
+        builder: (context, snapshot) {
+          final data = snapshot.data?.data() ?? {};
+
+          final fullName =
+              (data['fullName'] ?? user.displayName ?? 'Child User').toString();
+
+          final email = (data['email'] ?? user.email ?? '').toString();
+
+          final pairingStatus = (data['pairingStatus'] ?? 'not_paired')
+              .toString();
+
+          final isConnected =
+              pairingStatus == 'connected' ||
+              data['pairedParentId'] != null ||
+              data['pairedChildProfileId'] != null;
+
+          return ListView(
+            padding: const EdgeInsets.all(24),
+            children: [
+              Text(
+                'Hello, $fullName',
+                style: const TextStyle(
+                  color: darkText,
+                  fontSize: 26,
+                  fontWeight: FontWeight.w900,
+                ),
               ),
-            ),
-            Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(24, 44, 24, 24),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 430),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Icon(
-                          _isConnected
-                              ? Icons.verified_rounded
-                              : Icons.phone_android_rounded,
-                          color: purple,
-                          size: 78,
-                        ),
-                        const SizedBox(height: 18),
-                        Text(
-                          _isConnected
-                              ? 'Connected to Parent'
-                              : 'Connect to Parent',
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            color: darkText,
-                            fontSize: 32,
-                            fontWeight: FontWeight.w900,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          _isConnected
-                              ? 'This child device is now paired with a parent account.'
-                              : 'Enter the 6 digit code shown on the parent device.',
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            color: Color(0xFF4B5563),
-                            fontSize: 17,
-                            height: 1.3,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        const SizedBox(height: 30),
-                        TextField(
-                          controller: _codeController,
-                          enabled: !_isConnecting && !_isConnected,
-                          textAlign: TextAlign.center,
-                          keyboardType: TextInputType.number,
-                          maxLength: 6,
-                          inputFormatters: [
-                            FilteringTextInputFormatter.digitsOnly,
-                          ],
-                          style: const TextStyle(
-                            color: darkText,
-                            fontSize: 28,
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: 8,
-                          ),
-                          decoration: InputDecoration(
-                            counterText: '',
-                            hintText: '000000',
-                            hintStyle: const TextStyle(
-                              color: Color(0xFF9CA3AF),
-                              letterSpacing: 8,
-                            ),
-                            filled: true,
-                            fillColor: const Color(0xFFF9FAFB),
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 18,
-                              vertical: 18,
-                            ),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(14),
-                              borderSide: const BorderSide(
-                                color: Color(0xFF111827),
-                              ),
-                            ),
-                            focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(14),
-                              borderSide: const BorderSide(
-                                color: purple,
-                                width: 2,
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 22),
-                        SizedBox(
-                          height: 52,
-                          child: FilledButton(
-                            onPressed: _isConnecting || _isConnected
-                                ? null
-                                : _connectToParent,
-                            style: FilledButton.styleFrom(
-                              backgroundColor: purple,
-                              disabledBackgroundColor: const Color(0xFFC4B5FD),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(14),
-                              ),
-                            ),
-                            child: _isConnecting
-                                ? const SizedBox(
-                              height: 22,
-                              width: 22,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white,
-                              ),
-                            )
-                                : Text(
-                              _isConnected
-                                  ? 'Connected'
-                                  : 'Connect to Parent',
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 32),
-                        Container(
-                          padding: const EdgeInsets.all(22),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF1ECFF),
-                            borderRadius: BorderRadius.circular(28),
-                          ),
-                          child: const Column(
-                            children: [
-                              Icon(
-                                Icons.lock_person_rounded,
-                                color: purple,
-                                size: 62,
-                              ),
-                              SizedBox(height: 14),
-                              Text(
-                                'Secure parent-child setup',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  color: darkText,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                              SizedBox(height: 6),
-                              Text(
-                                'The code must come from the parent device before this child account can connect.',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  color: Color(0xFF6B7280),
-                                  fontSize: 13,
-                                  height: 1.35,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
+              const SizedBox(height: 6),
+              Text(
+                email,
+                style: const TextStyle(
+                  color: purple,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'This page is used to connect the child account or child device to a parent account using a pairing code.',
+                style: TextStyle(color: grayText, height: 1.4),
+              ),
+              const SizedBox(height: 24),
+              if (isConnected) _buildConnectedView() else _buildPairingView(),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildPairingView() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(22),
+          decoration: BoxDecoration(
+            color: softPurple,
+            borderRadius: BorderRadius.circular(22),
+          ),
+          child: Column(
+            children: [
+              const Icon(Icons.link_rounded, color: purple, size: 74),
+              const SizedBox(height: 14),
+              const Text(
+                'Connect to Parent',
+                style: TextStyle(
+                  color: darkText,
+                  fontSize: 21,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Enter the 6-digit pairing code generated from the parent account.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: grayText, height: 1.4),
+              ),
+              const SizedBox(height: 18),
+              TextField(
+                controller: pairingCodeController,
+                keyboardType: TextInputType.number,
+                maxLength: 6,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 6,
+                ),
+                decoration: InputDecoration(
+                  counterText: '',
+                  hintText: '000000',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
                   ),
                 ),
               ),
-            ),
-          ],
+              const SizedBox(height: 18),
+              SizedBox(
+                height: 52,
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: isPairing ? null : pairWithParent,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: purple,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                  icon: const Icon(Icons.check_circle_rounded),
+                  label: Text(
+                    isPairing ? 'Connecting...' : 'Pair Device',
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _infoCard(
+          icon: Icons.privacy_tip_rounded,
+          title: 'Privacy Reminder',
+          subtitle:
+              'WellScreen connects usage-related monitoring only. It does not read private messages, passwords, calls, or sensitive files.',
+          iconColor: purple,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildConnectedView() {
+    return Column(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(22),
+          decoration: BoxDecoration(
+            color: softPurple,
+            borderRadius: BorderRadius.circular(22),
+          ),
+          child: const Column(
+            children: [
+              Icon(Icons.verified_rounded, color: Colors.green, size: 78),
+              SizedBox(height: 14),
+              Text(
+                'Connected to Parent',
+                style: TextStyle(
+                  color: darkText,
+                  fontSize: 22,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              SizedBox(height: 8),
+              Text(
+                'This child account is already linked to a parent account for monitoring and digital wellness guidance.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: grayText, height: 1.4),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _infoCard(
+          icon: Icons.timer_rounded,
+          title: 'Today’s Goal',
+          subtitle: 'Stay within the screen-time goal set by the parent.',
+          iconColor: purple,
+        ),
+        _infoCard(
+          icon: Icons.self_improvement_rounded,
+          title: 'Focus Status',
+          subtitle: 'Focus mode and cooldown reminders will appear here.',
+          iconColor: Colors.orange,
+        ),
+        _infoCard(
+          icon: Icons.sync_rounded,
+          title: 'Sync Status',
+          subtitle:
+              'Usage records will sync to the parent dashboard when internet is available.',
+          iconColor: Colors.green,
+        ),
+      ],
+    );
+  }
+
+  Widget _infoCard({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required Color iconColor,
+  }) {
+    return Card(
+      elevation: 2,
+      shadowColor: Colors.black12,
+      margin: const EdgeInsets.only(bottom: 14),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: ListTile(
+        contentPadding: const EdgeInsets.all(18),
+        leading: Icon(icon, color: iconColor, size: 34),
+        title: Text(
+          title,
+          style: const TextStyle(color: darkText, fontWeight: FontWeight.w900),
+        ),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Text(
+            subtitle,
+            style: const TextStyle(color: grayText, height: 1.4),
+          ),
         ),
       ),
     );
