@@ -3,6 +3,9 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../services/firestore_usage_report_sync_service.dart';
+import '../services/usage_tracking_service.dart';
+
 class ChildHomeScreen extends StatefulWidget {
   const ChildHomeScreen({super.key});
 
@@ -18,7 +21,13 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
 
   final TextEditingController pairingCodeController = TextEditingController();
 
+  final FirestoreUsageReportSyncService _usageReportSyncService =
+      FirestoreUsageReportSyncService();
+  final UsageTrackingService _usageTrackingService = UsageTrackingService();
+
   bool isPairing = false;
+  bool isSyncingUsageReport = false;
+  String? lastSyncStatusMessage;
 
   @override
   void dispose() {
@@ -138,6 +147,58 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
       if (mounted) {
         setState(() => isPairing = false);
       }
+    }
+  }
+
+  Future<void> syncTodayUsageReport() async {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      showMessage('Please log in again before syncing usage reports.');
+      return;
+    }
+
+    setState(() {
+      isSyncingUsageReport = true;
+      lastSyncStatusMessage = 'Syncing today’s usage report...';
+    });
+
+    try {
+      final result = await _usageReportSyncService.syncTodayUsageReport();
+
+      final message =
+          'Usage report synced: ${result.report.totalUsageLabel} for ${result.reportDate}.';
+
+      if (!mounted) return;
+
+      setState(() {
+        lastSyncStatusMessage = '$message\nSaved to: ${result.reportPath}';
+      });
+
+      showMessage(message);
+    } catch (e) {
+      final message = _cleanErrorMessage(e);
+
+      if (!mounted) return;
+
+      setState(() {
+        lastSyncStatusMessage = message;
+      });
+
+      showMessage(message);
+    } finally {
+      if (mounted) {
+        setState(() => isSyncingUsageReport = false);
+      }
+    }
+  }
+
+  Future<void> openUsageAccessSettings() async {
+    try {
+      await _usageTrackingService.openUsageAccessSettings();
+      showMessage('Enable Usage Access for WellScreen, then return to sync.');
+    } catch (e) {
+      showMessage(_cleanErrorMessage(e));
     }
   }
 
@@ -371,6 +432,13 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
             )
           else
             _buildDeviceAndRulesSection(user.uid),
+          const SizedBox(height: 16),
+          UsageSyncCard(
+            isSyncing: isSyncingUsageReport,
+            lastSyncMessage: lastSyncStatusMessage,
+            onSync: user == null ? null : syncTodayUsageReport,
+            onOpenUsageAccess: openUsageAccessSettings,
+          ),
         ],
       ),
     );
@@ -378,6 +446,95 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
 
   String _formatStatus(String value) {
     return value.replaceAll('_', ' ').toUpperCase();
+  }
+}
+
+class UsageSyncCard extends StatelessWidget {
+  const UsageSyncCard({
+    super.key,
+    required this.isSyncing,
+    required this.lastSyncMessage,
+    required this.onSync,
+    required this.onOpenUsageAccess,
+  });
+
+  final bool isSyncing;
+  final String? lastSyncMessage;
+  final Future<void> Function()? onSync;
+  final Future<void> Function() onOpenUsageAccess;
+
+  static const Color purple = Color(0xFF5B2BBF);
+  static const Color darkText = Color(0xFF111827);
+  static const Color grayText = Color(0xFF4B5563);
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 1.5,
+      shadowColor: Colors.black12,
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.cloud_upload_rounded, color: purple, size: 34),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Usage Report Sync',
+                    style: TextStyle(
+                      color: darkText,
+                      fontWeight: FontWeight.w900,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              lastSyncMessage ??
+                  'Sync today’s child-device usage report to the parent account.',
+              style: const TextStyle(color: grayText, height: 1.4),
+            ),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: isSyncing || onSync == null ? null : () => onSync!(),
+                style: FilledButton.styleFrom(
+                  backgroundColor: purple,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
+                icon: const Icon(Icons.sync_rounded),
+                label: Text(
+                  isSyncing ? 'Syncing...' : 'Sync Usage Report',
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () => onOpenUsageAccess(),
+                icon: const Icon(Icons.settings_rounded),
+                label: const Text(
+                  'Open Usage Access Settings',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
