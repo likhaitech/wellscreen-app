@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">WellScreen</string>
+    <string name="wellscreen_accessibility_description">WellScreen uses accessibility access to detect when a restricted app is opened and show a restriction screen based on parent rules.</string>
+</resources>

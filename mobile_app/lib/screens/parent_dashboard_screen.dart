@@ -8,7 +8,7 @@ import 'device_pairing_screen.dart';
 import 'gps_map_screen.dart';
 import 'login_screen.dart';
 import 'profile_settings_screen.dart';
-import 'rule_settings_screen.dart';
+import 'rules/rules_screen.dart';
 import 'usage_summary_screen.dart';
 
 class ParentDashboardScreen extends StatefulWidget {
@@ -164,6 +164,15 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     );
   }
 
+  void openRulesScreen() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const RulesScreen(),
+      ),
+    );
+  }
+
   void handleBottomNavTap(int index) {
     if (index == 0) {
       setState(() => currentIndex = 0);
@@ -189,8 +198,8 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
   }
 
   Map<String, dynamic>? getPrimaryChild(
-    List<QueryDocumentSnapshot<Map<String, dynamic>>> childDocs,
-  ) {
+      List<QueryDocumentSnapshot<Map<String, dynamic>>> childDocs,
+      ) {
     if (childDocs.isEmpty) return null;
 
     for (final doc in childDocs) {
@@ -214,7 +223,7 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
               Navigator.pushAndRemoveUntil(
                 context,
                 MaterialPageRoute(builder: (_) => const LoginScreen()),
-                (route) => false,
+                    (route) => false,
               );
             },
             child: const Text('Return to Login'),
@@ -359,87 +368,73 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
           padding: const EdgeInsets.all(18),
           child: compact
               ? Column(
-                  children: [
-                    Row(
-                      children: [
-                        _profileAvatar(connected),
-                        const SizedBox(width: 14),
-                        Expanded(
-                          child: _profileInfo(
-                            childName: childName,
-                            childEmail: childEmail,
-                            connected: connected,
-                          ),
-                        ),
-                      ],
+            children: [
+              Row(
+                children: [
+                  _profileAvatar(connected),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: _profileInfo(
+                      childName: childName,
+                      childEmail: childEmail,
+                      connected: connected,
                     ),
-                    const SizedBox(height: 14),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _smallPurpleButton(
-                            label: 'View Map',
-                            onTap: () => openGpsMap(child),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: _smallPurpleButton(
-                            label: 'View Rules',
-                            onTap: () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => const RuleSettingsScreen(),
-                                ),
-                              );
-                            },
-                          ),
-                        ),
-                      ],
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  Expanded(
+                    child: _smallPurpleButton(
+                      label: 'View Map',
+                      onTap: () => openGpsMap(child),
                     ),
-                  ],
-                )
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _smallPurpleButton(
+                      label: 'View Rules',
+                      onTap: openRulesScreen,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          )
               : Row(
-                  children: [
-                    _profileAvatar(connected),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: _profileInfo(
-                        childName: childName,
-                        childEmail: childEmail,
-                        connected: connected,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Column(
-                      children: [
-                        SizedBox(
-                          width: 130,
-                          child: _smallPurpleButton(
-                            label: 'View Map',
-                            onTap: () => openGpsMap(child),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        SizedBox(
-                          width: 130,
-                          child: _smallPurpleButton(
-                            label: 'View Rules',
-                            onTap: () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => const RuleSettingsScreen(),
-                                ),
-                              );
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
+            children: [
+              _profileAvatar(connected),
+              const SizedBox(width: 16),
+              Expanded(
+                child: _profileInfo(
+                  childName: childName,
+                  childEmail: childEmail,
+                  connected: connected,
                 ),
+              ),
+              const SizedBox(width: 12),
+              Column(
+                children: [
+                  SizedBox(
+                    width: 130,
+                    child: _smallPurpleButton(
+                      label: 'View Map',
+                      onTap: () => openGpsMap(child),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: 130,
+                    child: _smallPurpleButton(
+                      label: 'View Rules',
+                      onTap: openRulesScreen,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
         );
       },
     );
@@ -466,7 +461,7 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          connected ? '$childName’s Phone' : childName,
+          connected ? "$childName's Phone" : childName,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(
@@ -489,7 +484,7 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
             const SizedBox(width: 7),
             Expanded(
               child: Text(
-                connected ? 'Online • $childEmail' : 'Waiting for pairing',
+                connected ? 'Online - $childEmail' : 'Waiting for pairing',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
@@ -872,8 +867,8 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     return _whiteCard(
       child: Column(
         children: [
-          Row(
-            children: const [
+          const Row(
+            children: [
               Expanded(
                 child: Text(
                   'Weekly Trend',
