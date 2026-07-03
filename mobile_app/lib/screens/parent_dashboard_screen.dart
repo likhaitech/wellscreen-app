@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../widgets/wellscreen_bottom_nav.dart';
 import 'alerts_reports_screen.dart';
 import 'device_pairing_screen.dart';
+import 'gps_map_screen.dart';
 import 'login_screen.dart';
 import 'profile_settings_screen.dart';
 import 'rule_settings_screen.dart';
@@ -26,6 +27,9 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
   static const Color pageBg = Color(0xFFF3F4F6);
   static const Color softGreen = Color(0xFFEAFBF0);
   static const Color softBlue = Color(0xFFEFF6FF);
+
+  static const double cebuLatitude = 10.31570;
+  static const double cebuLongitude = 123.88540;
 
   int currentIndex = 0;
 
@@ -61,29 +65,70 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     return 'Not available';
   }
 
-  String locationText(Map<String, dynamic>? data) {
-    if (data == null) return 'Not shared yet';
+  Map<String, dynamic>? latestLocation(Map<String, dynamic>? data) {
+    if (data == null) return null;
 
     final latestLocation = data['latestLocation'];
 
-    if (latestLocation is Map) {
-      final latitude = latestLocation['latitude'];
-      final longitude = latestLocation['longitude'];
-
-      if (latitude != null && longitude != null) {
-        return '${formatCoordinate(latitude)}, ${formatCoordinate(longitude)}';
-      }
+    if (latestLocation is Map<String, dynamic>) {
+      return latestLocation;
     }
 
-    return 'Not shared yet';
+    if (latestLocation is Map) {
+      return Map<String, dynamic>.from(latestLocation);
+    }
+
+    return null;
   }
 
-  String formatCoordinate(dynamic value) {
-    if (value is num) {
-      return value.toStringAsFixed(5);
+  bool hasSharedLocation(Map<String, dynamic>? data) {
+    final location = latestLocation(data);
+
+    if (location == null) return false;
+
+    return location['latitude'] != null && location['longitude'] != null;
+  }
+
+  double locationLatitude(Map<String, dynamic>? data) {
+    final location = latestLocation(data);
+    final latitude = location?['latitude'];
+
+    if (latitude is num) {
+      return latitude.toDouble();
     }
 
-    return value.toString();
+    return cebuLatitude;
+  }
+
+  double locationLongitude(Map<String, dynamic>? data) {
+    final location = latestLocation(data);
+    final longitude = location?['longitude'];
+
+    if (longitude is num) {
+      return longitude.toDouble();
+    }
+
+    return cebuLongitude;
+  }
+
+  String locationText(Map<String, dynamic>? data) {
+    final location = latestLocation(data);
+
+    if (location == null) return 'No shared GPS yet';
+
+    final label = location['label'];
+    final latitude = location['latitude'];
+    final longitude = location['longitude'];
+
+    if (label != null && label.toString().isNotEmpty) {
+      return label.toString();
+    }
+
+    if (latitude is num && longitude is num) {
+      return '${latitude.toStringAsFixed(5)}, ${longitude.toStringAsFixed(5)}';
+    }
+
+    return 'No shared GPS yet';
   }
 
   String locationUpdatedText(Map<String, dynamic>? data) {
@@ -96,6 +141,27 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     }
 
     return 'Waiting for update';
+  }
+
+  void openGpsMap(Map<String, dynamic>? child) {
+    final latitude = locationLatitude(child);
+    final longitude = locationLongitude(child);
+    final label = hasSharedLocation(child)
+        ? locationText(child)
+        : 'Cebu City, Philippines preview';
+    final updatedAt = locationUpdatedText(child);
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => GpsMapScreen(
+          latitude: latitude,
+          longitude: longitude,
+          label: label,
+          updatedAt: updatedAt,
+        ),
+      ),
+    );
   }
 
   void handleBottomNavTap(int index) {
@@ -175,7 +241,7 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                 const SizedBox(height: 22),
                 _screenTimeAndRiskSection(),
                 const SizedBox(height: 18),
-                _gpsCard(primaryChild),
+                _gpsMapCard(primaryChild),
                 const SizedBox(height: 22),
                 _topAppsSection(),
                 const SizedBox(height: 22),
@@ -312,12 +378,8 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                       children: [
                         Expanded(
                           child: _smallPurpleButton(
-                            label: 'View Location',
-                            onTap: () {
-                              showMessage(
-                                'GPS Location: ${locationText(child)}',
-                              );
-                            },
+                            label: 'View Map',
+                            onTap: () => openGpsMap(child),
                           ),
                         ),
                         const SizedBox(width: 10),
@@ -355,12 +417,8 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                         SizedBox(
                           width: 130,
                           child: _smallPurpleButton(
-                            label: 'View Location',
-                            onTap: () {
-                              showMessage(
-                                'GPS Location: ${locationText(child)}',
-                              );
-                            },
+                            label: 'View Map',
+                            onTap: () => openGpsMap(child),
                           ),
                         ),
                         const SizedBox(height: 8),
@@ -605,63 +663,75 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     );
   }
 
-  Widget _gpsCard(Map<String, dynamic>? child) {
+  Widget _gpsMapCard(Map<String, dynamic>? child) {
     final location = locationText(child);
     final updated = locationUpdatedText(child);
+    final hasLocation = hasSharedLocation(child);
+    final latitude = locationLatitude(child);
+    final longitude = locationLongitude(child);
 
     return _whiteCard(
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 58,
-            height: 58,
-            decoration: BoxDecoration(
-              color: softGreen,
-              borderRadius: BorderRadius.circular(18),
-            ),
-            child: const Icon(Icons.location_on_rounded, color: teal, size: 34),
+          Row(
+            children: [
+              const CircleAvatar(
+                radius: 28,
+                backgroundColor: softGreen,
+                child: Icon(Icons.location_on_rounded, color: teal, size: 34),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'GPS Location Map',
+                      style: TextStyle(
+                        color: darkText,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 19,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      hasLocation ? location : 'Waiting for child GPS update',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: grayText,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Updated: $updated',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: grayText, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                onPressed: () => openGpsMap(child),
+                icon: const Icon(
+                  Icons.open_in_full_rounded,
+                  color: purple,
+                  size: 28,
+                ),
+              ),
+            ],
           ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'GPS Location',
-                  style: TextStyle(
-                    color: darkText,
-                    fontWeight: FontWeight.w900,
-                    fontSize: 18,
-                  ),
-                ),
-                const SizedBox(height: 5),
-                Text(
-                  location,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: grayText,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  'Updated: $updated',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: grayText, fontSize: 12),
-                ),
-              ],
-            ),
-          ),
-          IconButton(
-            onPressed: () {
-              showMessage('GPS Location: $location');
-            },
-            icon: const Icon(
-              Icons.my_location_rounded,
-              color: purple,
-              size: 30,
+          const SizedBox(height: 14),
+          InkWell(
+            borderRadius: BorderRadius.circular(22),
+            onTap: () => openGpsMap(child),
+            child: GpsMapPreview(
+              latitude: latitude,
+              longitude: longitude,
+              hasLocation: hasLocation,
             ),
           ),
         ],
@@ -883,13 +953,5 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
       ),
       child: child,
     );
-  }
-
-  void showMessage(String message) {
-    if (!mounted) return;
-
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
   }
 }
