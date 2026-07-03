@@ -2,6 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../models/app_rule.dart';
+import '../services/app_rules_service.dart';
 import '../widgets/wellscreen_bottom_nav.dart';
 import 'login_screen.dart';
 import 'profile_settings_screen.dart';
@@ -24,6 +26,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
   static const Color softBlue = Color(0xFFEFF6FF);
   static const Color softRed = Color(0xFFFFEFEF);
 
+  final AppRulesService _rulesService = AppRulesService();
   final pairingCodeController = TextEditingController();
 
   int currentIndex = 0;
@@ -342,6 +345,52 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
         data['pairedChildProfileId'] != null;
   }
 
+  String appTitle(AppRule rule) {
+    final name = rule.appName.trim();
+
+    if (name.isNotEmpty) {
+      return name;
+    }
+
+    return rule.packageName.trim().isNotEmpty
+        ? rule.packageName
+        : 'Unknown App';
+  }
+
+  IconData appIconForName(String name) {
+    final lower = name.toLowerCase();
+
+    if (lower.contains('youtube')) {
+      return Icons.play_arrow_rounded;
+    }
+
+    if (lower.contains('tiktok') || lower.contains('music')) {
+      return Icons.music_note_rounded;
+    }
+
+    if (lower.contains('facebook') || lower.contains('meta')) {
+      return Icons.public_rounded;
+    }
+
+    if (lower.contains('game') ||
+        lower.contains('mobile legends') ||
+        lower.contains('roblox')) {
+      return Icons.sports_esports_rounded;
+    }
+
+    if (lower.contains('chrome') ||
+        lower.contains('browser') ||
+        lower.contains('google')) {
+      return Icons.language_rounded;
+    }
+
+    if (lower.contains('message') || lower.contains('chat')) {
+      return Icons.chat_bubble_rounded;
+    }
+
+    return Icons.apps_rounded;
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
@@ -388,6 +437,8 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
                 _screenTimeAndRiskSection(),
                 const SizedBox(height: 18),
                 _gpsCard(data, connected),
+                if (connected) const SizedBox(height: 22),
+                if (connected) _activeRulesCard(data),
                 const SizedBox(height: 22),
                 _topAppsSection(),
                 const SizedBox(height: 22),
@@ -613,7 +664,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          '$fullName’s Phone',
+          "$fullName's Phone",
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(
@@ -636,7 +687,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
             const SizedBox(width: 7),
             Expanded(
               child: Text(
-                connected ? 'Online • $email' : 'Waiting for parent pairing',
+                connected ? 'Online - $email' : 'Waiting for parent pairing',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
@@ -951,6 +1002,365 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
                   : Icons.my_location_rounded,
               color: connected ? purple : grayText,
               size: 30,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _activeRulesCard(Map<String, dynamic> data) {
+    final parentId = (data['pairedParentId'] ?? '').toString();
+
+    if (parentId.isEmpty) {
+      return _rulesMessageCard(
+        icon: Icons.sync_problem_rounded,
+        title: 'Rules Sync Waiting',
+        message:
+            'The parent account is connected, but the rule source is not ready yet.',
+      );
+    }
+
+    return StreamBuilder<List<AppRule>>(
+      stream: _rulesService.watchRulesForParent(parentId),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return _rulesMessageCard(
+            icon: Icons.warning_rounded,
+            title: 'Rules Sync Error',
+            message: 'Unable to load monitored and restricted apps right now.',
+          );
+        }
+
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return _whiteCard(
+            child: const Row(
+              children: [
+                SizedBox(
+                  width: 34,
+                  height: 34,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 3,
+                    color: purple,
+                  ),
+                ),
+                SizedBox(width: 14),
+                Expanded(
+                  child: Text(
+                    'Loading parent app rules...',
+                    style: TextStyle(
+                      color: grayText,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+
+        final rules = snapshot.data ?? <AppRule>[];
+
+        final activeRules =
+            rules
+                .where((rule) => rule.monitorEnabled || rule.restrictEnabled)
+                .toList()
+              ..sort(
+                (a, b) => appTitle(
+                  a,
+                ).toLowerCase().compareTo(appTitle(b).toLowerCase()),
+              );
+
+        final monitoredCount = activeRules
+            .where((rule) => rule.monitorEnabled)
+            .length;
+
+        final restrictedCount = activeRules
+            .where((rule) => rule.restrictEnabled)
+            .length;
+
+        final restrictedRules = activeRules
+            .where((rule) => rule.restrictEnabled)
+            .toList();
+
+        final monitoredOnlyRules = activeRules
+            .where((rule) => rule.monitorEnabled && !rule.restrictEnabled)
+            .toList();
+
+        if (activeRules.isEmpty) {
+          return _rulesMessageCard(
+            icon: Icons.rule_folder_rounded,
+            title: 'No Active App Rules',
+            message:
+                'When the parent selects Monitor or Restrict in View Rules, the apps will appear here.',
+          );
+        }
+
+        return _whiteCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 52,
+                    height: 52,
+                    decoration: BoxDecoration(
+                      color: softBlue,
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                    child: const Icon(
+                      Icons.admin_panel_settings_rounded,
+                      color: purple,
+                      size: 31,
+                    ),
+                  ),
+                  const SizedBox(width: 13),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Parent App Rules',
+                          style: TextStyle(
+                            color: darkText,
+                            fontSize: 19,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        SizedBox(height: 3),
+                        Text(
+                          'Synced from parent dashboard',
+                          style: TextStyle(
+                            color: grayText,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: _ruleCountBadge(
+                      label: 'Monitored',
+                      count: monitoredCount,
+                      icon: Icons.visibility_rounded,
+                      color: const Color(0xFF2563EB),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _ruleCountBadge(
+                      label: 'Restricted',
+                      count: restrictedCount,
+                      icon: Icons.block_rounded,
+                      color: const Color(0xFFDC2626),
+                    ),
+                  ),
+                ],
+              ),
+              if (restrictedRules.isNotEmpty) const SizedBox(height: 18),
+              if (restrictedRules.isNotEmpty)
+                _appRuleGroup(
+                  title: 'Restricted Apps',
+                  rules: restrictedRules,
+                  color: const Color(0xFFDC2626),
+                  icon: Icons.block_rounded,
+                ),
+              if (monitoredOnlyRules.isNotEmpty) const SizedBox(height: 18),
+              if (monitoredOnlyRules.isNotEmpty)
+                _appRuleGroup(
+                  title: 'Monitored Apps',
+                  rules: monitoredOnlyRules,
+                  color: const Color(0xFF2563EB),
+                  icon: Icons.visibility_rounded,
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _rulesMessageCard({
+    required IconData icon,
+    required String title,
+    required String message,
+  }) {
+    return _whiteCard(
+      child: Row(
+        children: [
+          Container(
+            width: 54,
+            height: 54,
+            decoration: BoxDecoration(
+              color: softBlue,
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: Icon(icon, color: purple, size: 31),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: darkText,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  message,
+                  style: const TextStyle(
+                    color: grayText,
+                    height: 1.35,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _ruleCountBadge({
+    required String label,
+    required int count,
+    required IconData icon,
+    required Color color,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 13),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: color.withValues(alpha: 0.18)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 23),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '$count $label',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: color, fontWeight: FontWeight.w900),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _appRuleGroup({
+    required String title,
+    required List<AppRule> rules,
+    required Color color,
+    required IconData icon,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(icon, color: color, size: 23),
+            const SizedBox(width: 7),
+            Text(
+              title,
+              style: TextStyle(
+                color: color,
+                fontSize: 17,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        ...rules.map((rule) => _appRuleRow(rule)),
+      ],
+    );
+  }
+
+  Widget _appRuleRow(AppRule rule) {
+    final name = appTitle(rule);
+    final restricted = rule.restrictEnabled;
+    final color = restricted
+        ? const Color(0xFFDC2626)
+        : const Color(0xFF2563EB);
+
+    final status = restricted
+        ? rule.monitorEnabled
+              ? 'Blocked + Monitored'
+              : 'Blocked'
+        : 'Monitored';
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(13),
+      decoration: BoxDecoration(
+        color: pageBg,
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 23,
+            backgroundColor: color,
+            child: Icon(appIconForName(name), color: Colors.white, size: 26),
+          ),
+          const SizedBox(width: 13),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: darkText,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  rule.packageName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: grayText,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(30),
+            ),
+            child: Text(
+              status,
+              style: TextStyle(
+                color: color,
+                fontSize: 11,
+                fontWeight: FontWeight.w900,
+              ),
             ),
           ),
         ],
