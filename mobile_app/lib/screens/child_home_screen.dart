@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../services/accessibility_service_status_service.dart';
 import '../services/firestore_usage_report_sync_service.dart';
 import '../services/usage_tracking_service.dart';
 
@@ -25,21 +26,27 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   final FirestoreUsageReportSyncService _usageReportSyncService =
       FirestoreUsageReportSyncService();
   final UsageTrackingService _usageTrackingService = UsageTrackingService();
+  final AccessibilityServiceStatusService _accessibilityStatusService =
+      AccessibilityServiceStatusService();
 
   bool isPairing = false;
   bool isSyncingUsageReport = false;
   String? lastSyncStatusMessage;
 
-  // Task 1: Usage-access permission status.
-  // null = still checking, true = granted, false = missing.
+  // Usage-access permission status.
   bool? hasUsageAccess;
   bool isCheckingUsageAccess = false;
+
+  // Accessibility service status.
+  bool? hasAccessibilityAccess;
+  bool isCheckingAccessibilityAccess = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _checkUsagePermission();
+    _checkAccessibilityPermission();
   }
 
   @override
@@ -51,10 +58,9 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Re-check permission when the user returns to the app, e.g. after
-    // granting Usage Access in Android system settings.
     if (state == AppLifecycleState.resumed) {
       _checkUsagePermission();
+      _checkAccessibilityPermission();
     }
   }
 
@@ -73,9 +79,27 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     } catch (e) {
       if (!mounted) return;
 
+      setState(() => isCheckingUsageAccess = false);
+    }
+  }
+
+  Future<void> _checkAccessibilityPermission() async {
+    setState(() => isCheckingAccessibilityAccess = true);
+
+    try {
+      final granted = await _accessibilityStatusService
+          .isAccessibilityServiceEnabled();
+
+      if (!mounted) return;
+
       setState(() {
-        isCheckingUsageAccess = false;
+        hasAccessibilityAccess = granted;
+        isCheckingAccessibilityAccess = false;
       });
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() => isCheckingAccessibilityAccess = false);
     }
   }
 
@@ -241,6 +265,17 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     try {
       await _usageTrackingService.openUsageAccessSettings();
       showMessage('Enable Usage Access for WellScreen, then return to sync.');
+    } catch (e) {
+      showMessage(_cleanErrorMessage(e));
+    }
+  }
+
+  Future<void> openAccessibilitySettings() async {
+    try {
+      await _accessibilityStatusService.openAccessibilitySettings();
+      showMessage(
+        'Enable WellScreen under Accessibility settings, then return to this screen.',
+      );
     } catch (e) {
       showMessage(_cleanErrorMessage(e));
     }
@@ -484,6 +519,13 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
             onOpenSettings: openUsageAccessSettings,
           ),
           const SizedBox(height: 16),
+          AccessibilityServiceStatusCard(
+            hasAccessibilityAccess: hasAccessibilityAccess,
+            isChecking: isCheckingAccessibilityAccess,
+            onRecheck: _checkAccessibilityPermission,
+            onOpenSettings: openAccessibilitySettings,
+          ),
+          const SizedBox(height: 16),
           UsageSyncCard(
             isSyncing: isSyncingUsageReport,
             lastSyncMessage: lastSyncStatusMessage,
@@ -588,6 +630,121 @@ class UsageAccessStatusCard extends StatelessWidget {
                   : const Icon(Icons.refresh_rounded),
               onPressed: isChecking ? null : () => onRecheck(),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class AccessibilityServiceStatusCard extends StatelessWidget {
+  const AccessibilityServiceStatusCard({
+    super.key,
+    required this.hasAccessibilityAccess,
+    required this.isChecking,
+    required this.onRecheck,
+    required this.onOpenSettings,
+  });
+
+  final bool? hasAccessibilityAccess;
+  final bool isChecking;
+  final Future<void> Function() onRecheck;
+  final Future<void> Function() onOpenSettings;
+
+  static const Color purple = Color(0xFF5B2BBF);
+  static const Color darkText = Color(0xFF111827);
+  static const Color grayText = Color(0xFF4B5563);
+
+  @override
+  Widget build(BuildContext context) {
+    final IconData icon;
+    final Color color;
+    final String title;
+    final String subtitle;
+
+    if (isChecking && hasAccessibilityAccess == null) {
+      icon = Icons.hourglass_top_rounded;
+      color = purple;
+      title = 'Checking Accessibility Service';
+      subtitle =
+          'Checking whether the WellScreen Accessibility Service is enabled...';
+    } else if (hasAccessibilityAccess == true) {
+      icon = Icons.check_circle_rounded;
+      color = Colors.green;
+      title = 'Accessibility Service Enabled';
+      subtitle =
+          'WellScreen can prepare app-level enforcement features on this device.';
+    } else {
+      icon = Icons.warning_amber_rounded;
+      color = Colors.orange;
+      title = 'Accessibility Service Not Enabled';
+      subtitle =
+          'Enforcement features (like app blocking and focus mode) require the '
+          'WellScreen Accessibility Service. Tap "Open Accessibility Settings" '
+          'below, enable WellScreen, then return to this screen.';
+    }
+
+    return Card(
+      elevation: 2,
+      shadowColor: Colors.black12,
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(icon, color: color, size: 34),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: const TextStyle(
+                          color: darkText,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        subtitle,
+                        style: const TextStyle(color: grayText, height: 1.4),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Recheck permission',
+                  icon: isChecking
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.refresh_rounded),
+                  onPressed: isChecking ? null : () => onRecheck(),
+                ),
+              ],
+            ),
+            if (hasAccessibilityAccess != true) ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () => onOpenSettings(),
+                  icon: const Icon(Icons.settings_accessibility_rounded),
+                  label: const Text(
+                    'Open Accessibility Settings',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),

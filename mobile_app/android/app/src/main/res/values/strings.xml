@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_description">WellScreen uses this service to help guardians monitor and manage screen time on this device.</string>
+</resources>
