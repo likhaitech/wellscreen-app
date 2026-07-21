@@ -13,7 +13,8 @@ class ChildHomeScreen extends StatefulWidget {
   State<ChildHomeScreen> createState() => _ChildHomeScreenState();
 }
 
-class _ChildHomeScreenState extends State<ChildHomeScreen> {
+class _ChildHomeScreenState extends State<ChildHomeScreen>
+    with WidgetsBindingObserver {
   static const Color purple = Color(0xFF5B2BBF);
   static const Color darkText = Color(0xFF111827);
   static const Color grayText = Color(0xFF4B5563);
@@ -29,10 +30,53 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
   bool isSyncingUsageReport = false;
   String? lastSyncStatusMessage;
 
+  // Task 1: Usage-access permission status.
+  // null = still checking, true = granted, false = missing.
+  bool? hasUsageAccess;
+  bool isCheckingUsageAccess = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _checkUsagePermission();
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     pairingCodeController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Re-check permission when the user returns to the app, e.g. after
+    // granting Usage Access in Android system settings.
+    if (state == AppLifecycleState.resumed) {
+      _checkUsagePermission();
+    }
+  }
+
+  Future<void> _checkUsagePermission() async {
+    setState(() => isCheckingUsageAccess = true);
+
+    try {
+      final granted = await _usageTrackingService.hasUsagePermission();
+
+      if (!mounted) return;
+
+      setState(() {
+        hasUsageAccess = granted;
+        isCheckingUsageAccess = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        isCheckingUsageAccess = false;
+      });
+    }
   }
 
   Future<void> pairChildDevice() async {
@@ -433,6 +477,13 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
           else
             _buildDeviceAndRulesSection(user.uid),
           const SizedBox(height: 16),
+          UsageAccessStatusCard(
+            hasUsageAccess: hasUsageAccess,
+            isChecking: isCheckingUsageAccess,
+            onRecheck: _checkUsagePermission,
+            onOpenSettings: openUsageAccessSettings,
+          ),
+          const SizedBox(height: 16),
           UsageSyncCard(
             isSyncing: isSyncingUsageReport,
             lastSyncMessage: lastSyncStatusMessage,
@@ -446,6 +497,101 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
 
   String _formatStatus(String value) {
     return value.replaceAll('_', ' ').toUpperCase();
+  }
+}
+
+class UsageAccessStatusCard extends StatelessWidget {
+  const UsageAccessStatusCard({
+    super.key,
+    required this.hasUsageAccess,
+    required this.isChecking,
+    required this.onRecheck,
+    required this.onOpenSettings,
+  });
+
+  final bool? hasUsageAccess;
+  final bool isChecking;
+  final Future<void> Function() onRecheck;
+  final Future<void> Function() onOpenSettings;
+
+  static const Color purple = Color(0xFF5B2BBF);
+  static const Color darkText = Color(0xFF111827);
+  static const Color grayText = Color(0xFF4B5563);
+
+  @override
+  Widget build(BuildContext context) {
+    final IconData icon;
+    final Color color;
+    final String title;
+    final String subtitle;
+
+    if (isChecking && hasUsageAccess == null) {
+      icon = Icons.hourglass_top_rounded;
+      color = purple;
+      title = 'Checking Usage Access';
+      subtitle = 'Checking whether Usage Access permission is granted...';
+    } else if (hasUsageAccess == true) {
+      icon = Icons.check_circle_rounded;
+      color = Colors.green;
+      title = 'Usage Access Granted';
+      subtitle =
+          'WellScreen can read app usage data needed for monitoring and reports.';
+    } else {
+      icon = Icons.warning_amber_rounded;
+      color = Colors.orange;
+      title = 'Usage Access Permission Missing';
+      subtitle =
+          'WellScreen needs Usage Access permission to track screen time. '
+          'Tap "Open Usage Access Settings" below, enable it for WellScreen, '
+          'then return to this screen.';
+    }
+
+    return Card(
+      elevation: 2,
+      shadowColor: Colors.black12,
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, color: color, size: 34),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      color: darkText,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(color: grayText, height: 1.4),
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+              tooltip: 'Recheck permission',
+              icon: isChecking
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.refresh_rounded),
+              onPressed: isChecking ? null : () => onRecheck(),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
