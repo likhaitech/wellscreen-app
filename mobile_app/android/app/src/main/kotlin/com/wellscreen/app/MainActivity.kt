@@ -34,7 +34,7 @@ class MainActivity : FlutterActivity() {
 
         val enabledServicesSetting = Settings.Secure.getString(
             contentResolver,
-            Settings.Secure.ACCESSIBILITY_ENABLED_SERVICES
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         ) ?: return false
 
         val colonSplitter = TextUtils.SimpleStringSplitter(':')
