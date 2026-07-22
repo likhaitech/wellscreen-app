@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="accessibility_service_description">WellScreen uses this service to help guardians monitor and manage screen time on this device.</string>
+    <string name="blocked_website_label">Website Blocked</string>
+    <string name="blocked_website_title">Website Blocked</string>
+    <string name="blocked_website_message">This website belongs to a harmful or restricted category. WellScreen has blocked access based on guardian-guided safety rules.</string>
+    <string name="blocked_website_leave_button">Go Back to Safety</string>
 </resources>

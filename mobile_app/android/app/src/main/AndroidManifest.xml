@@ -3,10 +3,19 @@
     <uses-permission
         android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions"/>
+
     <application
         android:label="WellScreen"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+
+        <activity
+            android:name=".BlockedWebsiteActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:label="@string/blocked_website_label"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -43,6 +52,7 @@
             android:name="flutterEmbedding"
             android:value="2" />
     </application>
+
     <queries>
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>

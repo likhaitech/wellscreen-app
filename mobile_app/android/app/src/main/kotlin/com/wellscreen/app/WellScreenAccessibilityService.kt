@@ -1,6 +1,7 @@
 package com.wellscreen.app
 
 import android.accessibilityservice.AccessibilityService
+import android.content.Intent
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -12,6 +13,9 @@ class WellScreenAccessibilityService : AccessibilityService() {
     private var lastDetectedDomain: String? = null
     private var lastDetectedCategory: String? = null
     private var lastDetectedTime: Long = 0L
+
+    private var lastBlockedDomain: String? = null
+    private var lastBlockedTime: Long = 0L
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) {
@@ -51,7 +55,7 @@ class WellScreenAccessibilityService : AccessibilityService() {
     }
 
     override fun onInterrupt() {
-        // No active interruption handling is needed for website/category detection.
+        // No active interruption handling is needed for website/category blocking.
     }
 
     private fun isSupportedBrowser(packageName: String): Boolean {
@@ -135,6 +139,55 @@ class WellScreenAccessibilityService : AccessibilityService() {
                 "harmful=${detectionResult.isHarmful}, " +
                 "browser=$browserPackageName"
         )
+
+        blockHarmfulWebsiteIfNeeded(
+            detectionResult = detectionResult,
+            detectedAt = currentTime
+        )
+    }
+
+    private fun blockHarmfulWebsiteIfNeeded(
+        detectionResult: WebsiteCategoryDetectionResult,
+        detectedAt: Long
+    ) {
+        if (!detectionResult.isHarmful) {
+            return
+        }
+
+        val isSameRecentBlock =
+            detectionResult.domain == lastBlockedDomain &&
+                detectedAt - lastBlockedTime < BLOCK_DEBOUNCE_MS
+
+        if (isSameRecentBlock) {
+            return
+        }
+
+        lastBlockedDomain = detectionResult.domain
+        lastBlockedTime = detectedAt
+
+        val blockIntent = Intent(this, BlockedWebsiteActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            putExtra(BlockedWebsiteActivity.EXTRA_DOMAIN, detectionResult.domain)
+            putExtra(BlockedWebsiteActivity.EXTRA_CATEGORY, detectionResult.category)
+        }
+
+        try {
+            startActivity(blockIntent)
+
+            Log.d(
+                LOG_TAG,
+                "Blocked harmful website: domain=${detectionResult.domain}, " +
+                    "category=${detectionResult.category}"
+            )
+        } catch (exception: Exception) {
+            Log.e(
+                LOG_TAG,
+                "Failed to open blocked website screen.",
+                exception
+            )
+        }
     }
 
     private fun saveLatestWebsiteDetection(
@@ -163,6 +216,7 @@ class WellScreenAccessibilityService : AccessibilityService() {
             "wellscreen_website_detection"
 
         private const val DETECTION_DEBOUNCE_MS = 3000L
+        private const val BLOCK_DEBOUNCE_MS = 5000L
         private const val MAX_NODE_DEPTH = 8
         private const val MAX_TEXT_ITEMS = 120
 
