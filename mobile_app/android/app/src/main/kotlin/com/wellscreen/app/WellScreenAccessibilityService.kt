@@ -61,12 +61,17 @@ class WellScreenAccessibilityService : AccessibilityService() {
     }
 
     override fun onInterrupt() {
-        // No active interruption handling is needed for app, website, and focus-mode blocking.
+        // No active interruption handling is needed for app, website, focus-mode, and cooldown blocking.
     }
 
     private fun handleAppEnforcementIfNeeded(packageName: String) {
-        val blockReason = getAppBlockReason(packageName) ?: return
         val currentTime = System.currentTimeMillis()
+        val rules = getRestrictionRules()
+        val blockReason = getAppBlockReason(
+            packageName = packageName,
+            rules = rules,
+            currentTime = currentTime
+        ) ?: return
 
         val isSameRecentBlock =
             packageName == lastBlockedPackageName &&
@@ -80,10 +85,20 @@ class WellScreenAccessibilityService : AccessibilityService() {
         lastBlockedAppTime = currentTime
 
         val appName = getReadableAppName(packageName)
+        val cooldownEndAtMillis = getOrStartCooldownEndAt(
+            packageName = packageName,
+            blockReason = blockReason,
+            rules = rules,
+            currentTime = currentTime
+        )
+        val cooldownEnabled =
+            rules.cooldownTimerEnabled && cooldownEndAtMillis > currentTime
+
         val attemptCount = recordBlockedAppOpenAttempt(
             packageName = packageName,
             appName = appName,
             reason = blockReason,
+            cooldownEndAtMillis = cooldownEndAtMillis,
             attemptedAt = currentTime
         )
 
@@ -98,6 +113,11 @@ class WellScreenAccessibilityService : AccessibilityService() {
                 BlockedAppActivity.EXTRA_BLOCK_REASON_LABEL,
                 getBlockReasonLabel(blockReason)
             )
+            putExtra(BlockedAppActivity.EXTRA_COOLDOWN_ENABLED, cooldownEnabled)
+            putExtra(
+                BlockedAppActivity.EXTRA_COOLDOWN_END_AT_MILLIS,
+                cooldownEndAtMillis
+            )
         }
 
         try {
@@ -107,6 +127,7 @@ class WellScreenAccessibilityService : AccessibilityService() {
                 LOG_TAG,
                 "Blocked app: app=$appName, package=$packageName, " +
                     "reason=${getBlockReasonLabel(blockReason)}, " +
+                    "cooldownEndAtMillis=$cooldownEndAtMillis, " +
                     "attemptCount=$attemptCount"
             )
         } catch (exception: Exception) {
@@ -118,7 +139,11 @@ class WellScreenAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun getAppBlockReason(packageName: String): String? {
+    private fun getAppBlockReason(
+        packageName: String,
+        rules: RestrictionRules,
+        currentTime: Long
+    ): String? {
         if (isEssentialOrAllowedApp(packageName)) {
             return null
         }
@@ -127,7 +152,12 @@ class WellScreenAccessibilityService : AccessibilityService() {
             return null
         }
 
-        val rules = getRestrictionRules()
+        if (
+            rules.cooldownTimerEnabled &&
+            isCooldownActive(packageName, currentTime)
+        ) {
+            return BLOCK_REASON_COOLDOWN
+        }
 
         if (rules.focusModeEnabled && distractingAppPackages.contains(packageName)) {
             return BLOCK_REASON_FOCUS_MODE
@@ -138,6 +168,63 @@ class WellScreenAccessibilityService : AccessibilityService() {
         }
 
         return null
+    }
+
+    private fun getOrStartCooldownEndAt(
+        packageName: String,
+        blockReason: String,
+        rules: RestrictionRules,
+        currentTime: Long
+    ): Long {
+        if (!rules.cooldownTimerEnabled) {
+            return 0L
+        }
+
+        val existingCooldownEndAt = getCooldownEndAt(packageName)
+
+        if (existingCooldownEndAt > currentTime) {
+            return existingCooldownEndAt
+        }
+
+        if (
+            blockReason == BLOCK_REASON_APP_BLOCKING ||
+            blockReason == BLOCK_REASON_FOCUS_MODE
+        ) {
+            return startCooldown(packageName, currentTime)
+        }
+
+        return existingCooldownEndAt
+    }
+
+    private fun startCooldown(packageName: String, currentTime: Long): Long {
+        val cooldownEndAtMillis = currentTime + COOLDOWN_DURATION_MS
+
+        val preferences = getSharedPreferences(
+            BLOCKED_APP_ATTEMPT_PREFERENCES,
+            MODE_PRIVATE
+        )
+
+        preferences.edit()
+            .putLong("cooldownEndAt_$packageName", cooldownEndAtMillis)
+            .putString("lastCooldownPackageName", packageName)
+            .putLong("lastCooldownStartedAt", currentTime)
+            .putLong("lastCooldownEndAt", cooldownEndAtMillis)
+            .apply()
+
+        return cooldownEndAtMillis
+    }
+
+    private fun isCooldownActive(packageName: String, currentTime: Long): Boolean {
+        return getCooldownEndAt(packageName) > currentTime
+    }
+
+    private fun getCooldownEndAt(packageName: String): Long {
+        val preferences = getSharedPreferences(
+            BLOCKED_APP_ATTEMPT_PREFERENCES,
+            MODE_PRIVATE
+        )
+
+        return preferences.getLong("cooldownEndAt_$packageName", 0L)
     }
 
     private fun isEssentialOrAllowedApp(packageName: String): Boolean {
@@ -156,6 +243,7 @@ class WellScreenAccessibilityService : AccessibilityService() {
         packageName: String,
         appName: String,
         reason: String,
+        cooldownEndAtMillis: Long,
         attemptedAt: Long
     ): Int {
         val preferences = getSharedPreferences(
@@ -174,6 +262,7 @@ class WellScreenAccessibilityService : AccessibilityService() {
             .putString("lastBlockedReasonLabel", getBlockReasonLabel(reason))
             .putInt("lastBlockedAttemptCount", attemptCount)
             .putLong("lastBlockedAttemptAt", attemptedAt)
+            .putLong("lastCooldownEndAtMillis", cooldownEndAtMillis)
             .apply()
 
         return attemptCount
@@ -371,6 +460,10 @@ class WellScreenAccessibilityService : AccessibilityService() {
                 "focusModeEnabled",
                 false
             ),
+            cooldownTimerEnabled = preferences.getBoolean(
+                "cooldownTimerEnabled",
+                true
+            ),
             categoryRestrictionEnabled = preferences.getBoolean(
                 "categoryRestrictionEnabled",
                 true
@@ -384,6 +477,7 @@ class WellScreenAccessibilityService : AccessibilityService() {
 
     private fun getBlockReasonLabel(reason: String): String {
         return when (reason) {
+            BLOCK_REASON_COOLDOWN -> "Cooldown Timer"
             BLOCK_REASON_FOCUS_MODE -> "Focus Mode"
             BLOCK_REASON_APP_BLOCKING -> "App Blocking"
             else -> "Restriction"
@@ -393,6 +487,7 @@ class WellScreenAccessibilityService : AccessibilityService() {
     private data class RestrictionRules(
         val appBlockingEnabled: Boolean,
         val focusModeEnabled: Boolean,
+        val cooldownTimerEnabled: Boolean,
         val categoryRestrictionEnabled: Boolean,
         val emergencyAccessEnabled: Boolean
     )
@@ -409,10 +504,12 @@ class WellScreenAccessibilityService : AccessibilityService() {
 
         private const val BLOCK_REASON_APP_BLOCKING = "app_blocking"
         private const val BLOCK_REASON_FOCUS_MODE = "focus_mode"
+        private const val BLOCK_REASON_COOLDOWN = "cooldown_timer"
 
         private const val DETECTION_DEBOUNCE_MS = 3000L
         private const val WEBSITE_BLOCK_DEBOUNCE_MS = 5000L
         private const val APP_BLOCK_DEBOUNCE_MS = 3000L
+        private const val COOLDOWN_DURATION_MS = 60000L
         private const val MAX_NODE_DEPTH = 8
         private const val MAX_TEXT_ITEMS = 120
 
@@ -479,4 +576,3 @@ class WellScreenAccessibilityService : AccessibilityService() {
         )
     }
 }
-
