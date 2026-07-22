@@ -1,4 +1,4 @@
-package com.wellscreen.app
+﻿package com.wellscreen.app
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
@@ -32,7 +32,7 @@ class WellScreenAccessibilityService : AccessibilityService() {
             return
         }
 
-        handleRestrictedAppOpenIfNeeded(packageName)
+        handleAppEnforcementIfNeeded(packageName)
 
         if (!isSupportedBrowser(packageName)) {
             return
@@ -61,14 +61,11 @@ class WellScreenAccessibilityService : AccessibilityService() {
     }
 
     override fun onInterrupt() {
-        // No active interruption handling is needed for app and website blocking.
+        // No active interruption handling is needed for app, website, and focus-mode blocking.
     }
 
-    private fun handleRestrictedAppOpenIfNeeded(packageName: String) {
-        if (!isRestrictedApp(packageName)) {
-            return
-        }
-
+    private fun handleAppEnforcementIfNeeded(packageName: String) {
+        val blockReason = getAppBlockReason(packageName) ?: return
         val currentTime = System.currentTimeMillis()
 
         val isSameRecentBlock =
@@ -83,9 +80,10 @@ class WellScreenAccessibilityService : AccessibilityService() {
         lastBlockedAppTime = currentTime
 
         val appName = getReadableAppName(packageName)
-        val attemptCount = recordRestrictedAppOpenAttempt(
+        val attemptCount = recordBlockedAppOpenAttempt(
             packageName = packageName,
             appName = appName,
+            reason = blockReason,
             attemptedAt = currentTime
         )
 
@@ -103,7 +101,8 @@ class WellScreenAccessibilityService : AccessibilityService() {
 
             Log.d(
                 LOG_TAG,
-                "Blocked restricted app: app=$appName, package=$packageName, " +
+                "Blocked app: app=$appName, package=$packageName, " +
+                    "reason=${getBlockReasonLabel(blockReason)}, " +
                     "attemptCount=$attemptCount"
             )
         } catch (exception: Exception) {
@@ -115,25 +114,48 @@ class WellScreenAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun isRestrictedApp(packageName: String): Boolean {
-        if (packageName == applicationContext.packageName) {
-            return false
+    private fun getAppBlockReason(packageName: String): String? {
+        if (isEssentialOrAllowedApp(packageName)) {
+            return null
         }
 
         if (isSupportedBrowser(packageName)) {
-            return false
+            return null
         }
 
-        return restrictedAppPackages.contains(packageName)
+        val rules = getRestrictionRules()
+
+        if (rules.focusModeEnabled && distractingAppPackages.contains(packageName)) {
+            return BLOCK_REASON_FOCUS_MODE
+        }
+
+        if (rules.appBlockingEnabled && restrictedAppPackages.contains(packageName)) {
+            return BLOCK_REASON_APP_BLOCKING
+        }
+
+        return null
     }
 
-    private fun recordRestrictedAppOpenAttempt(
+    private fun isEssentialOrAllowedApp(packageName: String): Boolean {
+        if (packageName == applicationContext.packageName) {
+            return true
+        }
+
+        if (essentialAllowedPackages.contains(packageName)) {
+            return true
+        }
+
+        return packageName.contains("launcher", ignoreCase = true)
+    }
+
+    private fun recordBlockedAppOpenAttempt(
         packageName: String,
         appName: String,
+        reason: String,
         attemptedAt: Long
     ): Int {
         val preferences = getSharedPreferences(
-            RESTRICTED_APP_ATTEMPT_PREFERENCES,
+            BLOCKED_APP_ATTEMPT_PREFERENCES,
             MODE_PRIVATE
         )
 
@@ -144,6 +166,8 @@ class WellScreenAccessibilityService : AccessibilityService() {
             .putInt(attemptKey, attemptCount)
             .putString("lastBlockedAppName", appName)
             .putString("lastBlockedPackageName", packageName)
+            .putString("lastBlockedReason", reason)
+            .putString("lastBlockedReasonLabel", getBlockReasonLabel(reason))
             .putInt("lastBlockedAttemptCount", attemptCount)
             .putLong("lastBlockedAttemptAt", attemptedAt)
             .apply()
@@ -268,6 +292,10 @@ class WellScreenAccessibilityService : AccessibilityService() {
             return
         }
 
+        if (!getRestrictionRules().categoryRestrictionEnabled) {
+            return
+        }
+
         val isSameRecentBlock =
             detectionResult.domain == lastBlockedDomain &&
                 detectedAt - lastBlockedWebsiteTime < WEBSITE_BLOCK_DEBOUNCE_MS
@@ -324,13 +352,59 @@ class WellScreenAccessibilityService : AccessibilityService() {
             .apply()
     }
 
+    private fun getRestrictionRules(): RestrictionRules {
+        val preferences = getSharedPreferences(
+            RESTRICTION_RULE_PREFERENCES,
+            MODE_PRIVATE
+        )
+
+        return RestrictionRules(
+            appBlockingEnabled = preferences.getBoolean(
+                "appBlockingEnabled",
+                true
+            ),
+            focusModeEnabled = preferences.getBoolean(
+                "focusModeEnabled",
+                false
+            ),
+            categoryRestrictionEnabled = preferences.getBoolean(
+                "categoryRestrictionEnabled",
+                true
+            ),
+            emergencyAccessEnabled = preferences.getBoolean(
+                "emergencyAccessEnabled",
+                true
+            )
+        )
+    }
+
+    private fun getBlockReasonLabel(reason: String): String {
+        return when (reason) {
+            BLOCK_REASON_FOCUS_MODE -> "Focus Mode"
+            BLOCK_REASON_APP_BLOCKING -> "App Blocking"
+            else -> "Restriction"
+        }
+    }
+
+    private data class RestrictionRules(
+        val appBlockingEnabled: Boolean,
+        val focusModeEnabled: Boolean,
+        val categoryRestrictionEnabled: Boolean,
+        val emergencyAccessEnabled: Boolean
+    )
+
     companion object {
-        private const val LOG_TAG = "WellScreenWebsiteDetection"
+        private const val LOG_TAG = "WellScreenEnforcement"
 
         private const val WEBSITE_DETECTION_PREFERENCES =
             "wellscreen_website_detection"
-        private const val RESTRICTED_APP_ATTEMPT_PREFERENCES =
+        private const val BLOCKED_APP_ATTEMPT_PREFERENCES =
             "wellscreen_restricted_app_attempts"
+        private const val RESTRICTION_RULE_PREFERENCES =
+            "wellscreen_restriction_rules"
+
+        private const val BLOCK_REASON_APP_BLOCKING = "app_blocking"
+        private const val BLOCK_REASON_FOCUS_MODE = "focus_mode"
 
         private const val DETECTION_DEBOUNCE_MS = 3000L
         private const val WEBSITE_BLOCK_DEBOUNCE_MS = 5000L
@@ -353,6 +427,21 @@ class WellScreenAccessibilityService : AccessibilityService() {
             "com.duckduckgo.mobile.android"
         )
 
+        private val essentialAllowedPackages = setOf(
+            "android",
+            "com.android.systemui",
+            "com.android.settings",
+            "com.google.android.permissioncontroller",
+            "com.android.permissioncontroller",
+            "com.google.android.packageinstaller",
+            "com.android.packageinstaller",
+            "com.google.android.dialer",
+            "com.android.dialer",
+            "com.google.android.contacts",
+            "com.android.contacts",
+            "com.google.android.gms"
+        )
+
         private val restrictedAppPackages = setOf(
             "com.google.android.youtube",
             "com.zhiliaoapp.musically",
@@ -361,6 +450,25 @@ class WellScreenAccessibilityService : AccessibilityService() {
             "com.facebook.orca",
             "com.roblox.client",
             "com.netflix.mediaclient",
+            "com.mobile.legends",
+            "com.tencent.ig",
+            "com.garena.game.codm"
+        )
+
+        private val distractingAppPackages = setOf(
+            "com.google.android.youtube",
+            "com.google.android.apps.youtube.kids",
+            "com.zhiliaoapp.musically",
+            "com.instagram.android",
+            "com.facebook.katana",
+            "com.facebook.orca",
+            "com.twitter.android",
+            "com.reddit.frontpage",
+            "com.snapchat.android",
+            "com.discord",
+            "com.roblox.client",
+            "com.netflix.mediaclient",
+            "tv.twitch.android.app",
             "com.mobile.legends",
             "com.tencent.ig",
             "com.garena.game.codm"

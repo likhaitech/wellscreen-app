@@ -1,4 +1,4 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
+﻿import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
@@ -220,10 +220,10 @@ class _RuleSettingsScreenState extends State<RuleSettingsScreen> {
               ),
 
               RuleGoalStatusCard(
-                title: 'Today’s Usage Progress',
+                title: 'Todayâ€™s Usage Progress',
                 subtitle: goalResult == null
                     ? 'No usage report is available yet. The goal will be evaluated after usage data is loaded.'
-                    : 'Used: ${_formatDuration(goalResult.usedDuration)} • Remaining: ${_formatDuration(goalResult.remainingDuration)}\n${goalResult.message}',
+                    : 'Used: ${_formatDuration(goalResult.usedDuration)} â€¢ Remaining: ${_formatDuration(goalResult.remainingDuration)}\n${goalResult.message}',
                 icon: Icons.insights_rounded,
                 iconColor: purple,
               ),
@@ -305,7 +305,7 @@ class _RuleSettingsScreenState extends State<RuleSettingsScreen> {
               const RuleGoalStatusCard(
                 title: 'Prototype Restriction Status',
                 subtitle:
-                    'Rules are saved for parent review and prototype demonstration. Full app blocking enforcement will be connected to the monitored child device later.',
+                    'Rules are saved for parent review and synced to the monitored child device for local enforcement when permissions are enabled.',
                 icon: Icons.info_outline_rounded,
                 iconColor: purple,
               ),
@@ -347,7 +347,7 @@ class _RuleSettingsScreenState extends State<RuleSettingsScreen> {
       return 'Current daily limit: ${_formatDuration(state.dailyScreenTimeLimit)}. Save a new value to update the parent rule.';
     }
 
-    return 'Limit: ${_formatDuration(goalResult.dailyLimit)} • Progress: ${_getProgressPercent(goalResult.progressPercent)}';
+    return 'Limit: ${_formatDuration(goalResult.dailyLimit)} â€¢ Progress: ${_getProgressPercent(goalResult.progressPercent)}';
   }
 
   Color _getGoalColor(UsageDashboardControllerState? state) {
@@ -476,3 +476,4 @@ class RuleSwitch extends StatelessWidget {
     );
   }
 }
+

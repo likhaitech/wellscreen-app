@@ -1,3 +1,4 @@
+﻿import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -5,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../services/accessibility_service_status_service.dart';
 import '../services/firestore_usage_report_sync_service.dart';
+import '../services/native_restriction_rules_service.dart';
 import '../services/usage_tracking_service.dart';
 
 class ChildHomeScreen extends StatefulWidget {
@@ -228,7 +230,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
 
     setState(() {
       isSyncingUsageReport = true;
-      lastSyncStatusMessage = 'Syncing today’s usage report...';
+      lastSyncStatusMessage = 'Syncing todayâ€™s usage report...';
     });
 
     try {
@@ -346,7 +348,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
                 iconColor: Colors.orange,
                 title: 'No parent rules available',
                 subtitle:
-                    'Pair this device first so the parent’s saved restrictions can appear here.',
+                    'Pair this device first so the parentâ€™s saved restrictions can appear here.',
               ),
             ],
           );
@@ -801,7 +803,7 @@ class UsageSyncCard extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               lastSyncMessage ??
-                  'Sync today’s child-device usage report to the parent account.',
+                  'Sync todayâ€™s child-device usage report to the parent account.',
               style: const TextStyle(color: grayText, height: 1.4),
             ),
             const SizedBox(height: 14),
@@ -911,6 +913,20 @@ class ParentRulesSection extends StatelessWidget {
           true,
         );
         final emergencyAccess = _readBool(data, 'emergencyAccess', true);
+
+        unawaited(
+          const NativeRestrictionRulesService()
+              .saveRules(
+                limitMinutes: limitMinutes,
+                appBlocking: appBlocking,
+                focusMode: focusMode,
+                cooldownTimer: cooldownTimer,
+                scheduledLock: scheduledLock,
+                categoryRestriction: categoryRestriction,
+                emergencyAccess: emergencyAccess,
+              )
+              .catchError((Object _) {}),
+        );
 
         return Column(
           children: [
@@ -1091,3 +1107,4 @@ class ChildStatusCard extends StatelessWidget {
     );
   }
 }
+
