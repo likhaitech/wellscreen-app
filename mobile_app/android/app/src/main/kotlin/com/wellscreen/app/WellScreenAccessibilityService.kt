@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import java.util.Calendar
 
 class WellScreenAccessibilityService : AccessibilityService() {
 
@@ -61,7 +62,7 @@ class WellScreenAccessibilityService : AccessibilityService() {
     }
 
     override fun onInterrupt() {
-        // No active interruption handling is needed for app, website, focus-mode, and cooldown blocking.
+        // No active interruption handling is needed for app, website, focus-mode, cooldown, and scheduled-lock blocking.
     }
 
     private fun handleAppEnforcementIfNeeded(packageName: String) {
@@ -153,6 +154,14 @@ class WellScreenAccessibilityService : AccessibilityService() {
         }
 
         if (
+            rules.scheduledLockEnabled &&
+            isScheduledLockActive(currentTime) &&
+            isScheduledLockTargetApp(packageName)
+        ) {
+            return BLOCK_REASON_SCHEDULED_LOCK
+        }
+
+        if (
             rules.cooldownTimerEnabled &&
             isCooldownActive(packageName, currentTime)
         ) {
@@ -168,6 +177,22 @@ class WellScreenAccessibilityService : AccessibilityService() {
         }
 
         return null
+    }
+
+    private fun isScheduledLockActive(currentTime: Long): Boolean {
+        val calendar = Calendar.getInstance().apply {
+            timeInMillis = currentTime
+        }
+
+        val hour = calendar.get(Calendar.HOUR_OF_DAY)
+
+        return hour >= SCHEDULED_LOCK_START_HOUR ||
+            hour < SCHEDULED_LOCK_END_HOUR
+    }
+
+    private fun isScheduledLockTargetApp(packageName: String): Boolean {
+        return restrictedAppPackages.contains(packageName) ||
+            distractingAppPackages.contains(packageName)
     }
 
     private fun getOrStartCooldownEndAt(
@@ -188,7 +213,8 @@ class WellScreenAccessibilityService : AccessibilityService() {
 
         if (
             blockReason == BLOCK_REASON_APP_BLOCKING ||
-            blockReason == BLOCK_REASON_FOCUS_MODE
+            blockReason == BLOCK_REASON_FOCUS_MODE ||
+            blockReason == BLOCK_REASON_SCHEDULED_LOCK
         ) {
             return startCooldown(packageName, currentTime)
         }
@@ -464,6 +490,10 @@ class WellScreenAccessibilityService : AccessibilityService() {
                 "cooldownTimerEnabled",
                 true
             ),
+            scheduledLockEnabled = preferences.getBoolean(
+                "scheduledLockEnabled",
+                false
+            ),
             categoryRestrictionEnabled = preferences.getBoolean(
                 "categoryRestrictionEnabled",
                 true
@@ -477,6 +507,7 @@ class WellScreenAccessibilityService : AccessibilityService() {
 
     private fun getBlockReasonLabel(reason: String): String {
         return when (reason) {
+            BLOCK_REASON_SCHEDULED_LOCK -> "Scheduled Lock"
             BLOCK_REASON_COOLDOWN -> "Cooldown Timer"
             BLOCK_REASON_FOCUS_MODE -> "Focus Mode"
             BLOCK_REASON_APP_BLOCKING -> "App Blocking"
@@ -488,6 +519,7 @@ class WellScreenAccessibilityService : AccessibilityService() {
         val appBlockingEnabled: Boolean,
         val focusModeEnabled: Boolean,
         val cooldownTimerEnabled: Boolean,
+        val scheduledLockEnabled: Boolean,
         val categoryRestrictionEnabled: Boolean,
         val emergencyAccessEnabled: Boolean
     )
@@ -505,11 +537,16 @@ class WellScreenAccessibilityService : AccessibilityService() {
         private const val BLOCK_REASON_APP_BLOCKING = "app_blocking"
         private const val BLOCK_REASON_FOCUS_MODE = "focus_mode"
         private const val BLOCK_REASON_COOLDOWN = "cooldown_timer"
+        private const val BLOCK_REASON_SCHEDULED_LOCK = "scheduled_lock"
 
         private const val DETECTION_DEBOUNCE_MS = 3000L
         private const val WEBSITE_BLOCK_DEBOUNCE_MS = 5000L
         private const val APP_BLOCK_DEBOUNCE_MS = 3000L
         private const val COOLDOWN_DURATION_MS = 60000L
+
+        private const val SCHEDULED_LOCK_START_HOUR = 22
+        private const val SCHEDULED_LOCK_END_HOUR = 5
+
         private const val MAX_NODE_DEPTH = 8
         private const val MAX_TEXT_ITEMS = 120
 

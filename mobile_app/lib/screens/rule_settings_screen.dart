@@ -277,7 +277,7 @@ class _RuleSettingsScreenState extends State<RuleSettingsScreen> {
 
               RuleSwitch(
                 title: 'Scheduled Lock Session',
-                subtitle: 'Apply restrictions during selected schedules.',
+                subtitle: 'Apply restrictions during the default scheduled lock time, 10:00 PM to 5:00 AM.',
                 value: scheduledLock,
                 onChanged: (value) => setState(() => scheduledLock = value),
               ),
@@ -476,4 +476,5 @@ class RuleSwitch extends StatelessWidget {
     );
   }
 }
+
 
