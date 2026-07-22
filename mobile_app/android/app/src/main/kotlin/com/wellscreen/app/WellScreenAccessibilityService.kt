@@ -153,6 +153,10 @@ class WellScreenAccessibilityService : AccessibilityService() {
             return null
         }
 
+        if (isEmergencyAccessActive(rules, currentTime)) {
+            return null
+        }
+
         if (
             rules.scheduledLockEnabled &&
             isScheduledLockActive(currentTime) &&
@@ -188,6 +192,14 @@ class WellScreenAccessibilityService : AccessibilityService() {
 
         return hour >= SCHEDULED_LOCK_START_HOUR ||
             hour < SCHEDULED_LOCK_END_HOUR
+    }
+    private fun isEmergencyAccessActive(
+        rules: RestrictionRules,
+        currentTime: Long
+    ): Boolean {
+        return rules.emergencyAccessEnabled &&
+            rules.emergencyAccessApproved &&
+            rules.emergencyAccessApprovedUntilMillis > currentTime
     }
 
     private fun isScheduledLockTargetApp(packageName: String): Boolean {
@@ -613,3 +625,4 @@ class WellScreenAccessibilityService : AccessibilityService() {
         )
     }
 }
+

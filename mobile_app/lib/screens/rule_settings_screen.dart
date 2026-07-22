@@ -391,6 +391,185 @@ class _RuleSettingsScreenState extends State<RuleSettingsScreen> {
   }
 }
 
+
+class EmergencyAccessApprovalSection extends StatelessWidget {
+  const EmergencyAccessApprovalSection({super.key});
+
+  static const Color purple = Color(0xFF5B2BBF);
+  static const Color darkText = Color(0xFF111827);
+  static const Color grayText = Color(0xFF4B5563);
+
+  Future<void> approveRequest(String requestId) async {
+    final approvedUntil = DateTime.now().add(const Duration(minutes: 15));
+
+    await FirebaseFirestore.instance
+        .collection('emergency_access_requests')
+        .doc(requestId)
+        .set({
+      'status': 'approved',
+      'approvedAt': FieldValue.serverTimestamp(),
+      'approvedUntil': Timestamp.fromDate(approvedUntil),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> denyRequest(String requestId) async {
+    await FirebaseFirestore.instance
+        .collection('emergency_access_requests')
+        .doc(requestId)
+        .set({
+      'status': 'denied',
+      'deniedAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      return const RuleGoalStatusCard(
+        title: 'Emergency Access Requests',
+        subtitle: 'Please log in again to review child requests.',
+        icon: Icons.emergency_rounded,
+        iconColor: Colors.orange,
+      );
+    }
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('emergency_access_requests')
+          .where('parentId', isEqualTo: user.uid)
+          .limit(5)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const RuleGoalStatusCard(
+            title: 'Emergency Access Requests',
+            subtitle: 'Checking child emergency access requests...',
+            icon: Icons.hourglass_top_rounded,
+            iconColor: purple,
+          );
+        }
+
+        if (snapshot.hasError) {
+          return RuleGoalStatusCard(
+            title: 'Emergency Access Requests',
+            subtitle: snapshot.error.toString(),
+            icon: Icons.error_outline_rounded,
+            iconColor: Colors.red,
+          );
+        }
+
+        final docs = snapshot.data?.docs ?? [];
+        final pendingDocs = docs
+            .where((doc) => (doc.data()['status'] as String? ?? '') == 'pending')
+            .toList();
+
+        if (pendingDocs.isEmpty) {
+          return const RuleGoalStatusCard(
+            title: 'Emergency Access Requests',
+            subtitle:
+                'No pending child emergency access request is available right now.',
+            icon: Icons.emergency_rounded,
+            iconColor: purple,
+          );
+        }
+
+        return Card(
+          elevation: 1.5,
+          shadowColor: Colors.black12,
+          margin: const EdgeInsets.only(bottom: 12),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.emergency_rounded, color: purple, size: 34),
+                    SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'Emergency Access Requests',
+                        style: TextStyle(
+                          color: darkText,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 16,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                ...pendingDocs.map((doc) {
+                  final data = doc.data();
+                  final childEmail =
+                      data['childEmail'] as String? ?? 'Child device';
+                  final reason =
+                      data['reason'] as String? ?? 'No reason provided.';
+
+                  return Container(
+                    margin: const EdgeInsets.only(top: 10),
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF4F0FF),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          childEmail,
+                          style: const TextStyle(
+                            color: darkText,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          'Reason: $reason',
+                          style: const TextStyle(
+                            color: grayText,
+                            height: 1.4,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: FilledButton.icon(
+                                onPressed: () => approveRequest(doc.id),
+                                icon: const Icon(Icons.check_rounded),
+                                label: const Text('Approve 15 min'),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () => denyRequest(doc.id),
+                                icon: const Icon(Icons.close_rounded),
+                                label: const Text('Deny'),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  );
+                }),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
 class RuleGoalStatusCard extends StatelessWidget {
   const RuleGoalStatusCard({
     super.key,
@@ -476,5 +655,6 @@ class RuleSwitch extends StatelessWidget {
     );
   }
 }
+
 
 

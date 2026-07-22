@@ -359,6 +359,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         final childEmail = data['childEmail'] as String? ?? 'Child user';
         final code = data['pairingCode'] as String? ?? 'No code';
         final parentId = data['parentId'] as String?;
+        final childId = data['childId'] as String?;
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -381,6 +382,12 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
             ),
             const SizedBox(height: 12),
             ParentRulesSection(parentId: parentId),
+            const SizedBox(height: 16),
+            EmergencyAccessRequestSection(
+              parentId: parentId,
+              childId: childId,
+              childEmail: childEmail,
+            ),
           ],
         );
       },
@@ -1065,6 +1072,277 @@ class ParentRuleCard extends StatelessWidget {
   }
 }
 
+
+class EmergencyAccessRequestSection extends StatefulWidget {
+  const EmergencyAccessRequestSection({
+    super.key,
+    required this.parentId,
+    required this.childId,
+    required this.childEmail,
+  });
+
+  final String? parentId;
+  final String? childId;
+  final String childEmail;
+
+  @override
+  State<EmergencyAccessRequestSection> createState() =>
+      _EmergencyAccessRequestSectionState();
+}
+
+class _EmergencyAccessRequestSectionState
+    extends State<EmergencyAccessRequestSection> {
+  final TextEditingController reasonController = TextEditingController();
+
+  bool isSubmitting = false;
+
+  static const Color purple = Color(0xFF5B2BBF);
+  static const Color darkText = Color(0xFF111827);
+  static const Color grayText = Color(0xFF4B5563);
+
+  @override
+  void dispose() {
+    reasonController.dispose();
+    super.dispose();
+  }
+
+  Future<void> submitEmergencyRequest() async {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      showMessage('Please log in again before requesting emergency access.');
+      return;
+    }
+
+    if (widget.parentId == null || widget.parentId!.isEmpty) {
+      showMessage('Parent account is missing. Pair the device again.');
+      return;
+    }
+
+    final reason = reasonController.text.trim();
+
+    if (reason.length < 5) {
+      showMessage('Please enter a short reason for emergency access.');
+      return;
+    }
+
+    setState(() => isSubmitting = true);
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('emergency_access_requests')
+          .doc(user.uid)
+          .set({
+        'parentId': widget.parentId,
+        'childId': widget.childId,
+        'childUserId': user.uid,
+        'childEmail': widget.childEmail,
+        'reason': reason,
+        'status': 'pending',
+        'requestedAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      reasonController.clear();
+      showMessage('Emergency access request sent to parent.');
+    } catch (e) {
+      showMessage(e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) {
+        setState(() => isSubmitting = false);
+      }
+    }
+  }
+
+  void syncEmergencyAccessToNative(Map<String, dynamic>? data) {
+    if (data == null) {
+      unawaited(
+        const NativeRestrictionRulesService().saveEmergencyAccessState(
+          isApproved: false,
+          approvedUntil: null,
+        ),
+      );
+      return;
+    }
+
+    final status = data['status'] as String? ?? 'none';
+    final approvedUntilValue = data['approvedUntil'];
+    final approvedUntil = approvedUntilValue is Timestamp
+        ? approvedUntilValue.toDate()
+        : null;
+
+    final isApproved = status == 'approved' &&
+        approvedUntil != null &&
+        approvedUntil.isAfter(DateTime.now());
+
+    unawaited(
+      const NativeRestrictionRulesService()
+          .saveEmergencyAccessState(
+            isApproved: isApproved,
+            approvedUntil: approvedUntil,
+          )
+          .catchError((Object _) {}),
+    );
+  }
+
+  void showMessage(String message) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      return const ChildStatusCard(
+        icon: Icons.emergency_rounded,
+        iconColor: Colors.orange,
+        title: 'Emergency Access Unavailable',
+        subtitle: 'Please log in again before requesting emergency access.',
+      );
+    }
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('emergency_access_requests')
+          .doc(user.uid)
+          .snapshots(),
+      builder: (context, snapshot) {
+        final data = snapshot.data?.data();
+        syncEmergencyAccessToNative(data);
+
+        final status = data?['status'] as String? ?? 'none';
+        final reason = data?['reason'] as String? ?? 'No request submitted yet.';
+        final approvedUntilValue = data?['approvedUntil'];
+        final approvedUntil = approvedUntilValue is Timestamp
+            ? approvedUntilValue.toDate()
+            : null;
+
+        final title = switch (status) {
+          'pending' => 'Emergency Request Pending',
+          'approved' => 'Emergency Access Approved',
+          'denied' => 'Emergency Access Denied',
+          _ => 'Emergency Access Request',
+        };
+
+        final subtitle = switch (status) {
+          'pending' =>
+            'Your request was sent to the parent account.\nReason: $reason',
+          'approved' =>
+            'Emergency access is temporarily approved until ${_formatDateTime(approvedUntil)}.\nReason: $reason',
+          'denied' =>
+            'The parent denied the request. You may send another request if needed.\nReason: $reason',
+          _ =>
+            'Send a request when you need temporary access for an urgent or essential reason.',
+        };
+
+        final iconColor = switch (status) {
+          'approved' => Colors.green,
+          'pending' => Colors.orange,
+          'denied' => Colors.red,
+          _ => purple,
+        };
+
+        return Card(
+          elevation: 1.5,
+          shadowColor: Colors.black12,
+          margin: const EdgeInsets.only(bottom: 12),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.emergency_rounded, color: iconColor, size: 34),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            title,
+                            style: const TextStyle(
+                              color: darkText,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            subtitle,
+                            style: const TextStyle(
+                              color: grayText,
+                              height: 1.4,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: reasonController,
+                  minLines: 1,
+                  maxLines: 2,
+                  decoration: InputDecoration(
+                    labelText: 'Reason for emergency access',
+                    hintText: 'Example: I need to contact my guardian.',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: isSubmitting ? null : submitEmergencyRequest,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: purple,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
+                    icon: const Icon(Icons.send_rounded),
+                    label: Text(
+                      isSubmitting ? 'Sending...' : 'Request Emergency Access',
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  String _formatDateTime(DateTime? value) {
+    if (value == null) {
+      return 'the approved time';
+    }
+
+    final hour = value.hour > 12
+        ? value.hour - 12
+        : value.hour == 0
+            ? 12
+            : value.hour;
+    final minute = value.minute.toString().padLeft(2, '0');
+    final period = value.hour >= 12 ? 'PM' : 'AM';
+
+    return '$hour:$minute $period';
+  }
+}
 class ChildStatusCard extends StatelessWidget {
   const ChildStatusCard({
     super.key,
@@ -1107,4 +1385,6 @@ class ChildStatusCard extends StatelessWidget {
     );
   }
 }
+
+
 

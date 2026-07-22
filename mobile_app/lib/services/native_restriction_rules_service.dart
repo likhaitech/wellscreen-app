@@ -26,4 +26,15 @@ class NativeRestrictionRulesService {
       'emergencyAccess': emergencyAccess,
     });
   }
+
+  Future<void> saveEmergencyAccessState({
+    required bool isApproved,
+    required DateTime? approvedUntil,
+  }) async {
+    await _channel.invokeMethod<void>('saveEmergencyAccessState', {
+      'emergencyAccessApproved': isApproved,
+      'emergencyAccessApprovedUntilMillis':
+          approvedUntil?.millisecondsSinceEpoch ?? 0,
+    });
+  }
 }

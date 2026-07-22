@@ -51,6 +51,18 @@ class MainActivity : FlutterActivity() {
                         )
                     }
                 }
+                "saveEmergencyAccessState" -> {
+                    try {
+                        saveEmergencyAccessState(call.arguments)
+                        result.success(true)
+                    } catch (exception: Exception) {
+                        result.error(
+                            "EMERGENCY_ACCESS_SAVE_ERROR",
+                            exception.message ?: "Unable to save emergency access state.",
+                            null
+                        )
+                    }
+                }
                 else -> result.notImplemented()
             }
         }
@@ -98,6 +110,28 @@ class MainActivity : FlutterActivity() {
             .apply()
     }
 
+    private fun saveEmergencyAccessState(arguments: Any?) {
+        val accessData = arguments as? Map<*, *>
+            ?: throw IllegalArgumentException("Emergency access data is missing.")
+
+        val preferences = getSharedPreferences(
+            restrictionRulesPreferencesName,
+            MODE_PRIVATE
+        )
+
+        preferences.edit()
+            .putBoolean(
+                "emergencyAccessApproved",
+                readBoolean(accessData["emergencyAccessApproved"], false)
+            )
+            .putLong(
+                "emergencyAccessApprovedUntilMillis",
+                readLong(accessData["emergencyAccessApprovedUntilMillis"], 0L)
+            )
+            .putLong("emergencyAccessUpdatedAtMillis", System.currentTimeMillis())
+            .apply()
+    }
+
     private fun readBoolean(value: Any?, defaultValue: Boolean): Boolean {
         return when (value) {
             is Boolean -> value
@@ -111,6 +145,16 @@ class MainActivity : FlutterActivity() {
             is Int -> value
             is Number -> value.toInt()
             is String -> value.toIntOrNull() ?: defaultValue
+            else -> defaultValue
+        }
+    }
+
+    private fun readLong(value: Any?, defaultValue: Long): Long {
+        return when (value) {
+            is Long -> value
+            is Int -> value.toLong()
+            is Number -> value.toLong()
+            is String -> value.toLongOrNull() ?: defaultValue
             else -> defaultValue
         }
     }
