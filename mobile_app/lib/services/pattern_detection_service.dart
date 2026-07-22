@@ -1,7 +1,13 @@
 import '../models/app_usage_summary.dart';
 import '../models/usage_report.dart';
+import 'age_based_screen_time_threshold_service.dart';
 
 class PatternDetectionService {
+  PatternDetectionService({
+    AgeBasedScreenTimeThresholdService? ageThresholdService,
+  }) : _ageThresholdService =
+           ageThresholdService ?? AgeBasedScreenTimeThresholdService();
+
   static const Duration warningTotalUsageLimit = Duration(hours: 3);
   static const Duration unhealthyTotalUsageLimit = Duration(hours: 5);
 
@@ -33,7 +39,11 @@ class PatternDetectionService {
     'freefire',
   ];
 
-  UsageReport generateReport(List<AppUsageSummary> summaries) {
+  final AgeBasedScreenTimeThresholdService _ageThresholdService;
+
+  UsageReport generateReport(List<AppUsageSummary> summaries, {int? childAge}) {
+    final threshold = _ageThresholdService.getThresholdForAge(childAge);
+
     final totalUsageDuration = _getTotalUsageDuration(summaries);
     final topUsedApp = _getTopUsedApp(summaries);
     final unhealthyAppCount = _getUnhealthyAppCount(summaries);
@@ -45,6 +55,7 @@ class PatternDetectionService {
       unhealthyAppCount: unhealthyAppCount,
       hasLongSingleAppUsage: hasLongSingleAppUsage,
       hasLateNightUsage: hasLateNightUsage,
+      threshold: threshold,
     );
 
     return UsageReport(
@@ -60,6 +71,7 @@ class PatternDetectionService {
         unhealthyAppCount: unhealthyAppCount,
         hasLongSingleAppUsage: hasLongSingleAppUsage,
         hasLateNightUsage: hasLateNightUsage,
+        threshold: threshold,
       ),
     );
   }
@@ -89,9 +101,7 @@ class PatternDetectionService {
   }
 
   bool _hasLongSingleAppUsage(List<AppUsageSummary> summaries) {
-    return summaries.any(
-      (app) => app.usageDuration >= warningSingleAppLimit,
-    );
+    return summaries.any((app) => app.usageDuration >= warningSingleAppLimit);
   }
 
   bool _hasLateNightUsage(List<AppUsageSummary> summaries) {
@@ -121,14 +131,15 @@ class PatternDetectionService {
     required int unhealthyAppCount,
     required bool hasLongSingleAppUsage,
     required bool hasLateNightUsage,
+    required AgeBasedScreenTimeThreshold threshold,
   }) {
-    if (totalUsageDuration >= unhealthyTotalUsageLimit ||
+    if (totalUsageDuration >= threshold.unhealthyLimit ||
         unhealthyAppCount >= 3 ||
         hasLateNightUsage) {
       return UsagePatternStatus.unhealthy;
     }
 
-    if (totalUsageDuration >= warningTotalUsageLimit ||
+    if (totalUsageDuration >= threshold.warningLimit ||
         unhealthyAppCount >= 1 ||
         hasLongSingleAppUsage) {
       return UsagePatternStatus.warning;
@@ -144,12 +155,13 @@ class PatternDetectionService {
     required int unhealthyAppCount,
     required bool hasLongSingleAppUsage,
     required bool hasLateNightUsage,
+    required AgeBasedScreenTimeThreshold threshold,
   }) {
     final topAppName = topUsedApp?.displayName ?? 'No app';
 
     switch (status) {
       case UsagePatternStatus.healthy:
-        return 'Usage looks healthy. Keep maintaining balanced screen time.';
+        return 'Usage looks healthy for the ${threshold.ageGroupLabel.toLowerCase()} threshold. Keep maintaining balanced screen time.';
 
       case UsagePatternStatus.warning:
         if (hasLongSingleAppUsage) {
@@ -160,7 +172,7 @@ class PatternDetectionService {
           return 'Some social media or gaming apps have high usage. Consider setting app limits.';
         }
 
-        return 'Screen time is getting high. Consider taking a break.';
+        return 'Screen time is above the recommended limit for ${threshold.ageGroupLabel.toLowerCase()}. Consider taking a break.';
 
       case UsagePatternStatus.unhealthy:
         if (hasLateNightUsage) {
@@ -171,7 +183,7 @@ class PatternDetectionService {
           return 'Multiple social media or gaming apps show high usage. Parent guidance is recommended.';
         }
 
-        return 'Total screen time is too high. Consider using focus mode or temporary app blocking.';
+        return 'Total screen time is too high for ${threshold.ageGroupLabel.toLowerCase()}. Consider using focus mode or temporary app blocking.';
     }
   }
 }

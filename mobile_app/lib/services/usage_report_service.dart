@@ -9,7 +9,13 @@ class UsageReportService {
 
   final PatternDetectionService _patternDetectionService;
 
-  UsageReport generateFromSummaries(List<AppUsageSummary> summaries) {
-    return _patternDetectionService.generateReport(summaries);
+  UsageReport generateFromSummaries(
+    List<AppUsageSummary> summaries, {
+    int? childAge,
+  }) {
+    return _patternDetectionService.generateReport(
+      summaries,
+      childAge: childAge,
+    );
   }
 }

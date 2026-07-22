@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 
 import '../models/app_usage_summary.dart';
 import '../models/usage_report.dart';
+import 'age_based_screen_time_threshold_service.dart';
 import 'usage_report_service.dart';
 import 'usage_tracking_service.dart';
 
@@ -34,15 +35,19 @@ class FirestoreUsageReportSyncService {
     FirebaseFirestore? firestore,
     UsageTrackingService? usageTrackingService,
     UsageReportService? usageReportService,
+    AgeBasedScreenTimeThresholdService? ageThresholdService,
   }) : _firebaseAuth = firebaseAuth ?? FirebaseAuth.instance,
        _firestore = firestore ?? FirebaseFirestore.instance,
        _usageTrackingService = usageTrackingService ?? UsageTrackingService(),
-       _usageReportService = usageReportService ?? UsageReportService();
+       _usageReportService = usageReportService ?? UsageReportService(),
+       _ageThresholdService =
+           ageThresholdService ?? AgeBasedScreenTimeThresholdService();
 
   final FirebaseAuth _firebaseAuth;
   final FirebaseFirestore _firestore;
   final UsageTrackingService _usageTrackingService;
   final UsageReportService _usageReportService;
+  final AgeBasedScreenTimeThresholdService _ageThresholdService;
 
   Future<FirestoreUsageReportSyncResult> syncTodayUsageReport() async {
     final user = _firebaseAuth.currentUser;
@@ -80,8 +85,20 @@ class FirestoreUsageReportSyncService {
       );
     }
 
+    final childProfileSnapshot = await _firestore
+        .collection('child_profiles')
+        .doc(childId)
+        .get();
+
+    final childProfileData = childProfileSnapshot.data();
+    final childAge = _readIntOrNull(childProfileData?['age']);
+    final ageThreshold = _ageThresholdService.getThresholdForAge(childAge);
+
     final appUsageList = await _usageTrackingService.getTodayUsage();
-    final report = _usageReportService.generateFromSummaries(appUsageList);
+    final report = _usageReportService.generateFromSummaries(
+      appUsageList,
+      childAge: childAge,
+    );
     final reportDate = _formatDate(report.generatedAt);
 
     final childUsageReportRef = _firestore
@@ -98,6 +115,9 @@ class FirestoreUsageReportSyncService {
       'childUserId': user.uid,
       'childEmail': user.email,
       'lastReportDate': reportDate,
+      'lastChildAge': childAge,
+      'lastAgeGroupLabel': ageThreshold.ageGroupLabel,
+      'lastRecommendedDailyLimitMinutes': ageThreshold.dailyLimit.inMinutes,
       'lastSyncedAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
@@ -108,6 +128,11 @@ class FirestoreUsageReportSyncService {
       'childUserId': user.uid,
       'childEmail': user.email,
       'reportDate': reportDate,
+      'childAge': childAge,
+      'ageGroupLabel': ageThreshold.ageGroupLabel,
+      'recommendedDailyLimitMinutes': ageThreshold.dailyLimit.inMinutes,
+      'warningTotalUsageLimitMinutes': ageThreshold.warningLimit.inMinutes,
+      'unhealthyTotalUsageLimitMinutes': ageThreshold.unhealthyLimit.inMinutes,
       'totalUsageDurationMs': report.totalUsageDuration.inMilliseconds,
       'totalUsageLabel': report.totalUsageLabel,
       'topUsedApp': _appUsageToMap(report.topUsedApp),
@@ -163,6 +188,22 @@ class FirestoreUsageReportSyncService {
           ? null
           : Timestamp.fromDate(appUsage.lastTimeUsed!),
     };
+  }
+
+  int? _readIntOrNull(Object? value) {
+    if (value is int) {
+      return value;
+    }
+
+    if (value is num) {
+      return value.toInt();
+    }
+
+    if (value is String) {
+      return int.tryParse(value);
+    }
+
+    return null;
   }
 
   String _formatDate(DateTime dateTime) {
