@@ -2,6 +2,7 @@ package com.wellscreen.app
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -15,7 +16,10 @@ class WellScreenAccessibilityService : AccessibilityService() {
     private var lastDetectedTime: Long = 0L
 
     private var lastBlockedDomain: String? = null
-    private var lastBlockedTime: Long = 0L
+    private var lastBlockedWebsiteTime: Long = 0L
+
+    private var lastBlockedPackageName: String? = null
+    private var lastBlockedAppTime: Long = 0L
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) {
@@ -24,11 +28,13 @@ class WellScreenAccessibilityService : AccessibilityService() {
 
         val packageName = event.packageName?.toString() ?: return
 
-        if (!isSupportedBrowser(packageName)) {
+        if (!isSupportedEvent(event.eventType)) {
             return
         }
 
-        if (!isSupportedEvent(event.eventType)) {
+        handleRestrictedAppOpenIfNeeded(packageName)
+
+        if (!isSupportedBrowser(packageName)) {
             return
         }
 
@@ -55,7 +61,115 @@ class WellScreenAccessibilityService : AccessibilityService() {
     }
 
     override fun onInterrupt() {
-        // No active interruption handling is needed for website/category blocking.
+        // No active interruption handling is needed for app and website blocking.
+    }
+
+    private fun handleRestrictedAppOpenIfNeeded(packageName: String) {
+        if (!isRestrictedApp(packageName)) {
+            return
+        }
+
+        val currentTime = System.currentTimeMillis()
+
+        val isSameRecentBlock =
+            packageName == lastBlockedPackageName &&
+                currentTime - lastBlockedAppTime < APP_BLOCK_DEBOUNCE_MS
+
+        if (isSameRecentBlock) {
+            return
+        }
+
+        lastBlockedPackageName = packageName
+        lastBlockedAppTime = currentTime
+
+        val appName = getReadableAppName(packageName)
+        val attemptCount = recordRestrictedAppOpenAttempt(
+            packageName = packageName,
+            appName = appName,
+            attemptedAt = currentTime
+        )
+
+        val blockIntent = Intent(this, BlockedAppActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            putExtra(BlockedAppActivity.EXTRA_APP_NAME, appName)
+            putExtra(BlockedAppActivity.EXTRA_PACKAGE_NAME, packageName)
+            putExtra(BlockedAppActivity.EXTRA_ATTEMPT_COUNT, attemptCount)
+        }
+
+        try {
+            startActivity(blockIntent)
+
+            Log.d(
+                LOG_TAG,
+                "Blocked restricted app: app=$appName, package=$packageName, " +
+                    "attemptCount=$attemptCount"
+            )
+        } catch (exception: Exception) {
+            Log.e(
+                LOG_TAG,
+                "Failed to open blocked app screen.",
+                exception
+            )
+        }
+    }
+
+    private fun isRestrictedApp(packageName: String): Boolean {
+        if (packageName == applicationContext.packageName) {
+            return false
+        }
+
+        if (isSupportedBrowser(packageName)) {
+            return false
+        }
+
+        return restrictedAppPackages.contains(packageName)
+    }
+
+    private fun recordRestrictedAppOpenAttempt(
+        packageName: String,
+        appName: String,
+        attemptedAt: Long
+    ): Int {
+        val preferences = getSharedPreferences(
+            RESTRICTED_APP_ATTEMPT_PREFERENCES,
+            MODE_PRIVATE
+        )
+
+        val attemptKey = "attemptCount_$packageName"
+        val attemptCount = preferences.getInt(attemptKey, 0) + 1
+
+        preferences.edit()
+            .putInt(attemptKey, attemptCount)
+            .putString("lastBlockedAppName", appName)
+            .putString("lastBlockedPackageName", packageName)
+            .putInt("lastBlockedAttemptCount", attemptCount)
+            .putLong("lastBlockedAttemptAt", attemptedAt)
+            .apply()
+
+        return attemptCount
+    }
+
+    private fun getReadableAppName(packageName: String): String {
+        return try {
+            val applicationInfo = packageManager.getApplicationInfo(
+                packageName,
+                PackageManager.GET_META_DATA
+            )
+
+            packageManager.getApplicationLabel(applicationInfo).toString()
+        } catch (exception: Exception) {
+            packageName
+                .substringAfterLast(".")
+                .replaceFirstChar { firstChar ->
+                    if (firstChar.isLowerCase()) {
+                        firstChar.titlecase()
+                    } else {
+                        firstChar.toString()
+                    }
+                }
+        }
     }
 
     private fun isSupportedBrowser(packageName: String): Boolean {
@@ -156,14 +270,14 @@ class WellScreenAccessibilityService : AccessibilityService() {
 
         val isSameRecentBlock =
             detectionResult.domain == lastBlockedDomain &&
-                detectedAt - lastBlockedTime < BLOCK_DEBOUNCE_MS
+                detectedAt - lastBlockedWebsiteTime < WEBSITE_BLOCK_DEBOUNCE_MS
 
         if (isSameRecentBlock) {
             return
         }
 
         lastBlockedDomain = detectionResult.domain
-        lastBlockedTime = detectedAt
+        lastBlockedWebsiteTime = detectedAt
 
         val blockIntent = Intent(this, BlockedWebsiteActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -212,11 +326,15 @@ class WellScreenAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val LOG_TAG = "WellScreenWebsiteDetection"
+
         private const val WEBSITE_DETECTION_PREFERENCES =
             "wellscreen_website_detection"
+        private const val RESTRICTED_APP_ATTEMPT_PREFERENCES =
+            "wellscreen_restricted_app_attempts"
 
         private const val DETECTION_DEBOUNCE_MS = 3000L
-        private const val BLOCK_DEBOUNCE_MS = 5000L
+        private const val WEBSITE_BLOCK_DEBOUNCE_MS = 5000L
+        private const val APP_BLOCK_DEBOUNCE_MS = 3000L
         private const val MAX_NODE_DEPTH = 8
         private const val MAX_TEXT_ITEMS = 120
 
@@ -233,6 +351,19 @@ class WellScreenAccessibilityService : AccessibilityService() {
             "com.opera.mini.native",
             "com.sec.android.app.sbrowser",
             "com.duckduckgo.mobile.android"
+        )
+
+        private val restrictedAppPackages = setOf(
+            "com.google.android.youtube",
+            "com.zhiliaoapp.musically",
+            "com.instagram.android",
+            "com.facebook.katana",
+            "com.facebook.orca",
+            "com.roblox.client",
+            "com.netflix.mediaclient",
+            "com.mobile.legends",
+            "com.tencent.ig",
+            "com.garena.game.codm"
         )
     }
 }

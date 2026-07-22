@@ -10,6 +10,13 @@
         android:icon="@mipmap/ic_launcher">
 
         <activity
+            android:name=".BlockedAppActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:label="@string/blocked_app_label"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+
+        <activity
             android:name=".BlockedWebsiteActivity"
             android:exported="false"
             android:excludeFromRecents="true"
