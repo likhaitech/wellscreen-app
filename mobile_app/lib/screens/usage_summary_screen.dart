@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../models/app_usage_summary.dart';
+import '../models/usage_period_summary.dart';
+import '../models/usage_report.dart';
+import '../services/firestore_usage_period_summary_service.dart';
 import '../services/screen_time_goal_service.dart';
 import '../services/usage_dashboard_controller_service.dart';
 
@@ -19,21 +22,26 @@ class UsageSummaryScreen extends StatefulWidget {
 class _UsageSummaryScreenState extends State<UsageSummaryScreen> {
   final UsageDashboardControllerService _controllerService =
       UsageDashboardControllerService();
+  final FirestoreUsagePeriodSummaryService _periodSummaryService =
+      FirestoreUsagePeriodSummaryService();
 
   late Future<UsageDashboardControllerState> _summaryFuture;
+  late Future<UsagePeriodSummaryBundle> _periodSummaryFuture;
 
   @override
   void initState() {
     super.initState();
     _summaryFuture = _controllerService.loadTodayDashboardState();
+    _periodSummaryFuture = _periodSummaryService.getCurrentPeriodSummaries();
   }
 
   Future<void> _refreshSummary() async {
     setState(() {
       _summaryFuture = _controllerService.loadTodayDashboardState();
+      _periodSummaryFuture = _periodSummaryService.getCurrentPeriodSummaries();
     });
 
-    await _summaryFuture;
+    await Future.wait<Object?>([_summaryFuture, _periodSummaryFuture]);
   }
 
   @override
@@ -74,7 +82,7 @@ class _UsageSummaryScreenState extends State<UsageSummaryScreen> {
               padding: const EdgeInsets.all(24),
               children: [
                 const Text(
-                  'Daily and Weekly Usage',
+                  'Daily, Weekly, and Monthly Usage',
                   style: TextStyle(
                     fontSize: 25,
                     fontWeight: FontWeight.w900,
@@ -135,13 +143,7 @@ class _UsageSummaryScreenState extends State<UsageSummaryScreen> {
                   description: _getGoalDescription(state),
                 ),
 
-                SummaryCard(
-                  icon: Icons.bar_chart_rounded,
-                  title: 'Weekly Average',
-                  value: 'Not available yet',
-                  description:
-                      'Weekly average will be available once multi-day usage reports are connected.',
-                ),
+                PeriodSummarySection(periodSummaryFuture: _periodSummaryFuture),
 
                 SummaryCard(
                   icon: Icons.apps_rounded,
@@ -268,6 +270,142 @@ class _UsageSummaryScreenState extends State<UsageSummaryScreen> {
     }
 
     return '${duration.inSeconds}s';
+  }
+}
+
+class PeriodSummarySection extends StatelessWidget {
+  const PeriodSummarySection({super.key, required this.periodSummaryFuture});
+
+  final Future<UsagePeriodSummaryBundle> periodSummaryFuture;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<UsagePeriodSummaryBundle>(
+      future: periodSummaryFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting &&
+            snapshot.data == null) {
+          return const SummaryStatusCard(
+            icon: Icons.hourglass_top_rounded,
+            title: 'Loading Weekly and Monthly Summaries',
+            message: 'Checking synced daily usage reports from Firestore...',
+            color: UsageSummaryScreen.purple,
+          );
+        }
+
+        if (snapshot.hasError) {
+          return SummaryStatusCard(
+            icon: Icons.error_outline_rounded,
+            title: 'Unable to Load Weekly and Monthly Summaries',
+            message: snapshot.error.toString(),
+            color: Colors.red,
+          );
+        }
+
+        final bundle = snapshot.data;
+
+        if (bundle == null) {
+          return const SummaryStatusCard(
+            icon: Icons.info_outline_rounded,
+            title: 'No Period Summary Available',
+            message:
+                'Weekly and monthly summaries will appear after synced daily reports are available.',
+            color: Colors.orange,
+          );
+        }
+
+        return Column(
+          children: [
+            PeriodSummaryCard(summary: bundle.weeklySummary),
+            PeriodSummaryCard(summary: bundle.monthlySummary),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class PeriodSummaryCard extends StatelessWidget {
+  const PeriodSummaryCard({super.key, required this.summary});
+
+  final UsagePeriodSummary summary;
+
+  @override
+  Widget build(BuildContext context) {
+    final topUsedApp = summary.topUsedApp;
+    final topUsedAppLabel = topUsedApp == null
+        ? 'No top app recorded'
+        : '${topUsedApp.displayName} • ${topUsedApp.usageLabel}';
+
+    return Card(
+      elevation: 2,
+      shadowColor: Colors.black12,
+      margin: const EdgeInsets.only(bottom: 14),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: ListTile(
+        contentPadding: const EdgeInsets.all(18),
+        leading: Icon(_getIcon(summary), color: _getColor(summary), size: 34),
+        title: Text(
+          summary.title,
+          style: const TextStyle(
+            color: UsageSummaryScreen.darkText,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Text(
+            'Child: ${summary.childLabel}\n'
+            'Date Range: ${summary.dateRangeLabel}\n'
+            'Reports Counted: ${summary.reportCount}\n'
+            'Total Screen Time: ${summary.totalUsageLabel}\n'
+            'Average Daily Usage: ${summary.averageDailyUsageLabel}\n'
+            'Top App: $topUsedAppLabel\n'
+            'Status: ${summary.statusLabel}\n'
+            'Warning Days: ${summary.warningReportCount} • Unhealthy Days: ${summary.unhealthyReportCount}\n'
+            '${summary.recommendationMessage}',
+            style: const TextStyle(
+              color: UsageSummaryScreen.grayText,
+              height: 1.4,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  IconData _getIcon(UsagePeriodSummary summary) {
+    if (!summary.hasReports) {
+      return Icons.info_outline_rounded;
+    }
+
+    switch (summary.patternStatus) {
+      case null:
+        return Icons.info_outline_rounded;
+      case UsagePatternStatus.healthy:
+        return Icons.check_circle_rounded;
+      case UsagePatternStatus.warning:
+        return Icons.warning_amber_rounded;
+      case UsagePatternStatus.unhealthy:
+        return Icons.error_rounded;
+    }
+  }
+
+  Color _getColor(UsagePeriodSummary summary) {
+    if (!summary.hasReports) {
+      return Colors.orange;
+    }
+
+    switch (summary.patternStatus) {
+      case null:
+        return Colors.orange;
+      case UsagePatternStatus.healthy:
+        return Colors.green;
+      case UsagePatternStatus.warning:
+        return Colors.orange;
+      case UsagePatternStatus.unhealthy:
+        return Colors.red;
+    }
   }
 }
 
