@@ -21,6 +21,8 @@ class LocalUsageReportCacheService {
       'generatedAt': report.generatedAt.toIso8601String(),
       'patternStatus': report.patternStatus.name,
       'recommendationMessage': report.recommendationMessage,
+      'riskScore': report.riskScore,
+      'riskFactors': report.riskFactors,
     };
 
     await preferences.setString(_todayUsageReportKey, jsonEncode(data));
@@ -36,11 +38,11 @@ class LocalUsageReportCacheService {
 
     final decodedValue = jsonDecode(cachedValue);
 
-    if (decodedValue is! Map<String, dynamic>) {
+    if (decodedValue is! Map) {
       return null;
     }
 
-    return decodedValue;
+    return Map<String, dynamic>.from(decodedValue);
   }
 
   Future<UsageReport?> getCachedTodayReport() async {
@@ -52,14 +54,15 @@ class LocalUsageReportCacheService {
 
     final topUsedAppPackageName = data['topUsedAppPackageName'] as String?;
     final topUsedAppDisplayName = data['topUsedAppDisplayName'] as String?;
-    final topUsedAppUsageDurationMs =
-        data['topUsedAppUsageDurationMs'] as int?;
+    final topUsedAppUsageDurationMs = _readInt(
+      data['topUsedAppUsageDurationMs'],
+    );
 
     AppUsageSummary? topUsedApp;
 
     if (topUsedAppPackageName != null &&
         topUsedAppDisplayName != null &&
-        topUsedAppUsageDurationMs != null) {
+        topUsedAppUsageDurationMs > 0) {
       topUsedApp = AppUsageSummary(
         packageName: topUsedAppPackageName,
         displayName: topUsedAppDisplayName,
@@ -76,20 +79,48 @@ class LocalUsageReportCacheService {
 
     return UsageReport(
       totalUsageDuration: Duration(
-        milliseconds: data['totalUsageDurationMs'] as int? ?? 0,
+        milliseconds: _readInt(data['totalUsageDurationMs']),
       ),
       topUsedApp: topUsedApp,
-      unhealthyAppCount: data['unhealthyAppCount'] as int? ?? 0,
-      generatedAt: DateTime.tryParse(data['generatedAt'] as String? ?? '') ??
+      unhealthyAppCount: _readInt(data['unhealthyAppCount']),
+      generatedAt:
+          DateTime.tryParse(data['generatedAt'] as String? ?? '') ??
           DateTime.now(),
       patternStatus: patternStatus,
-      recommendationMessage: data['recommendationMessage'] as String? ??
+      recommendationMessage:
+          data['recommendationMessage'] as String? ??
           'No recommendation available.',
+      riskScore: _readInt(data['riskScore']),
+      riskFactors: _readStringList(data['riskFactors']),
     );
   }
 
   Future<void> clearTodayReport() async {
     final preferences = await SharedPreferences.getInstance();
     await preferences.remove(_todayUsageReportKey);
+  }
+
+  List<String> _readStringList(Object? value) {
+    if (value is Iterable) {
+      return value.map((item) => item.toString()).toList();
+    }
+
+    return const [];
+  }
+
+  int _readInt(Object? value) {
+    if (value is int) {
+      return value;
+    }
+
+    if (value is num) {
+      return value.toInt();
+    }
+
+    if (value is String) {
+      return int.tryParse(value) ?? 0;
+    }
+
+    return 0;
   }
 }

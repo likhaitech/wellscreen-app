@@ -157,6 +157,8 @@ class FirestoreChildUsageReportService {
       unhealthyAppCount: _readInt(reportData['unhealthyAppCount']),
       generatedAt: generatedAt,
       patternStatus: patternStatus,
+      riskScore: _readInt(reportData['riskScore']),
+      riskFactors: _readStringList(reportData['riskFactors']),
       recommendationMessage:
           reportData['recommendationMessage'] as String? ??
           'No recommendation available.',
@@ -199,6 +201,14 @@ class FirestoreChildUsageReportService {
       usageDuration: Duration(milliseconds: usageDurationMs),
       lastTimeUsed: lastTimeUsed,
     );
+  }
+
+  List<String> _readStringList(Object? value) {
+    if (value is Iterable) {
+      return value.map((item) => item.toString()).toList();
+    }
+
+    return const [];
   }
 
   int _readInt(Object? value) {
