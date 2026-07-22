@@ -1,4 +1,4 @@
-package com.wellscreen.app
+﻿package com.wellscreen.app
 
 import android.app.Activity
 import android.content.Intent
@@ -16,9 +16,13 @@ class BlockedAppActivity : Activity() {
         val appName = intent.getStringExtra(EXTRA_APP_NAME) ?: "Restricted app"
         val packageName = intent.getStringExtra(EXTRA_PACKAGE_NAME) ?: "unknown"
         val attemptCount = intent.getIntExtra(EXTRA_ATTEMPT_COUNT, 1)
+        val blockReasonLabel =
+            intent.getStringExtra(EXTRA_BLOCK_REASON_LABEL) ?: "App Blocking"
 
         findViewById<TextView>(R.id.blockedAppNameText).text = appName
         findViewById<TextView>(R.id.blockedAppPackageText).text = packageName
+        findViewById<TextView>(R.id.blockedAppReasonText).text =
+            "Reason: $blockReasonLabel"
         findViewById<TextView>(R.id.blockedAppAttemptText).text =
             "Open Attempts: $attemptCount"
 
@@ -45,5 +49,6 @@ class BlockedAppActivity : Activity() {
         const val EXTRA_APP_NAME = "extra_app_name"
         const val EXTRA_PACKAGE_NAME = "extra_package_name"
         const val EXTRA_ATTEMPT_COUNT = "extra_attempt_count"
+        const val EXTRA_BLOCK_REASON_LABEL = "extra_block_reason_label"
     }
 }

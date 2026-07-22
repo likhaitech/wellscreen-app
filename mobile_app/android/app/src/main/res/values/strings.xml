@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="accessibility_service_description">WellScreen uses this service to help guardians monitor and manage screen time on this device.</string>
 
@@ -9,6 +9,7 @@
 
     <string name="blocked_app_label">App Blocked</string>
     <string name="blocked_app_title">App Blocked</string>
-    <string name="blocked_app_message">This app is currently restricted by WellScreen. The open attempt has been recorded for guardian review.</string>
+    <string name="blocked_app_message">This app is currently restricted by WellScreen based on the active guardian rules. The open attempt has been recorded for guardian review.</string>
     <string name="blocked_app_leave_button">Go Back to Safety</string>
 </resources>
+

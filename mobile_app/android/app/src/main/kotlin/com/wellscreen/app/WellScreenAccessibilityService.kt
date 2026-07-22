@@ -94,6 +94,10 @@ class WellScreenAccessibilityService : AccessibilityService() {
             putExtra(BlockedAppActivity.EXTRA_APP_NAME, appName)
             putExtra(BlockedAppActivity.EXTRA_PACKAGE_NAME, packageName)
             putExtra(BlockedAppActivity.EXTRA_ATTEMPT_COUNT, attemptCount)
+            putExtra(
+                BlockedAppActivity.EXTRA_BLOCK_REASON_LABEL,
+                getBlockReasonLabel(blockReason)
+            )
         }
 
         try {
@@ -475,3 +479,4 @@ class WellScreenAccessibilityService : AccessibilityService() {
         )
     }
 }
+
