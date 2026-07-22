@@ -1,4 +1,4 @@
-import '../models/usage_report.dart';
+﻿import '../models/usage_report.dart';
 import 'intervention_recommendation_service.dart';
 import 'usage_dashboard_service.dart';
 
@@ -14,7 +14,7 @@ class UsageDashboardViewModel {
     required this.isUsingCachedData,
     required this.hasUsagePermission,
     required this.errorMessage,
-    this.riskScoreLabel = '0/100 • Healthy Risk',
+    this.riskScoreLabel = '0/100 - Healthy Risk',
     this.riskFactorSummary = 'No risk factors were detected in this report.',
   });
 
@@ -94,10 +94,10 @@ class UsageDashboardViewModelService {
 
   String _getRiskScoreLabel(UsageReport? report) {
     if (report == null) {
-      return '0/100 • No Report';
+      return '0/100 - No Report';
     }
 
-    return '${report.riskScoreLabel} • ${report.riskLevelLabel}';
+    return '${report.riskScoreLabel} - ${report.riskLevelLabel}';
   }
 
   String _getRiskFactorSummary(UsageReport? report) {
