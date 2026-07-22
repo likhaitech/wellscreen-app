@@ -1073,6 +1073,127 @@ class ParentRuleCard extends StatelessWidget {
 }
 
 
+
+class SmsBackupPermissionSection extends StatefulWidget {
+  const SmsBackupPermissionSection({super.key});
+
+  @override
+  State<SmsBackupPermissionSection> createState() =>
+      _SmsBackupPermissionSectionState();
+}
+
+class _SmsBackupPermissionSectionState
+    extends State<SmsBackupPermissionSection> {
+  bool isChecking = true;
+  bool isGranted = false;
+
+  static const Color purple = Color(0xFF5B2BBF);
+  static const Color darkText = Color(0xFF111827);
+  static const Color grayText = Color(0xFF4B5563);
+
+  @override
+  void initState() {
+    super.initState();
+    checkPermission();
+  }
+
+  Future<void> checkPermission() async {
+    final granted =
+        await const NativeRestrictionRulesService().isSmsPermissionGranted();
+
+    if (!mounted) return;
+
+    setState(() {
+      isGranted = granted;
+      isChecking = false;
+    });
+  }
+
+  Future<void> requestPermission() async {
+    setState(() => isChecking = true);
+
+    await const NativeRestrictionRulesService().requestSmsPermission();
+    await Future<void>.delayed(const Duration(milliseconds: 800));
+
+    await checkPermission();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final title = isGranted
+        ? 'SMS Backup Alerts Ready'
+        : 'SMS Backup Permission Needed';
+
+    final subtitle = isGranted
+        ? 'The child device can send SMS backup alerts when critical restriction events occur.'
+        : 'Allow SMS permission on this child device so WellScreen can send backup alerts to the guardian phone number. WellScreen does not read SMS messages.';
+
+    return Card(
+      elevation: 1.5,
+      shadowColor: Colors.black12,
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              Icons.sms_rounded,
+              color: isGranted ? Colors.green : purple,
+              size: 34,
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      color: darkText,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(
+                      color: grayText,
+                      height: 1.4,
+                    ),
+                  ),
+                  if (!isGranted) ...[
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: isChecking ? null : requestPermission,
+                        style: FilledButton.styleFrom(
+                          backgroundColor: purple,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                        ),
+                        icon: const Icon(Icons.sms_rounded),
+                        label: Text(
+                          isChecking ? 'Checking...' : 'Allow SMS Backup Alerts',
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 class EmergencyAccessRequestSection extends StatefulWidget {
   const EmergencyAccessRequestSection({
     super.key,
@@ -1385,6 +1506,8 @@ class ChildStatusCard extends StatelessWidget {
     );
   }
 }
+
+
 
 
 

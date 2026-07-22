@@ -1,6 +1,9 @@
 ﻿package com.wellscreen.app
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.provider.Settings
 import android.text.TextUtils
 import io.flutter.embedding.android.FlutterActivity
@@ -63,6 +66,25 @@ class MainActivity : FlutterActivity() {
                         )
                     }
                 }
+                "saveSmsBackupAlertSettings" -> {
+                    try {
+                        saveSmsBackupAlertSettings(call.arguments)
+                        result.success(true)
+                    } catch (exception: Exception) {
+                        result.error(
+                            "SMS_BACKUP_SAVE_ERROR",
+                            exception.message ?: "Unable to save SMS backup alert settings.",
+                            null
+                        )
+                    }
+                }
+                "isSmsPermissionGranted" -> {
+                    result.success(isSmsPermissionGranted())
+                }
+                "requestSmsPermission" -> {
+                    requestSmsPermission()
+                    result.success(true)
+                }
                 else -> result.notImplemented()
             }
         }
@@ -78,10 +100,7 @@ class MainActivity : FlutterActivity() {
         )
 
         preferences.edit()
-            .putInt(
-                "limitMinutes",
-                readInt(rules["limitMinutes"], 120)
-            )
+            .putInt("limitMinutes", readInt(rules["limitMinutes"], 120))
             .putBoolean(
                 "appBlockingEnabled",
                 readBoolean(rules["appBlocking"], true)
@@ -105,6 +124,14 @@ class MainActivity : FlutterActivity() {
             .putBoolean(
                 "emergencyAccessEnabled",
                 readBoolean(rules["emergencyAccess"], true)
+            )
+            .putBoolean(
+                "smsBackupAlertsEnabled",
+                readBoolean(rules["smsBackupAlerts"], false)
+            )
+            .putString(
+                "guardianPhoneNumber",
+                readString(rules["guardianPhoneNumber"], "")
             )
             .putLong("updatedAtMillis", System.currentTimeMillis())
             .apply()
@@ -130,6 +157,48 @@ class MainActivity : FlutterActivity() {
             )
             .putLong("emergencyAccessUpdatedAtMillis", System.currentTimeMillis())
             .apply()
+    }
+
+    private fun saveSmsBackupAlertSettings(arguments: Any?) {
+        val smsData = arguments as? Map<*, *>
+            ?: throw IllegalArgumentException("SMS backup alert data is missing.")
+
+        val preferences = getSharedPreferences(
+            restrictionRulesPreferencesName,
+            MODE_PRIVATE
+        )
+
+        preferences.edit()
+            .putBoolean(
+                "smsBackupAlertsEnabled",
+                readBoolean(smsData["smsBackupAlertsEnabled"], false)
+            )
+            .putString(
+                "guardianPhoneNumber",
+                readString(smsData["guardianPhoneNumber"], "")
+            )
+            .putLong("smsBackupSettingsUpdatedAtMillis", System.currentTimeMillis())
+            .apply()
+    }
+
+    private fun requestSmsPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+            !isSmsPermissionGranted()
+        ) {
+            requestPermissions(
+                arrayOf(Manifest.permission.SEND_SMS),
+                SMS_PERMISSION_REQUEST_CODE
+            )
+        }
+    }
+
+    private fun isSmsPermissionGranted(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            checkSelfPermission(Manifest.permission.SEND_SMS) ==
+                PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
     }
 
     private fun readBoolean(value: Any?, defaultValue: Boolean): Boolean {
@@ -159,6 +228,13 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun readString(value: Any?, defaultValue: String): String {
+        return when (value) {
+            is String -> value
+            else -> defaultValue
+        }
+    }
+
     private fun isAccessibilityServiceEnabled(): Boolean {
         val expectedComponentName =
             "$packageName/${WellScreenAccessibilityService::class.java.name}"
@@ -178,5 +254,9 @@ class MainActivity : FlutterActivity() {
         }
 
         return false
+    }
+
+    companion object {
+        private const val SMS_PERMISSION_REQUEST_CODE = 9004
     }
 }

@@ -1,8 +1,11 @@
 ﻿package com.wellscreen.app
 
+import android.Manifest
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
+import android.telephony.SmsManager
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -62,7 +65,7 @@ class WellScreenAccessibilityService : AccessibilityService() {
     }
 
     override fun onInterrupt() {
-        // No active interruption handling is needed for app, website, focus-mode, cooldown, and scheduled-lock blocking.
+        // No active interruption handling is needed.
     }
 
     private fun handleAppEnforcementIfNeeded(packageName: String) {
@@ -103,6 +106,13 @@ class WellScreenAccessibilityService : AccessibilityService() {
             attemptedAt = currentTime
         )
 
+        sendSmsBackupAlertIfNeeded(
+            alertKey = "blocked_app_$packageName",
+            title = "App blocked",
+            message = "WellScreen alert: $appName was blocked on the child device. Reason: ${getBlockReasonLabel(blockReason)}. Open attempts: $attemptCount.",
+            currentTime = currentTime
+        )
+
         val blockIntent = Intent(this, BlockedAppActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -132,11 +142,7 @@ class WellScreenAccessibilityService : AccessibilityService() {
                     "attemptCount=$attemptCount"
             )
         } catch (exception: Exception) {
-            Log.e(
-                LOG_TAG,
-                "Failed to open blocked app screen.",
-                exception
-            )
+            Log.e(LOG_TAG, "Failed to open blocked app screen.", exception)
         }
     }
 
@@ -183,6 +189,15 @@ class WellScreenAccessibilityService : AccessibilityService() {
         return null
     }
 
+    private fun isEmergencyAccessActive(
+        rules: RestrictionRules,
+        currentTime: Long
+    ): Boolean {
+        return rules.emergencyAccessEnabled &&
+            rules.emergencyAccessApproved &&
+            rules.emergencyAccessApprovedUntilMillis > currentTime
+    }
+
     private fun isScheduledLockActive(currentTime: Long): Boolean {
         val calendar = Calendar.getInstance().apply {
             timeInMillis = currentTime
@@ -192,14 +207,6 @@ class WellScreenAccessibilityService : AccessibilityService() {
 
         return hour >= SCHEDULED_LOCK_START_HOUR ||
             hour < SCHEDULED_LOCK_END_HOUR
-    }
-    private fun isEmergencyAccessActive(
-        rules: RestrictionRules,
-        currentTime: Long
-    ): Boolean {
-        return rules.emergencyAccessEnabled &&
-            rules.emergencyAccessApproved &&
-            rules.emergencyAccessApprovedUntilMillis > currentTime
     }
 
     private fun isScheduledLockTargetApp(packageName: String): Boolean {
@@ -438,6 +445,13 @@ class WellScreenAccessibilityService : AccessibilityService() {
         lastBlockedDomain = detectionResult.domain
         lastBlockedWebsiteTime = detectedAt
 
+        sendSmsBackupAlertIfNeeded(
+            alertKey = "blocked_website_${detectionResult.domain}",
+            title = "Website blocked",
+            message = "WellScreen alert: A harmful website was blocked on the child device. Domain: ${detectionResult.domain}. Category: ${detectionResult.category}.",
+            currentTime = detectedAt
+        )
+
         val blockIntent = Intent(this, BlockedWebsiteActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -455,11 +469,73 @@ class WellScreenAccessibilityService : AccessibilityService() {
                     "category=${detectionResult.category}"
             )
         } catch (exception: Exception) {
-            Log.e(
-                LOG_TAG,
-                "Failed to open blocked website screen.",
-                exception
+            Log.e(LOG_TAG, "Failed to open blocked website screen.", exception)
+        }
+    }
+
+    private fun sendSmsBackupAlertIfNeeded(
+        alertKey: String,
+        title: String,
+        message: String,
+        currentTime: Long
+    ) {
+        val preferences = getSharedPreferences(
+            RESTRICTION_RULE_PREFERENCES,
+            MODE_PRIVATE
+        )
+
+        if (!preferences.getBoolean("smsBackupAlertsEnabled", false)) {
+            return
+        }
+
+        val guardianPhoneNumber =
+            preferences.getString("guardianPhoneNumber", "")?.trim().orEmpty()
+
+        if (guardianPhoneNumber.isEmpty()) {
+            Log.d(LOG_TAG, "SMS backup alert skipped: guardian phone number is empty.")
+            return
+        }
+
+        if (!isSmsPermissionGranted()) {
+            Log.d(LOG_TAG, "SMS backup alert skipped: SEND_SMS permission is not granted.")
+            return
+        }
+
+        val lastAlertKey = "lastSmsAlertAt_$alertKey"
+        val lastAlertAt = preferences.getLong(lastAlertKey, 0L)
+
+        if (currentTime - lastAlertAt < SMS_BACKUP_ALERT_DEBOUNCE_MS) {
+            return
+        }
+
+        try {
+            SmsManager.getDefault().sendTextMessage(
+                guardianPhoneNumber,
+                null,
+                message.take(MAX_SMS_MESSAGE_LENGTH),
+                null,
+                null
             )
+
+            preferences.edit()
+                .putLong(lastAlertKey, currentTime)
+                .putString("lastSmsAlertTitle", title)
+                .putString("lastSmsAlertMessage", message)
+                .putLong("lastSmsAlertAt", currentTime)
+                .apply()
+
+            Log.d(LOG_TAG, "SMS backup alert sent: $title")
+        } catch (exception: Exception) {
+            Log.e(LOG_TAG, "Failed to send SMS backup alert.", exception)
+        }
+    }
+
+    private fun isSmsPermissionGranted(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            checkSelfPermission(Manifest.permission.SEND_SMS) ==
+                PackageManager.PERMISSION_GRANTED
+        } else {
+            true
         }
     }
 
@@ -513,6 +589,14 @@ class WellScreenAccessibilityService : AccessibilityService() {
             emergencyAccessEnabled = preferences.getBoolean(
                 "emergencyAccessEnabled",
                 true
+            ),
+            emergencyAccessApproved = preferences.getBoolean(
+                "emergencyAccessApproved",
+                false
+            ),
+            emergencyAccessApprovedUntilMillis = preferences.getLong(
+                "emergencyAccessApprovedUntilMillis",
+                0L
             )
         )
     }
@@ -533,7 +617,9 @@ class WellScreenAccessibilityService : AccessibilityService() {
         val cooldownTimerEnabled: Boolean,
         val scheduledLockEnabled: Boolean,
         val categoryRestrictionEnabled: Boolean,
-        val emergencyAccessEnabled: Boolean
+        val emergencyAccessEnabled: Boolean,
+        val emergencyAccessApproved: Boolean,
+        val emergencyAccessApprovedUntilMillis: Long
     )
 
     companion object {
@@ -555,6 +641,8 @@ class WellScreenAccessibilityService : AccessibilityService() {
         private const val WEBSITE_BLOCK_DEBOUNCE_MS = 5000L
         private const val APP_BLOCK_DEBOUNCE_MS = 3000L
         private const val COOLDOWN_DURATION_MS = 60000L
+        private const val SMS_BACKUP_ALERT_DEBOUNCE_MS = 600000L
+        private const val MAX_SMS_MESSAGE_LENGTH = 150
 
         private const val SCHEDULED_LOCK_START_HOUR = 22
         private const val SCHEDULED_LOCK_END_HOUR = 5
@@ -625,4 +713,3 @@ class WellScreenAccessibilityService : AccessibilityService() {
         )
     }
 }
-
