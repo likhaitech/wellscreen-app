@@ -1,3 +1,4 @@
+﻿import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -6,6 +7,7 @@ import '../models/usage_report.dart';
 import '../services/firestore_child_usage_report_service.dart';
 import '../services/usage_dashboard_controller_service.dart';
 import '../services/usage_dashboard_view_model_service.dart';
+import '../services/notification_service.dart';
 import 'alerts_reports_screen.dart';
 import 'device_pairing_screen.dart';
 import 'login_screen.dart';
@@ -39,6 +41,11 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     _dashboardFuture = _controllerService.loadTodayDashboardState();
     _latestChildReportFuture = _childUsageReportService
         .getLatestReportForCurrentParent();
+    unawaited(
+      NotificationService.instance.initializeForCurrentUser(
+        contextLabel: 'parent_dashboard',
+      ),
+    );
   }
 
   Future<void> _refreshDashboard() async {
@@ -323,10 +330,10 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     final dailyLimitLabel = _formatDuration(state.dailyScreenTimeLimit);
 
     if (goalResult == null) {
-      return 'Daily limit: $dailyLimitLabel. Generate a usage report to evaluate today’s progress.';
+      return 'Daily limit: $dailyLimitLabel. Generate a usage report to evaluate todayâ€™s progress.';
     }
 
-    return 'Limit: ${_formatDuration(goalResult.dailyLimit)} • Used: ${_formatDuration(goalResult.usedDuration)} • Remaining: ${_formatDuration(goalResult.remainingDuration)}\n${goalResult.message}';
+    return 'Limit: ${_formatDuration(goalResult.dailyLimit)} â€¢ Used: ${_formatDuration(goalResult.usedDuration)} â€¢ Remaining: ${_formatDuration(goalResult.remainingDuration)}\n${goalResult.message}';
   }
 
   String _formatDuration(Duration duration) {
@@ -501,7 +508,7 @@ class SyncedChildUsageReportCard extends StatelessWidget {
     final topUsedApp = report.topUsedApp;
     final topUsedAppLabel = topUsedApp == null
         ? 'No top app recorded'
-        : '${topUsedApp.displayName} • ${topUsedApp.usageLabel}';
+        : '${topUsedApp.displayName} â€¢ ${topUsedApp.usageLabel}';
 
     return Card(
       elevation: 3,
@@ -673,7 +680,7 @@ class ChildDeviceOverviewCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    '$name • $ageText',
+                    '$name â€¢ $ageText',
                     style: const TextStyle(
                       color: _darkText,
                       fontWeight: FontWeight.w800,
@@ -729,7 +736,7 @@ class DashboardStatusCard extends StatelessWidget {
   const DashboardStatusCard.loading({super.key})
     : icon = Icons.hourglass_top_rounded,
       title = 'Loading Dashboard',
-      message = 'Preparing today’s usage report...',
+      message = 'Preparing todayâ€™s usage report...',
       color = _purple;
 
   final IconData icon;
@@ -855,3 +862,4 @@ class DashboardMiniCard extends StatelessWidget {
     );
   }
 }
+

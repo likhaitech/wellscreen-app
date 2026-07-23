@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import '../services/accessibility_service_status_service.dart';
 import '../services/firestore_usage_report_sync_service.dart';
 import '../services/native_restriction_rules_service.dart';
+import '../services/notification_service.dart';
 import '../services/usage_tracking_service.dart';
 
 class ChildHomeScreen extends StatefulWidget {
@@ -49,6 +50,11 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     WidgetsBinding.instance.addObserver(this);
     _checkUsagePermission();
     _checkAccessibilityPermission();
+    unawaited(
+      NotificationService.instance.initializeForCurrentUser(
+        contextLabel: 'child_home',
+      ),
+    );
   }
 
   @override
@@ -1506,6 +1512,7 @@ class ChildStatusCard extends StatelessWidget {
     );
   }
 }
+
 
 
 

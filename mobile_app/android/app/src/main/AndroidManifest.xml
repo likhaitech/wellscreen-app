@@ -6,6 +6,8 @@
 
         <uses-permission android:name="android.permission.SEND_SMS" />
 
+        <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:label="WellScreen"
         android:name="${applicationName}"
@@ -69,5 +71,6 @@
         </intent>
     </queries>
 </manifest>
+
 
 

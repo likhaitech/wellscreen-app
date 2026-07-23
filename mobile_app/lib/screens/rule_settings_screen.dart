@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../services/daily_screen_time_limit_service.dart';
 import '../services/usage_dashboard_controller_service.dart';
+import '../services/notification_service.dart';
 
 class RuleSettingsScreen extends StatefulWidget {
   const RuleSettingsScreen({super.key});
@@ -788,6 +789,92 @@ class EmergencyAccessApprovalSection extends StatelessWidget {
     );
   }
 }
+
+Future<void> createRuleTriggerAlerts({
+  required String parentId,
+  required int limitMinutes,
+  required bool appBlocking,
+  required bool focusMode,
+  required bool cooldownTimer,
+  required bool scheduledLock,
+  required bool categoryRestriction,
+  required bool emergencyAccess,
+}) async {
+  final notificationService = NotificationService.instance;
+
+  final enabledRules = <String>[
+    if (appBlocking) 'App Blocking',
+    if (focusMode) 'Focus Mode',
+    if (cooldownTimer) 'Cooldown Timer',
+    if (scheduledLock) 'Scheduled Lock',
+    if (categoryRestriction) 'Harmful Category Restriction',
+    if (emergencyAccess) 'Emergency Access',
+  ];
+
+  final enabledRulesText = enabledRules.isEmpty
+      ? 'No active restriction rule'
+      : enabledRules.join(', ');
+
+  final title = 'Rule Trigger Alert';
+  final message =
+      'Guardian rules were updated. Active rules: $enabledRulesText. Daily limit: $limitMinutes minutes.';
+
+  await notificationService.initializeForCurrentUser(
+    contextLabel: 'parent_rule_settings',
+  );
+
+  await notificationService.createInAppAlert(
+    recipientUserId: parentId,
+    parentId: parentId,
+    title: title,
+    message: message,
+    triggerType: 'rule_settings_updated',
+    priority: 'medium',
+    extraData: {
+      'limitMinutes': limitMinutes,
+      'appBlocking': appBlocking,
+      'focusMode': focusMode,
+      'cooldownTimer': cooldownTimer,
+      'scheduledLock': scheduledLock,
+      'categoryRestriction': categoryRestriction,
+      'emergencyAccess': emergencyAccess,
+    },
+  );
+
+  final childDevices = await FirebaseFirestore.instance
+      .collection('child_devices')
+      .where('parentId', isEqualTo: parentId)
+      .get();
+
+  for (final device in childDevices.docs) {
+    final data = device.data();
+    final childUserId = data['childUserId'] as String?;
+    final childId = data['childId'] as String?;
+
+    if (childUserId == null || childUserId.isEmpty) {
+      continue;
+    }
+
+    await notificationService.createInAppAlert(
+      recipientUserId: childUserId,
+      parentId: parentId,
+      childId: childId,
+      title: title,
+      message: message,
+      triggerType: 'child_rule_sync_needed',
+      priority: 'medium',
+      extraData: {
+        'limitMinutes': limitMinutes,
+        'appBlocking': appBlocking,
+        'focusMode': focusMode,
+        'cooldownTimer': cooldownTimer,
+        'scheduledLock': scheduledLock,
+        'categoryRestriction': categoryRestriction,
+        'emergencyAccess': emergencyAccess,
+      },
+    );
+  }
+}
 class RuleGoalStatusCard extends StatelessWidget {
   const RuleGoalStatusCard({
     super.key,
@@ -873,6 +960,7 @@ class RuleSwitch extends StatelessWidget {
     );
   }
 }
+
 
 
 

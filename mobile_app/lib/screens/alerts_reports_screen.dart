@@ -1,3 +1,5 @@
+﻿import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../models/app_usage_summary.dart';
@@ -141,7 +143,7 @@ class _AlertsReportsScreenState extends State<AlertsReportsScreen> {
                     iconColor: Colors.red,
                     title: 'Unable to Load Reports',
                     subtitle:
-                        'The system could not load today’s alerts. Pull down to refresh or check usage access permission.',
+                        'The system could not load todayâ€™s alerts. Pull down to refresh or check usage access permission.',
                   ),
 
                 if (viewModel?.errorMessage != null)
@@ -167,7 +169,7 @@ class _AlertsReportsScreenState extends State<AlertsReportsScreen> {
                 AlertReportCard(
                   icon: Icons.timer_rounded,
                   iconColor: AlertsReportsScreen.purple,
-                  title: 'Today’s Screen Time',
+                  title: 'Todayâ€™s Screen Time',
                   subtitle:
                       'Total monitored usage today: ${viewModel?.totalUsageLabel ?? '0s'}.',
                 ),
@@ -299,10 +301,10 @@ class _AlertsReportsScreenState extends State<AlertsReportsScreen> {
     final goalResult = state.screenTimeGoalResult;
 
     if (goalResult == null) {
-      return 'Daily limit: ${_formatDuration(state.dailyScreenTimeLimit)}. Generate a usage report to evaluate today’s progress.';
+      return 'Daily limit: ${_formatDuration(state.dailyScreenTimeLimit)}. Generate a usage report to evaluate todayâ€™s progress.';
     }
 
-    return 'Limit: ${_formatDuration(goalResult.dailyLimit)} • Used: ${_formatDuration(goalResult.usedDuration)} • Remaining: ${_formatDuration(goalResult.remainingDuration)}\n${goalResult.message}';
+    return 'Limit: ${_formatDuration(goalResult.dailyLimit)} â€¢ Used: ${_formatDuration(goalResult.usedDuration)} â€¢ Remaining: ${_formatDuration(goalResult.remainingDuration)}\n${goalResult.message}';
   }
 
   String _getTopAppsSubtitle(
@@ -338,7 +340,7 @@ class _AlertsReportsScreenState extends State<AlertsReportsScreen> {
     final lateNightApps = appUsageList.where(_isLateNightApp).toList();
 
     if (lateNightApps.isEmpty) {
-      return 'No late-night usage timestamp is currently available in today’s report.';
+      return 'No late-night usage timestamp is currently available in todayâ€™s report.';
     }
 
     final appNames = lateNightApps
@@ -403,6 +405,179 @@ class _AlertsReportsScreenState extends State<AlertsReportsScreen> {
   }
 }
 
+class InAppRuleAlertsSection extends StatelessWidget {
+  const InAppRuleAlertsSection({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      return const AlertReportCard(
+        icon: Icons.notifications_off_rounded,
+        iconColor: Colors.orange,
+        title: 'In-App Notifications',
+        subtitle: 'Please log in again to view rule-trigger alerts.',
+      );
+    }
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('in_app_alerts')
+          .where('recipientUserId', isEqualTo: user.uid)
+          .limit(10)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const AlertReportCard(
+            icon: Icons.notifications_active_rounded,
+            iconColor: AlertsReportsScreen.purple,
+            title: 'In-App Notifications',
+            subtitle: 'Checking rule-trigger alerts...',
+          );
+        }
+
+        if (snapshot.hasError) {
+          return AlertReportCard(
+            icon: Icons.error_outline_rounded,
+            iconColor: Colors.red,
+            title: 'In-App Notifications',
+            subtitle: snapshot.error.toString(),
+          );
+        }
+
+        final docs = [...?snapshot.data?.docs];
+
+        docs.sort((a, b) {
+          final aTime = a.data()['createdAt'];
+          final bTime = b.data()['createdAt'];
+
+          if (aTime is Timestamp && bTime is Timestamp) {
+            return bTime.compareTo(aTime);
+          }
+
+          return 0;
+        });
+
+        if (docs.isEmpty) {
+          return const AlertReportCard(
+            icon: Icons.notifications_none_rounded,
+            iconColor: AlertsReportsScreen.purple,
+            title: 'In-App Notifications',
+            subtitle:
+                'No rule-trigger alert has been recorded yet. Alerts will appear after guardian rules are saved or Firebase messages are received.',
+          );
+        }
+
+        final unreadCount = docs
+            .where((doc) => (doc.data()['isRead'] as bool? ?? false) == false)
+            .length;
+
+        return Card(
+          elevation: 2,
+          shadowColor: Colors.black12,
+          margin: const EdgeInsets.only(bottom: 14),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      unreadCount > 0
+                          ? Icons.notifications_active_rounded
+                          : Icons.notifications_none_rounded,
+                      color: unreadCount > 0
+                          ? Colors.orange
+                          : AlertsReportsScreen.purple,
+                      size: 34,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        unreadCount > 0
+                            ? 'In-App Notifications ($unreadCount unread)'
+                            : 'In-App Notifications',
+                        style: const TextStyle(
+                          color: AlertsReportsScreen.darkText,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                ...docs.take(5).map((doc) {
+                  final data = doc.data();
+                  final title = data['title'] as String? ?? 'WellScreen Alert';
+                  final message =
+                      data['message'] as String? ?? 'No message available.';
+                  final triggerType =
+                      data['triggerType'] as String? ?? 'rule_trigger';
+                  final isRead = data['isRead'] as bool? ?? false;
+
+                  return Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.only(top: 10),
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: isRead
+                          ? const Color(0xFFF9FAFB)
+                          : const Color(0xFFF4F0FF),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: InkWell(
+                      onTap: () {
+                        doc.reference.set({
+                          'isRead': true,
+                          'readAt': FieldValue.serverTimestamp(),
+                          'updatedAt': FieldValue.serverTimestamp(),
+                        }, SetOptions(merge: true));
+                      },
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            title,
+                            style: const TextStyle(
+                              color: AlertsReportsScreen.darkText,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            message,
+                            style: const TextStyle(
+                              color: AlertsReportsScreen.grayText,
+                              height: 1.35,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            'Trigger: $triggerType${isRead ? ' • Read' : ' • Unread'}',
+                            style: const TextStyle(
+                              color: AlertsReportsScreen.purple,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
 class AlertReportCard extends StatelessWidget {
   const AlertReportCard({
     super.key,
@@ -448,3 +623,4 @@ class AlertReportCard extends StatelessWidget {
     );
   }
 }
+
