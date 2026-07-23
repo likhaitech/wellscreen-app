@@ -405,6 +405,130 @@ class _AlertsReportsScreenState extends State<AlertsReportsScreen> {
   }
 }
 
+
+class LocationUpdatesReportSection extends StatelessWidget {
+  const LocationUpdatesReportSection({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      return const AlertReportCard(
+        icon: Icons.location_off_rounded,
+        iconColor: Colors.orange,
+        title: 'Location Update',
+        subtitle: 'Please log in again to view location updates.',
+      );
+    }
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('child_locations')
+          .where('parentId', isEqualTo: user.uid)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const AlertReportCard(
+            icon: Icons.location_searching_rounded,
+            iconColor: AlertsReportsScreen.purple,
+            title: 'Location Update',
+            subtitle: 'Checking latest GPS location updates...',
+          );
+        }
+
+        if (snapshot.hasError) {
+          return AlertReportCard(
+            icon: Icons.error_outline_rounded,
+            iconColor: Colors.red,
+            title: 'Location Update',
+            subtitle: snapshot.error.toString(),
+          );
+        }
+
+        final docs = [...?snapshot.data?.docs];
+
+        if (docs.isEmpty) {
+          return const AlertReportCard(
+            icon: Icons.location_off_rounded,
+            iconColor: Colors.orange,
+            title: 'Location Update',
+            subtitle:
+                'No GPS location update has been synced yet. Ask the child device to allow location permission and tap Sync Current Location.',
+          );
+        }
+
+        docs.sort((a, b) {
+          final aTime = a.data()['capturedAt'];
+          final bTime = b.data()['capturedAt'];
+
+          if (aTime is Timestamp && bTime is Timestamp) {
+            return bTime.compareTo(aTime);
+          }
+
+          return 0;
+        });
+
+        final data = docs.first.data();
+        final childLabel = data['childLabel'] as String? ?? 'Child device';
+        final latitude = _readDouble(data['latitude']);
+        final longitude = _readDouble(data['longitude']);
+        final accuracy = _readDouble(data['accuracyMeters']);
+        final isOutsideSafeZone =
+            data['isOutsideSafeZone'] as bool? ?? false;
+        final distance = _readDouble(data['distanceFromSafeZoneMeters']);
+        final capturedAtValue = data['capturedAt'];
+        final capturedAt =
+            capturedAtValue is Timestamp ? capturedAtValue.toDate() : null;
+
+        final coordinates = latitude == null || longitude == null
+            ? 'Coordinates not available'
+            : '${latitude.toStringAsFixed(6)}, ${longitude.toStringAsFixed(6)}';
+
+        final geoFenceText = isOutsideSafeZone
+            ? 'Geo-fence alert: outside safe zone${distance == null ? '' : ' by ${distance.toStringAsFixed(0)}m'}'
+            : 'Geo-fence status: inside safe zone';
+
+        return AlertReportCard(
+          icon: isOutsideSafeZone
+              ? Icons.warning_amber_rounded
+              : Icons.location_on_rounded,
+          iconColor: isOutsideSafeZone ? Colors.red : Colors.green,
+          title: 'Location Update',
+          subtitle:
+              '$childLabel\nCoordinates: $coordinates\nAccuracy: ${accuracy?.toStringAsFixed(0) ?? 'Unknown'}m\nLast captured: ${_formatDateTime(capturedAt)}\n$geoFenceText',
+        );
+      },
+    );
+  }
+
+  double? _readDouble(Object? value) {
+    if (value is double) return value;
+    if (value is int) return value.toDouble();
+    if (value is num) return value.toDouble();
+    if (value is String) return double.tryParse(value);
+    return null;
+  }
+
+  String _formatDateTime(DateTime? value) {
+    if (value == null) {
+      return 'Time not available';
+    }
+
+    final year = value.year.toString().padLeft(4, '0');
+    final month = value.month.toString().padLeft(2, '0');
+    final day = value.day.toString().padLeft(2, '0');
+    final hour = value.hour > 12
+        ? value.hour - 12
+        : value.hour == 0
+            ? 12
+            : value.hour;
+    final minute = value.minute.toString().padLeft(2, '0');
+    final period = value.hour >= 12 ? 'PM' : 'AM';
+
+    return '$year-$month-$day $hour:$minute $period';
+  }
+}
 class InAppRuleAlertsSection extends StatelessWidget {
   const InAppRuleAlertsSection({super.key});
 
@@ -623,4 +747,5 @@ class AlertReportCard extends StatelessWidget {
     );
   }
 }
+
 

@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../services/accessibility_service_status_service.dart';
 import '../services/firestore_usage_report_sync_service.dart';
+import '../services/location_tracking_service.dart';
 import '../services/native_restriction_rules_service.dart';
 import '../services/notification_service.dart';
 import '../services/usage_tracking_service.dart';
@@ -31,6 +32,8 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   final UsageTrackingService _usageTrackingService = UsageTrackingService();
   final AccessibilityServiceStatusService _accessibilityStatusService =
       AccessibilityServiceStatusService();
+  final LocationTrackingService _locationTrackingService =
+      LocationTrackingService();
 
   bool isPairing = false;
   bool isSyncingUsageReport = false;
@@ -44,12 +47,19 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   bool? hasAccessibilityAccess;
   bool isCheckingAccessibilityAccess = false;
 
+  // GPS location permission and sync status.
+  LocationPermissionStatus? locationPermissionStatus;
+  bool isCheckingLocationPermission = false;
+  bool isSyncingLocation = false;
+  String? lastLocationSyncMessage;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _checkUsagePermission();
     _checkAccessibilityPermission();
+    _checkLocationPermission();
     unawaited(
       NotificationService.instance.initializeForCurrentUser(
         contextLabel: 'child_home',
@@ -269,6 +279,99 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     }
   }
 
+  Future<void> _checkLocationPermission() async {
+    setState(() => isCheckingLocationPermission = true);
+
+    try {
+      final status = await _locationTrackingService.checkPermissionStatus();
+
+      if (!mounted) return;
+
+      setState(() {
+        locationPermissionStatus = status;
+        isCheckingLocationPermission = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+
+      setState(() => isCheckingLocationPermission = false);
+    }
+  }
+
+  Future<void> _requestLocationPermission() async {
+    setState(() => isCheckingLocationPermission = true);
+
+    try {
+      final status = await _locationTrackingService.requestPermission();
+
+      if (!mounted) return;
+
+      setState(() {
+        locationPermissionStatus = status;
+        isCheckingLocationPermission = false;
+      });
+
+      if (status == LocationPermissionStatus.granted) {
+        showMessage('Location permission granted.');
+      } else if (status == LocationPermissionStatus.serviceDisabled) {
+        showMessage('Turn on device location services first.');
+      } else {
+        showMessage('Location permission is needed for GPS tracking.');
+      }
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() => isCheckingLocationPermission = false);
+      showMessage(_cleanErrorMessage(e));
+    }
+  }
+
+  Future<void> _openLocationSettings() async {
+    try {
+      await _locationTrackingService.openLocationSettings();
+      showMessage('Turn on Location, then return to WellScreen.');
+    } catch (e) {
+      showMessage(_cleanErrorMessage(e));
+    }
+  }
+
+  Future<void> _syncCurrentLocation() async {
+    setState(() {
+      isSyncingLocation = true;
+      lastLocationSyncMessage = 'Capturing current GPS location...';
+    });
+
+    try {
+      final result =
+          await _locationTrackingService.captureAndSyncCurrentLocation();
+
+      if (!mounted) return;
+
+      setState(() {
+        lastLocationSyncMessage =
+            'Location synced at ${result.capturedAtLabel}.\n'
+            'Coordinates: ${result.coordinateLabel}\n'
+            '${result.accuracyLabel}\n'
+            '${result.geoFenceLabel}';
+      });
+
+      showMessage('Current GPS location synced.');
+    } catch (e) {
+      final message = _cleanErrorMessage(e);
+
+      if (!mounted) return;
+
+      setState(() {
+        lastLocationSyncMessage = message;
+      });
+
+      showMessage(message);
+    } finally {
+      if (mounted) {
+        setState(() => isSyncingLocation = false);
+      }
+    }
+  }
   Future<void> openUsageAccessSettings() async {
     try {
       await _usageTrackingService.openUsageAccessSettings();
@@ -539,6 +642,20 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
             isChecking: isCheckingAccessibilityAccess,
             onRecheck: _checkAccessibilityPermission,
             onOpenSettings: openAccessibilitySettings,
+          ),
+          const SizedBox(height: 16),
+          LocationPermissionStatusCard(
+            status: locationPermissionStatus,
+            isChecking: isCheckingLocationPermission,
+            onRecheck: _checkLocationPermission,
+            onRequestPermission: _requestLocationPermission,
+            onOpenLocationSettings: _openLocationSettings,
+          ),
+          const SizedBox(height: 16),
+          LocationSyncCard(
+            isSyncing: isSyncingLocation,
+            lastSyncMessage: lastLocationSyncMessage,
+            onSync: user == null ? null : _syncCurrentLocation,
           ),
           const SizedBox(height: 16),
           UsageSyncCard(
@@ -1080,6 +1197,214 @@ class ParentRuleCard extends StatelessWidget {
 
 
 
+
+class LocationPermissionStatusCard extends StatelessWidget {
+  const LocationPermissionStatusCard({
+    super.key,
+    required this.status,
+    required this.isChecking,
+    required this.onRecheck,
+    required this.onRequestPermission,
+    required this.onOpenLocationSettings,
+  });
+
+  final LocationPermissionStatus? status;
+  final bool isChecking;
+  final Future<void> Function() onRecheck;
+  final Future<void> Function() onRequestPermission;
+  final Future<void> Function() onOpenLocationSettings;
+
+  static const Color purple = Color(0xFF5B2BBF);
+  static const Color darkText = Color(0xFF111827);
+  static const Color grayText = Color(0xFF4B5563);
+
+  @override
+  Widget build(BuildContext context) {
+    final isGranted = status == LocationPermissionStatus.granted;
+    final isServiceDisabled =
+        status == LocationPermissionStatus.serviceDisabled;
+    final isDeniedForever = status == LocationPermissionStatus.deniedForever;
+
+    final title = isChecking && status == null
+        ? 'Checking Location Permission'
+        : isGranted
+            ? 'Location Permission Granted'
+            : isServiceDisabled
+                ? 'Location Service Disabled'
+                : isDeniedForever
+                    ? 'Location Permission Denied Forever'
+                    : 'Location Permission Needed';
+
+    final subtitle = isGranted
+        ? 'WellScreen can capture this child device GPS location for parent monitoring and safety alerts.'
+        : isServiceDisabled
+            ? 'Turn on device Location services before syncing GPS updates.'
+            : isDeniedForever
+                ? 'Location permission was denied permanently. Open app settings and allow location permission for WellScreen.'
+                : 'Allow location permission so WellScreen can sync the child device location to the parent dashboard. WellScreen does not read files, messages, photos, or passwords.';
+
+    final color = isGranted ? Colors.green : Colors.orange;
+
+    return Card(
+      elevation: 2,
+      shadowColor: Colors.black12,
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.location_on_rounded, color: color, size: 34),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: const TextStyle(
+                          color: darkText,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        subtitle,
+                        style: const TextStyle(color: grayText, height: 1.4),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Recheck location permission',
+                  icon: isChecking
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.refresh_rounded),
+                  onPressed: isChecking ? null : () => onRecheck(),
+                ),
+              ],
+            ),
+            if (!isGranted) ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: isChecking ? null : () => onRequestPermission(),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: purple,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                  icon: const Icon(Icons.my_location_rounded),
+                  label: const Text(
+                    'Allow Location Permission',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () => onOpenLocationSettings(),
+                  icon: const Icon(Icons.settings_rounded),
+                  label: const Text(
+                    'Open Location Settings',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class LocationSyncCard extends StatelessWidget {
+  const LocationSyncCard({
+    super.key,
+    required this.isSyncing,
+    required this.lastSyncMessage,
+    required this.onSync,
+  });
+
+  final bool isSyncing;
+  final String? lastSyncMessage;
+  final Future<void> Function()? onSync;
+
+  static const Color purple = Color(0xFF5B2BBF);
+  static const Color darkText = Color(0xFF111827);
+  static const Color grayText = Color(0xFF4B5563);
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 1.5,
+      shadowColor: Colors.black12,
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.gps_fixed_rounded, color: purple, size: 34),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'GPS Location Sync',
+                    style: TextStyle(
+                      color: darkText,
+                      fontWeight: FontWeight.w900,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              lastSyncMessage ??
+                  'Capture and sync the child device current GPS location to the parent dashboard.',
+              style: const TextStyle(color: grayText, height: 1.4),
+            ),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: isSyncing || onSync == null ? null : () => onSync!(),
+                style: FilledButton.styleFrom(
+                  backgroundColor: purple,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
+                icon: const Icon(Icons.location_searching_rounded),
+                label: Text(
+                  isSyncing ? 'Syncing Location...' : 'Sync Current Location',
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 class SmsBackupPermissionSection extends StatefulWidget {
   const SmsBackupPermissionSection({super.key});
 
@@ -1512,6 +1837,12 @@ class ChildStatusCard extends StatelessWidget {
     );
   }
 }
+
+
+
+
+
+
 
 
 
