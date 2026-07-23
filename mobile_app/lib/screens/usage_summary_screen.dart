@@ -1,3 +1,4 @@
+﻿import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 
 import '../models/app_usage_summary.dart';
@@ -103,7 +104,7 @@ class _UsageSummaryScreenState extends State<UsageSummaryScreen> {
                   const SummaryStatusCard(
                     icon: Icons.hourglass_top_rounded,
                     title: 'Loading Usage Summary',
-                    message: 'Preparing today’s usage data...',
+                    message: 'Preparing todayâ€™s usage data...',
                     color: UsageSummaryScreen.purple,
                   ),
 
@@ -130,7 +131,7 @@ class _UsageSummaryScreenState extends State<UsageSummaryScreen> {
 
                 SummaryCard(
                   icon: Icons.today_rounded,
-                  title: 'Today’s Screen Time',
+                  title: 'Todayâ€™s Screen Time',
                   value: viewModel?.totalUsageLabel ?? '0s',
                   description:
                       'Current monitored usage for the selected child profile.',
@@ -150,7 +151,7 @@ class _UsageSummaryScreenState extends State<UsageSummaryScreen> {
                   title: 'Top Used Application',
                   value: viewModel?.topUsedAppLabel ?? 'No app usage recorded',
                   description:
-                      'App with the highest usage duration for today’s report.',
+                      'App with the highest usage duration for todayâ€™s report.',
                 ),
 
                 AppUsageBreakdownCard(appUsageList: appUsageList),
@@ -214,7 +215,7 @@ class _UsageSummaryScreenState extends State<UsageSummaryScreen> {
       return 'Daily limit: ${_formatDuration(state.dailyScreenTimeLimit)}';
     }
 
-    return '${_getGoalStatusLabel(goalResult.status)} • ${_formatDuration(goalResult.usedDuration)} used';
+    return '${_getGoalStatusLabel(goalResult.status)} â€¢ ${_formatDuration(goalResult.usedDuration)} used';
   }
 
   String _getGoalDescription(UsageDashboardControllerState? state) {
@@ -225,10 +226,10 @@ class _UsageSummaryScreenState extends State<UsageSummaryScreen> {
     final goalResult = state.screenTimeGoalResult;
 
     if (goalResult == null) {
-      return 'Generate a usage report to evaluate today’s progress against the daily limit.';
+      return 'Generate a usage report to evaluate todayâ€™s progress against the daily limit.';
     }
 
-    return 'Limit: ${_formatDuration(goalResult.dailyLimit)} • Remaining: ${_formatDuration(goalResult.remainingDuration)} • Progress: ${_getProgressPercent(goalResult.progressPercent)}\n${goalResult.message}';
+    return 'Limit: ${_formatDuration(goalResult.dailyLimit)} â€¢ Remaining: ${_formatDuration(goalResult.remainingDuration)} â€¢ Progress: ${_getProgressPercent(goalResult.progressPercent)}\n${goalResult.message}';
   }
 
   String _getGoalStatusLabel(ScreenTimeGoalStatus status) {
@@ -342,33 +343,47 @@ class PeriodSummaryCard extends StatelessWidget {
       shadowColor: Colors.black12,
       margin: const EdgeInsets.only(bottom: 14),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      child: ListTile(
-        contentPadding: const EdgeInsets.all(18),
-        leading: Icon(_getIcon(summary), color: _getColor(summary), size: 34),
-        title: Text(
-          summary.title,
-          style: const TextStyle(
-            color: UsageSummaryScreen.darkText,
-            fontWeight: FontWeight.w900,
-          ),
-        ),
-        subtitle: Padding(
-          padding: const EdgeInsets.only(top: 6),
-          child: Text(
-            'Child: ${summary.childLabel}\n'
-            'Date Range: ${summary.dateRangeLabel}\n'
-            'Reports Counted: ${summary.reportCount}\n'
-            'Total Screen Time: ${summary.totalUsageLabel}\n'
-            'Average Daily Usage: ${summary.averageDailyUsageLabel}\n'
-            'Top App: $topUsedAppLabel\n'
-            'Status: ${summary.statusLabel}\n'
-            'Warning Days: ${summary.warningReportCount} • Unhealthy Days: ${summary.unhealthyReportCount}\n'
-            '${summary.recommendationMessage}',
-            style: const TextStyle(
-              color: UsageSummaryScreen.grayText,
-              height: 1.4,
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(_getIcon(summary), color: _getColor(summary), size: 34),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Text(
+                    summary.title,
+                    style: const TextStyle(
+                      color: UsageSummaryScreen.darkText,
+                      fontWeight: FontWeight.w900,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
+              ],
             ),
-          ),
+            const SizedBox(height: 12),
+            Text(
+              'Child: ${summary.childLabel}\n'
+              'Date Range: ${summary.dateRangeLabel}\n'
+              'Reports Counted: ${summary.reportCount}\n'
+              'Total Screen Time: ${summary.totalUsageLabel}\n'
+              'Average Daily Usage: ${summary.averageDailyUsageLabel}\n'
+              'Top App: $topUsedAppLabel\n'
+              'Status: ${summary.statusLabel}\n'
+              'Warning Days: ${summary.warningReportCount} • Unhealthy Days: ${summary.unhealthyReportCount}\n'
+              '${summary.recommendationMessage}',
+              style: const TextStyle(
+                color: UsageSummaryScreen.grayText,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 16),
+            PeriodAnalyticsChart(summary: summary),
+          ],
         ),
       ),
     );
@@ -409,6 +424,233 @@ class PeriodSummaryCard extends StatelessWidget {
   }
 }
 
+class PeriodAnalyticsChart extends StatelessWidget {
+  const PeriodAnalyticsChart({super.key, required this.summary});
+
+  final UsagePeriodSummary summary;
+
+  @override
+  Widget build(BuildContext context) {
+    final points = summary.chartPoints;
+
+    if (points.isEmpty || !summary.hasChartPoints) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF9FAFB),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: const Text(
+          'Analytics chart will appear after synced daily usage reports are available for this period.',
+          style: TextStyle(
+            color: UsageSummaryScreen.grayText,
+            height: 1.4,
+          ),
+        ),
+      );
+    }
+
+    final maxY = summary.maxChartHours;
+    final interval = _getInterval(maxY);
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF9FAFB),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Analytics Chart',
+            style: TextStyle(
+              color: UsageSummaryScreen.darkText,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            summary.chartInsightMessage,
+            style: const TextStyle(
+              color: UsageSummaryScreen.grayText,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            height: 220,
+            child: BarChart(
+              BarChartData(
+                minY: 0,
+                maxY: maxY,
+                alignment: BarChartAlignment.spaceAround,
+                barTouchData: BarTouchData(
+                  enabled: true,
+                  touchTooltipData: BarTouchTooltipData(
+                    getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                      final point = points[group.x.toInt()];
+
+                      return BarTooltipItem(
+                        '${point.label}\n${point.usageLabel}',
+                        const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                gridData: FlGridData(
+                  show: true,
+                  drawVerticalLine: false,
+                  horizontalInterval: interval,
+                ),
+                borderData: FlBorderData(show: false),
+                titlesData: FlTitlesData(
+                  topTitles: const AxisTitles(
+                    sideTitles: SideTitles(showTitles: false),
+                  ),
+                  rightTitles: const AxisTitles(
+                    sideTitles: SideTitles(showTitles: false),
+                  ),
+                  leftTitles: AxisTitles(
+                    sideTitles: SideTitles(
+                      showTitles: true,
+                      reservedSize: 38,
+                      interval: interval,
+                      getTitlesWidget: (value, meta) {
+                        if (value < 0 || value > maxY) {
+                          return const SizedBox.shrink();
+                        }
+
+                        final label = value == value.roundToDouble()
+                            ? value.toStringAsFixed(0)
+                            : value.toStringAsFixed(1);
+
+                        return SideTitleWidget(
+                          meta: meta,
+                          child: Text(
+                            '${label}h',
+                            style: const TextStyle(
+                              color: UsageSummaryScreen.grayText,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  bottomTitles: AxisTitles(
+                    sideTitles: SideTitles(
+                      showTitles: true,
+                      reservedSize: 32,
+                      getTitlesWidget: (value, meta) {
+                        final index = value.toInt();
+
+                        if (index < 0 ||
+                            index >= points.length ||
+                            value != index.toDouble()) {
+                          return const SizedBox.shrink();
+                        }
+
+                        final shouldShowLabel = points.length <= 10 ||
+                            index == 0 ||
+                            index == points.length - 1 ||
+                            index % 5 == 0;
+
+                        if (!shouldShowLabel) {
+                          return const SizedBox.shrink();
+                        }
+
+                        return SideTitleWidget(
+                          meta: meta,
+                          child: Text(
+                            points[index].label,
+                            style: const TextStyle(
+                              color: UsageSummaryScreen.grayText,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+                barGroups: points.asMap().entries.map((entry) {
+                  final index = entry.key;
+                  final point = entry.value;
+
+                  return BarChartGroupData(
+                    x: index,
+                    barRods: [
+                      BarChartRodData(
+                        toY: point.usageHours,
+                        width: _getBarWidth(points.length),
+                        color: _getStatusColor(point.patternStatus),
+                        borderRadius: const BorderRadius.vertical(
+                          top: Radius.circular(8),
+                        ),
+                      ),
+                    ],
+                  );
+                }).toList(),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            'Green means healthy, orange means warning, and red means unhealthy usage for that day.',
+            style: TextStyle(
+              color: UsageSummaryScreen.grayText,
+              fontSize: 12,
+              height: 1.4,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  double _getInterval(double maxY) {
+    if (maxY <= 2) {
+      return 0.5;
+    }
+
+    if (maxY <= 6) {
+      return 1;
+    }
+
+    return 2;
+  }
+
+  double _getBarWidth(int pointCount) {
+    if (pointCount <= 7) {
+      return 18;
+    }
+
+    if (pointCount <= 15) {
+      return 12;
+    }
+
+    return 7;
+  }
+
+  Color _getStatusColor(UsagePatternStatus status) {
+    switch (status) {
+      case UsagePatternStatus.healthy:
+        return Colors.green;
+      case UsagePatternStatus.warning:
+        return Colors.orange;
+      case UsagePatternStatus.unhealthy:
+        return Colors.red;
+    }
+  }
+}
 class SummaryStatusCard extends StatelessWidget {
   const SummaryStatusCard({
     super.key,
@@ -586,3 +828,4 @@ class SummaryCard extends StatelessWidget {
     );
   }
 }
+

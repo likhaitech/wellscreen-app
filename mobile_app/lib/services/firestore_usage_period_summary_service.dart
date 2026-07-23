@@ -1,4 +1,4 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
+﻿import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import '../models/app_usage_summary.dart';
@@ -181,6 +181,7 @@ class FirestoreUsagePeriodSummaryService {
       0,
       (total, report) => total + report.totalUsageDuration.inMilliseconds,
     );
+
     final totalUsageDuration = Duration(milliseconds: totalUsageMs);
 
     final averageDailyUsageDuration = Duration(
@@ -214,6 +215,12 @@ class FirestoreUsagePeriodSummaryService {
       patternStatus: patternStatus,
       unhealthyReportCount: unhealthyReportCount,
       warningReportCount: warningReportCount,
+      chartPoints: _buildChartPoints(
+        title: title,
+        reportsInPeriod: reportsInPeriod,
+        startDate: startDate,
+        endDate: endDate,
+      ),
       recommendationMessage: _buildRecommendationMessage(
         title: title,
         reportCount: reportsInPeriod.length,
@@ -242,8 +249,60 @@ class FirestoreUsagePeriodSummaryService {
       patternStatus: null,
       unhealthyReportCount: 0,
       warningReportCount: 0,
+      chartPoints: _buildChartPoints(
+        title: title,
+        reportsInPeriod: const [],
+        startDate: startDate,
+        endDate: endDate,
+      ),
       recommendationMessage: message,
     );
+  }
+
+  List<UsagePeriodChartPoint> _buildChartPoints({
+    required String title,
+    required List<_DailyUsageReportRecord> reportsInPeriod,
+    required DateTime startDate,
+    required DateTime endDate,
+  }) {
+    final usageByDate = <String, _UsagePointAccumulator>{};
+
+    for (final report in reportsInPeriod) {
+      final reportDay = _startOfDay(report.reportDate);
+      final key = _formatDateKey(reportDay);
+      final existing = usageByDate[key];
+
+      if (existing == null) {
+        usageByDate[key] = _UsagePointAccumulator(
+          totalUsageDuration: report.totalUsageDuration,
+          patternStatus: report.patternStatus,
+        );
+      } else {
+        usageByDate[key] = existing.copyWithAddedReport(report);
+      }
+    }
+
+    final points = <UsagePeriodChartPoint>[];
+    var currentDate = startDate;
+
+    while (!currentDate.isAfter(endDate)) {
+      final key = _formatDateKey(currentDate);
+      final accumulator = usageByDate[key];
+
+      points.add(
+        UsagePeriodChartPoint(
+          label: _formatChartLabel(title, currentDate),
+          date: currentDate,
+          usageDuration: accumulator?.totalUsageDuration ?? Duration.zero,
+          patternStatus:
+              accumulator?.patternStatus ?? UsagePatternStatus.healthy,
+        ),
+      );
+
+      currentDate = currentDate.add(const Duration(days: 1));
+    }
+
+    return points;
   }
 
   UsagePatternStatus _getOverallPatternStatus({
@@ -373,6 +432,35 @@ class FirestoreUsagePeriodSummaryService {
     return _startOfDay(parsedDate);
   }
 
+  String _formatDateKey(DateTime dateTime) {
+    return UsagePeriodSummary.formatDate(_startOfDay(dateTime));
+  }
+
+  String _formatChartLabel(String title, DateTime dateTime) {
+    if (title.toLowerCase().contains('monthly')) {
+      return dateTime.day.toString();
+    }
+
+    switch (dateTime.weekday) {
+      case DateTime.monday:
+        return 'Mon';
+      case DateTime.tuesday:
+        return 'Tue';
+      case DateTime.wednesday:
+        return 'Wed';
+      case DateTime.thursday:
+        return 'Thu';
+      case DateTime.friday:
+        return 'Fri';
+      case DateTime.saturday:
+        return 'Sat';
+      case DateTime.sunday:
+        return 'Sun';
+      default:
+        return dateTime.day.toString();
+    }
+  }
+
   DateTime _startOfCurrentWeek(DateTime dateTime) {
     final today = _startOfDay(dateTime);
     return today.subtract(Duration(days: today.weekday - DateTime.monday));
@@ -462,5 +550,39 @@ class _AppUsageAccumulator {
       displayName: displayName,
       usageDuration: usageDuration + addedDuration,
     );
+  }
+}
+
+class _UsagePointAccumulator {
+  const _UsagePointAccumulator({
+    required this.totalUsageDuration,
+    required this.patternStatus,
+  });
+
+  final Duration totalUsageDuration;
+  final UsagePatternStatus patternStatus;
+
+  _UsagePointAccumulator copyWithAddedReport(_DailyUsageReportRecord report) {
+    return _UsagePointAccumulator(
+      totalUsageDuration: totalUsageDuration + report.totalUsageDuration,
+      patternStatus: _getMoreSevereStatus(patternStatus, report.patternStatus),
+    );
+  }
+
+  UsagePatternStatus _getMoreSevereStatus(
+    UsagePatternStatus currentStatus,
+    UsagePatternStatus nextStatus,
+  ) {
+    if (currentStatus == UsagePatternStatus.unhealthy ||
+        nextStatus == UsagePatternStatus.unhealthy) {
+      return UsagePatternStatus.unhealthy;
+    }
+
+    if (currentStatus == UsagePatternStatus.warning ||
+        nextStatus == UsagePatternStatus.warning) {
+      return UsagePatternStatus.warning;
+    }
+
+    return UsagePatternStatus.healthy;
   }
 }
