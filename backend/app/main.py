@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
 from .routes.admin_users import router as admin_users_router
+from .routes.admin_settings import router as admin_settings_router
 
 
 app = FastAPI(
@@ -16,3 +17,4 @@ def health() -> dict[str, str]:
 
 
 app.include_router(admin_users_router)
+app.include_router(admin_settings_router)
