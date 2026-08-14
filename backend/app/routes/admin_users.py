@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from firebase_admin import auth
 
@@ -6,6 +8,7 @@ from app.models.admin_user import (
     UpdateUserRequest,
 )
 from app.services.admin_auth_service import require_admin
+from app.services.system_log_service import create_system_log
 from app.services.user_admin_service import (
     create_user,
     delete_user,
@@ -14,11 +17,22 @@ from app.services.user_admin_service import (
     update_user,
 )
 
-
 router = APIRouter(
     prefix="/admin/users",
     tags=["Admin Users"],
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_create_system_log(**kwargs) -> None:
+    """
+    Logging should not cause the actual admin operation to fail.
+    """
+    try:
+        create_system_log(**kwargs)
+    except Exception:
+        logger.exception("Failed to create system log")
 
 
 @router.get("/")
@@ -70,13 +84,28 @@ def create_new_user(
         )
 
     try:
-        return create_user(
+        created_user = create_user(
             email=request.email,
             password=request.password,
             display_name=request.display_name,
             role=request.role,
             disabled=request.disabled,
         )
+
+        _safe_create_system_log(
+            level="info",
+            action="admin_user_created",
+            message="Admin created a user account",
+            actor_uid=current_admin.get("uid"),
+            details={
+                "target_uid": created_user.get("uid"),
+                "email": str(request.email),
+                "role": request.role,
+                "disabled": request.disabled,
+            },
+        )
+
+        return created_user
 
     except auth.EmailAlreadyExistsError:
         raise HTTPException(
@@ -122,7 +151,7 @@ def edit_user(
             )
 
     try:
-        return update_user(
+        updated_user = update_user(
             uid,
             email=request.email,
             password=request.password,
@@ -130,6 +159,31 @@ def edit_user(
             role=request.role,
             disabled=request.disabled,
         )
+
+        changes = request.model_dump(exclude_none=True)
+
+        # Never store passwords in system logs.
+        password_changed = "password" in changes
+        changes.pop("password", None)
+
+        if "email" in changes:
+            changes["email"] = str(changes["email"])
+
+        if password_changed:
+            changes["password_changed"] = True
+
+        _safe_create_system_log(
+            level="info",
+            action="admin_user_updated",
+            message="Admin updated a user account",
+            actor_uid=current_admin_uid,
+            details={
+                "target_uid": uid,
+                "changes": changes,
+            },
+        )
+
+        return updated_user
 
     except auth.UserNotFoundError:
         raise HTTPException(
@@ -164,7 +218,21 @@ def remove_user(
         )
 
     try:
+        target_user = get_user(uid)
+
         delete_user(uid)
+
+        _safe_create_system_log(
+            level="info",
+            action="admin_user_deleted",
+            message="Admin deleted a user account",
+            actor_uid=current_admin_uid,
+            details={
+                "target_uid": uid,
+                "email": target_user.get("email"),
+                "role": target_user.get("role"),
+            },
+        )
 
         return {
             "message": "User deleted successfully"

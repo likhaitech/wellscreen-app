@@ -1,7 +1,8 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../services/admin_settings_api_service.dart';
+import 'admin_logs_screen.dart';
 import 'login_screen.dart';
 
 class AdminSettingsScreen extends StatefulWidget {
@@ -17,7 +18,8 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
   static const Color grayText = Color(0xFF4B5563);
   static const Color pageBg = Color(0xFFF3F4F6);
 
-  final limitController = TextEditingController();
+  final AdminSettingsApiService _apiService = AdminSettingsApiService();
+  final TextEditingController limitController = TextEditingController();
 
   bool appBlockingEnabled = true;
   bool focusModeEnabled = true;
@@ -29,11 +31,8 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
   bool isLoading = true;
   bool isSaving = false;
 
-  Timestamp? updatedAt;
+  DateTime? updatedAt;
   String? updatedBy;
-
-  DocumentReference<Map<String, dynamic>> get settingsRef =>
-      FirebaseFirestore.instance.collection('system_settings').doc('global');
 
   @override
   void initState() {
@@ -74,8 +73,7 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
         return;
       }
 
-      final snapshot = await settingsRef.get();
-      final data = snapshot.data() ?? <String, dynamic>{};
+      final data = await _apiService.getSettings();
 
       if (!mounted) return;
 
@@ -96,9 +94,13 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
 
         emergencyAccessEnabled = data['emergency_access_enabled'] ?? true;
 
-        updatedAt = data['updated_at'] is Timestamp
-            ? data['updated_at'] as Timestamp
-            : null;
+        final updatedAtValue = data['updated_at'];
+
+        if (updatedAtValue is String && updatedAtValue.isNotEmpty) {
+          updatedAt = DateTime.tryParse(updatedAtValue)?.toLocal();
+        } else {
+          updatedAt = null;
+        }
 
         updatedBy = data['updated_by']?.toString();
 
@@ -138,19 +140,46 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
     setState(() => isSaving = true);
 
     try {
-      await settingsRef.set({
-        'default_daily_limit_minutes': limitMinutes,
-        'app_blocking_enabled': appBlockingEnabled,
-        'focus_mode_enabled': focusModeEnabled,
-        'cooldown_timer_enabled': cooldownTimerEnabled,
-        'scheduled_lock_enabled': scheduledLockEnabled,
-        'category_restriction_enabled': categoryRestrictionEnabled,
-        'emergency_access_enabled': emergencyAccessEnabled,
-        'updated_at': FieldValue.serverTimestamp(),
-        'updated_by': user.uid,
-      }, SetOptions(merge: true));
+      final data = await _apiService.updateSettings(
+        defaultDailyLimitMinutes: limitMinutes,
+        appBlockingEnabled: appBlockingEnabled,
+        focusModeEnabled: focusModeEnabled,
+        cooldownTimerEnabled: cooldownTimerEnabled,
+        scheduledLockEnabled: scheduledLockEnabled,
+        categoryRestrictionEnabled: categoryRestrictionEnabled,
+        emergencyAccessEnabled: emergencyAccessEnabled,
+      );
 
-      await loadSettings();
+      if (!mounted) return;
+
+      setState(() {
+        limitController.text =
+            (data['default_daily_limit_minutes'] ?? limitMinutes).toString();
+
+        appBlockingEnabled = data['app_blocking_enabled'] ?? appBlockingEnabled;
+
+        focusModeEnabled = data['focus_mode_enabled'] ?? focusModeEnabled;
+
+        cooldownTimerEnabled =
+            data['cooldown_timer_enabled'] ?? cooldownTimerEnabled;
+
+        scheduledLockEnabled =
+            data['scheduled_lock_enabled'] ?? scheduledLockEnabled;
+
+        categoryRestrictionEnabled =
+            data['category_restriction_enabled'] ?? categoryRestrictionEnabled;
+
+        emergencyAccessEnabled =
+            data['emergency_access_enabled'] ?? emergencyAccessEnabled;
+
+        final updatedAtValue = data['updated_at'];
+
+        if (updatedAtValue is String && updatedAtValue.isNotEmpty) {
+          updatedAt = DateTime.tryParse(updatedAtValue)?.toLocal();
+        }
+
+        updatedBy = data['updated_by']?.toString();
+      });
 
       showMessage('System settings updated successfully.');
     } catch (e) {
@@ -174,6 +203,13 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
     );
   }
 
+  void openSystemLogs() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const AdminLogsScreen()),
+    );
+  }
+
   void showMessage(String message) {
     if (!mounted) return;
 
@@ -187,7 +223,7 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
       return 'Not updated yet';
     }
 
-    final date = updatedAt!.toDate();
+    final date = updatedAt!;
 
     final month = date.month.toString().padLeft(2, '0');
     final day = date.day.toString().padLeft(2, '0');
@@ -255,6 +291,53 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
                         ),
                       ),
                     ],
+                  ),
+                ),
+
+                const SizedBox(height: 20),
+
+                InkWell(
+                  onTap: openSystemLogs,
+                  borderRadius: BorderRadius.circular(20),
+                  child: Container(
+                    padding: const EdgeInsets.all(18),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: const Row(
+                      children: [
+                        CircleAvatar(
+                          backgroundColor: Color(0xFFEDE9FE),
+                          child: Icon(
+                            Icons.receipt_long_rounded,
+                            color: purple,
+                          ),
+                        ),
+                        SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'System Logs',
+                                style: TextStyle(
+                                  color: darkText,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                              SizedBox(height: 3),
+                              Text(
+                                'Monitor administrative and system activity.',
+                                style: TextStyle(color: grayText),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Icon(Icons.chevron_right_rounded, color: grayText),
+                      ],
+                    ),
                   ),
                 ),
 
