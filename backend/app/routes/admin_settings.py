@@ -2,11 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.models.system_settings import SystemSettingsUpdate
 from app.services.admin_auth_service import require_admin
+from app.services.system_log_service import create_system_log
 from app.services.system_settings_service import (
     get_system_settings,
     update_system_settings,
 )
-
 
 router = APIRouter(
     prefix="/admin/settings",
@@ -36,10 +36,22 @@ def edit_system_settings(
     changes = request.model_dump(exclude_none=True)
 
     try:
-        return update_system_settings(
+        updated_settings = update_system_settings(
             changes,
             updated_by=current_admin.get("uid", "unknown"),
         )
+
+        create_system_log(
+            level="info",
+            action="system_settings_updated",
+            message="Admin updated system settings",
+            actor_uid=current_admin.get("uid"),
+            details={
+                "changes": changes,
+            },
+        )
+
+        return updated_settings
 
     except Exception as exc:
         raise HTTPException(
