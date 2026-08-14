@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'admin_settings_screen.dart';
 import 'parent_dashboard_screen.dart';
 import 'register_screen.dart';
 
@@ -54,6 +55,26 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
 
+      // Refresh the Firebase token so the latest custom claims are available.
+      final tokenResult = await user.getIdTokenResult(true);
+      final claims = tokenResult.claims ?? <String, dynamic>{};
+
+      final isAdmin = claims['admin'] == true || claims['role'] == 'admin';
+
+      if (!mounted) return;
+
+      // Admin accounts go directly to the Admin System Settings screen.
+      if (isAdmin) {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const AdminSettingsScreen()),
+          (route) => false,
+        );
+
+        return;
+      }
+
+      // Preserve the current main-branch parent login behavior.
       await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
         'uid': user.uid,
         'email': user.email,
