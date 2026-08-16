@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'child_home_screen.dart';
 import 'parent_dashboard_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
@@ -18,24 +19,33 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final nameController = TextEditingController();
   final emailController = TextEditingController();
   final passwordController = TextEditingController();
+  final confirmPasswordController = TextEditingController();
 
   bool isLoading = false;
   bool obscurePassword = true;
+  bool obscureConfirmPassword = true;
+
+  String selectedRole = 'parent';
 
   @override
   void dispose() {
     nameController.dispose();
     emailController.dispose();
     passwordController.dispose();
+    confirmPasswordController.dispose();
     super.dispose();
   }
 
-  Future<void> registerParent() async {
+  Future<void> registerUser() async {
     final fullName = nameController.text.trim();
     final email = emailController.text.trim();
     final password = passwordController.text.trim();
+    final confirmPassword = confirmPasswordController.text.trim();
 
-    if (fullName.isEmpty || email.isEmpty || password.isEmpty) {
+    if (fullName.isEmpty ||
+        email.isEmpty ||
+        password.isEmpty ||
+        confirmPassword.isEmpty) {
       showMessage('Please complete all required fields.');
       return;
     }
@@ -45,11 +55,19 @@ class _RegisterScreenState extends State<RegisterScreen> {
       return;
     }
 
+    if (password != confirmPassword) {
+      showMessage('Passwords do not match.');
+      return;
+    }
+
     setState(() => isLoading = true);
 
     try {
       final credential = await FirebaseAuth.instance
-          .createUserWithEmailAndPassword(email: email, password: password);
+          .createUserWithEmailAndPassword(
+            email: email,
+            password: password,
+          );
 
       final user = credential.user;
 
@@ -64,18 +82,30 @@ class _RegisterScreenState extends State<RegisterScreen> {
         'uid': user.uid,
         'fullName': fullName,
         'email': email,
-        'role': 'parent',
+        'role': selectedRole,
         'createdAt': FieldValue.serverTimestamp(),
         'lastLoginAt': FieldValue.serverTimestamp(),
       });
 
       if (!mounted) return;
 
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute(builder: (_) => const ParentDashboardScreen()),
-        (route) => false,
-      );
+      if (selectedRole == 'child') {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(
+            builder: (_) => const ChildHomeScreen(),
+          ),
+          (route) => false,
+        );
+      } else {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(
+            builder: (_) => const ParentDashboardScreen(),
+          ),
+          (route) => false,
+        );
+      }
     } on FirebaseAuthException catch (e) {
       showMessage(e.message ?? 'Registration failed.');
     } catch (e) {
@@ -92,7 +122,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+    ).showSnackBar(
+      SnackBar(
+        content: Text(message),
+      ),
+    );
   }
 
   @override
@@ -112,21 +146,28 @@ class _RegisterScreenState extends State<RegisterScreen> {
         padding: const EdgeInsets.all(24),
         children: [
           const Text(
-            'Create Parent / Guardian Account',
-            style: TextStyle(fontSize: 26, fontWeight: FontWeight.w900),
+            'Create Account',
+            style: TextStyle(
+              fontSize: 26,
+              fontWeight: FontWeight.w900,
+            ),
           ),
 
           const SizedBox(height: 8),
 
           const Text(
-            'This account will be used to create child profiles, pair monitored Android devices, receive alerts, and configure restrictions.',
-            style: TextStyle(color: grayText, height: 1.4),
+            'Create a WellScreen account and select whether this device will be used by a parent or child.',
+            style: TextStyle(
+              color: grayText,
+              height: 1.4,
+            ),
           ),
 
           const SizedBox(height: 28),
 
           TextField(
             controller: nameController,
+            textInputAction: TextInputAction.next,
             decoration: InputDecoration(
               labelText: 'Full Name',
               prefixIcon: const Icon(Icons.person_rounded),
@@ -141,6 +182,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
           TextField(
             controller: emailController,
             keyboardType: TextInputType.emailAddress,
+            textInputAction: TextInputAction.next,
             decoration: InputDecoration(
               labelText: 'Email Address',
               prefixIcon: const Icon(Icons.email_rounded),
@@ -155,6 +197,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
           TextField(
             controller: passwordController,
             obscureText: obscurePassword,
+            textInputAction: TextInputAction.next,
             decoration: InputDecoration(
               labelText: 'Password',
               prefixIcon: const Icon(Icons.lock_rounded),
@@ -165,7 +208,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       : Icons.visibility_off_rounded,
                 ),
                 onPressed: () {
-                  setState(() => obscurePassword = !obscurePassword);
+                  setState(() {
+                    obscurePassword = !obscurePassword;
+                  });
                 },
               ),
               border: OutlineInputBorder(
@@ -177,15 +222,60 @@ class _RegisterScreenState extends State<RegisterScreen> {
           const SizedBox(height: 16),
 
           TextField(
-            enabled: false,
+            controller: confirmPasswordController,
+            obscureText: obscureConfirmPassword,
+            textInputAction: TextInputAction.done,
             decoration: InputDecoration(
-              labelText: 'Role',
-              hintText: 'Parent / Guardian',
-              prefixIcon: const Icon(Icons.family_restroom_rounded),
+              labelText: 'Confirm Password',
+              prefixIcon: const Icon(Icons.lock_reset_rounded),
+              suffixIcon: IconButton(
+                icon: Icon(
+                  obscureConfirmPassword
+                      ? Icons.visibility_rounded
+                      : Icons.visibility_off_rounded,
+                ),
+                onPressed: () {
+                  setState(() {
+                    obscureConfirmPassword = !obscureConfirmPassword;
+                  });
+                },
+              ),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(14),
               ),
             ),
+          ),
+
+          const SizedBox(height: 16),
+
+          DropdownButtonFormField<String>(
+            initialValue: selectedRole,
+            decoration: InputDecoration(
+              labelText: 'Role',
+              prefixIcon: const Icon(Icons.manage_accounts_rounded),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+            ),
+            items: const [
+              DropdownMenuItem(
+                value: 'parent',
+                child: Text('Parent / Guardian'),
+              ),
+              DropdownMenuItem(
+                value: 'child',
+                child: Text('Child'),
+              ),
+            ],
+            onChanged: isLoading
+                ? null
+                : (value) {
+                    if (value == null) return;
+
+                    setState(() {
+                      selectedRole = value;
+                    });
+                  },
           ),
 
           const SizedBox(height: 26),
@@ -193,7 +283,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
           SizedBox(
             height: 54,
             child: FilledButton(
-              onPressed: isLoading ? null : registerParent,
+              onPressed: isLoading ? null : registerUser,
               style: FilledButton.styleFrom(
                 backgroundColor: purple,
                 shape: RoundedRectangleBorder(
