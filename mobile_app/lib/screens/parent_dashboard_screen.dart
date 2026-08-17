@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../services/pattern_detection_service.dart';
 import '../widgets/wellscreen_bottom_nav.dart';
 import 'alerts_reports_screen.dart';
 import 'device_pairing_screen.dart';
@@ -32,6 +33,11 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
   static const double cebuLongitude = 123.88540;
 
   int currentIndex = 0;
+
+  // Tracked from the latest childProfilesStream build so bottom-nav/menu
+  // taps (which run outside build()) know which paired child's usage
+  // report to open. Real Firestore doc id, not a fabricated field.
+  String? _primaryChildId;
 
   Stream<QuerySnapshot<Map<String, dynamic>>> childProfilesStream(String uid) {
     return FirebaseFirestore.instance
@@ -143,6 +149,88 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     return 'Waiting for update';
   }
 
+  Map<String, dynamic>? latestUsageReport(Map<String, dynamic>? data) {
+    if (data == null) return null;
+
+    final report = data['latestUsageReport'];
+
+    if (report is Map<String, dynamic>) {
+      return report;
+    }
+
+    if (report is Map) {
+      return Map<String, dynamic>.from(report);
+    }
+
+    return null;
+  }
+
+  bool hasSyncedUsageReport(Map<String, dynamic>? data) {
+    return latestUsageReport(data) != null;
+  }
+
+  List<Map<String, dynamic>> usageTopApps(Map<String, dynamic>? data) {
+    final report = latestUsageReport(data);
+    final rawApps = report?['topApps'];
+
+    if (rawApps is! List) {
+      return [];
+    }
+
+    return rawApps
+        .whereType<Map>()
+        .map((app) => Map<String, dynamic>.from(app))
+        .toList();
+  }
+
+  Duration usageTotalDuration(Map<String, dynamic>? data) {
+    final report = latestUsageReport(data);
+    final ms = report?['totalUsageDurationMs'];
+
+    if (ms is num) {
+      return Duration(milliseconds: ms.toInt());
+    }
+
+    return Duration.zero;
+  }
+
+  String usagePatternStatus(Map<String, dynamic>? data) {
+    final report = latestUsageReport(data);
+    return (report?['patternStatus'] ?? '').toString();
+  }
+
+  int usageUnhealthyAppCount(Map<String, dynamic>? data) {
+    final report = latestUsageReport(data);
+    final count = report?['unhealthyAppCount'];
+
+    if (count is num) {
+      return count.toInt();
+    }
+
+    return 0;
+  }
+
+  String usageUpdatedText(Map<String, dynamic>? data) {
+    if (data == null) return 'Waiting for update';
+
+    final updatedAt = data['usageReportUpdatedAt'];
+
+    if (updatedAt is Timestamp) {
+      return formatDate(updatedAt);
+    }
+
+    return 'Waiting for update';
+  }
+
+  String formatDurationLabel(Duration duration) {
+    final hours = duration.inHours;
+    final minutes = duration.inMinutes.remainder(60);
+
+    if (hours > 0) return '${hours}h ${minutes}m';
+    if (minutes > 0) return '${minutes}m';
+    return '${duration.inSeconds}s';
+  }
+
   void openGpsMap(Map<String, dynamic>? child) {
     final latitude = locationLatitude(child);
     final longitude = locationLongitude(child);
@@ -187,7 +275,11 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     } else if (index == 2) {
       Navigator.push(
         context,
-        MaterialPageRoute(builder: (_) => const UsageSummaryScreen()),
+        MaterialPageRoute(
+          builder: (_) => UsageSummaryScreen(
+            childProfileId: _primaryChildId ?? '',
+          ),
+        ),
       );
     } else if (index == 3) {
       Navigator.push(
@@ -197,17 +289,16 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     }
   }
 
-  Map<String, dynamic>? getPrimaryChild(
+  QueryDocumentSnapshot<Map<String, dynamic>>? getPrimaryChildDoc(
       List<QueryDocumentSnapshot<Map<String, dynamic>>> childDocs,
       ) {
     if (childDocs.isEmpty) return null;
 
     for (final doc in childDocs) {
-      final data = doc.data();
-      if (isChildConnected(data)) return data;
+      if (isChildConnected(doc.data())) return doc;
     }
 
-    return childDocs.first.data();
+    return childDocs.first;
   }
 
   @override
@@ -239,7 +330,9 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
           stream: childProfilesStream(parentUser.uid),
           builder: (context, snapshot) {
             final childDocs = snapshot.data?.docs ?? [];
-            final primaryChild = getPrimaryChild(childDocs);
+            final primaryChildDoc = getPrimaryChildDoc(childDocs);
+            final primaryChild = primaryChildDoc?.data();
+            _primaryChildId = primaryChildDoc?.id;
 
             return ListView(
               padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
@@ -248,11 +341,11 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                 const SizedBox(height: 18),
                 _deviceProfileCard(primaryChild),
                 const SizedBox(height: 22),
-                _screenTimeAndRiskSection(),
+                _screenTimeAndRiskSection(primaryChild),
                 const SizedBox(height: 18),
                 _gpsMapCard(primaryChild),
                 const SizedBox(height: 22),
-                _topAppsSection(),
+                _topAppsSection(primaryChild),
                 const SizedBox(height: 22),
                 _weeklyTrendSection(),
               ],
@@ -525,18 +618,33 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     );
   }
 
-  Widget _screenTimeAndRiskSection() {
+  Widget _screenTimeAndRiskSection(Map<String, dynamic>? child) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Expanded(child: _screenTimeCard()),
+        Expanded(child: _screenTimeCard(child)),
         const SizedBox(width: 14),
-        Expanded(child: _riskCard()),
+        Expanded(child: _riskCard(child)),
       ],
     );
   }
 
-  Widget _screenTimeCard() {
+  /// Real data synced from the paired child's device via
+  /// [PatternDetectionService] / [UsageTrackingService] (see
+  /// child_home_screen.dart's syncUsageReport). Shows an honest
+  /// "no data yet" state instead of a placeholder number when nothing has
+  /// synced.
+  Widget _screenTimeCard(Map<String, dynamic>? child) {
+    final hasReport = hasSyncedUsageReport(child);
+    final totalDuration = usageTotalDuration(child);
+    const warningLimit = PatternDetectionService.warningTotalUsageLimit;
+    final progress = hasReport
+        ? (totalDuration.inMilliseconds / warningLimit.inMilliseconds)
+            .clamp(0.0, 1.0)
+        : 0.0;
+    final hours = totalDuration.inHours;
+    final minutes = totalDuration.inMinutes.remainder(60);
+
     return _whiteCard(
       child: SizedBox(
         height: 170,
@@ -553,56 +661,68 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
               ),
             ),
             const Spacer(),
-            const FittedBox(
-              fit: BoxFit.scaleDown,
-              child: Text.rich(
-                TextSpan(
-                  children: [
-                    TextSpan(
-                      text: '4',
+            hasReport
+                ? FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text.rich(
+                      TextSpan(
+                        children: [
+                          TextSpan(
+                            text: '$hours',
+                            style: const TextStyle(
+                              fontSize: 43,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                          const TextSpan(
+                            text: 'h ',
+                            style: TextStyle(
+                              fontSize: 26,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                          TextSpan(
+                            text: '$minutes',
+                            style: const TextStyle(
+                              fontSize: 43,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                          const TextSpan(
+                            text: 'm',
+                            style: TextStyle(
+                              fontSize: 26,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                : const FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      'No data yet',
                       style: TextStyle(
-                        fontSize: 43,
+                        color: grayText,
+                        fontSize: 20,
                         fontWeight: FontWeight.w900,
                       ),
                     ),
-                    TextSpan(
-                      text: 'h ',
-                      style: TextStyle(
-                        fontSize: 26,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                    TextSpan(
-                      text: '25',
-                      style: TextStyle(
-                        fontSize: 43,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                    TextSpan(
-                      text: 'm',
-                      style: TextStyle(
-                        fontSize: 26,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
+                  ),
             const SizedBox(height: 8),
             const Text(
-              'Daily Limit: 6h',
+              'Warning threshold: 3h',
               style: TextStyle(color: grayText, fontWeight: FontWeight.w800),
             ),
             const SizedBox(height: 10),
             ClipRRect(
               borderRadius: BorderRadius.circular(20),
-              child: const LinearProgressIndicator(
-                value: 0.72,
+              child: LinearProgressIndicator(
+                value: progress,
                 minHeight: 7,
                 color: purple,
-                backgroundColor: Color(0xFFD1D5DB),
+                backgroundColor: const Color(0xFFD1D5DB),
               ),
             ),
           ],
@@ -611,14 +731,45 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     );
   }
 
-  Widget _riskCard() {
+  /// Real pattern status synced from the child device. There is no 0-100
+  /// numeric "risk score" anywhere in the real detection logic
+  /// ([PatternDetectionService] only produces healthy/warning/unhealthy),
+  /// so this intentionally does not fabricate one - the previous "32/100"
+  /// here was a hardcoded placeholder, not a real computed score.
+  Widget _riskCard(Map<String, dynamic>? child) {
+    final hasReport = hasSyncedUsageReport(child);
+    final statusRaw = usagePatternStatus(child);
+    final unhealthyCount = usageUnhealthyAppCount(child);
+
+    Color statusColor;
+    String statusLabel;
+    IconData statusIcon;
+
+    if (!hasReport) {
+      statusColor = grayText;
+      statusLabel = 'No Data';
+      statusIcon = Icons.hourglass_empty_rounded;
+    } else if (statusRaw == 'unhealthy') {
+      statusColor = const Color(0xFFDC2626);
+      statusLabel = 'Unhealthy';
+      statusIcon = Icons.warning_rounded;
+    } else if (statusRaw == 'warning') {
+      statusColor = const Color(0xFFD97706);
+      statusLabel = 'Warning';
+      statusIcon = Icons.shield_moon_rounded;
+    } else {
+      statusColor = teal;
+      statusLabel = 'Healthy';
+      statusIcon = Icons.shield_rounded;
+    }
+
     return _whiteCard(
-      child: const SizedBox(
+      child: SizedBox(
         height: 170,
         child: Column(
           children: [
-            Text(
-              'Risk Level',
+            const Text(
+              'Usage Pattern',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: darkText,
@@ -626,28 +777,30 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                 fontWeight: FontWeight.w900,
               ),
             ),
-            Spacer(),
-            Icon(Icons.shield_rounded, color: teal, size: 62),
-            SizedBox(height: 6),
+            const Spacer(),
+            Icon(statusIcon, color: statusColor, size: 62),
+            const SizedBox(height: 6),
             FittedBox(
               fit: BoxFit.scaleDown,
               child: Text(
-                'Low Risk',
+                statusLabel,
                 style: TextStyle(
-                  color: teal,
+                  color: statusColor,
                   fontSize: 20,
                   fontWeight: FontWeight.w900,
                 ),
               ),
             ),
-            SizedBox(height: 2),
+            const SizedBox(height: 2),
             FittedBox(
               fit: BoxFit.scaleDown,
               child: Text(
-                '32/100',
-                style: TextStyle(
+                hasReport
+                    ? '$unhealthyCount app${unhealthyCount == 1 ? '' : 's'} flagged'
+                    : 'Awaiting sync',
+                style: const TextStyle(
                   color: darkText,
-                  fontSize: 24,
+                  fontSize: 16,
                   fontWeight: FontWeight.w900,
                 ),
               ),
@@ -734,7 +887,15 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     );
   }
 
-  Widget _topAppsSection() {
+  /// Real per-app usage synced from the child device (see
+  /// child_home_screen.dart's syncUsageReport, which writes
+  /// child_profiles/{id}.latestUsageReport.topApps from
+  /// UsageTrackingService.getTodayUsage()). Previously this rendered four
+  /// hardcoded rows (YouTube/TikTok/Facebook/Mobile Game) with no data
+  /// source at all.
+  Widget _topAppsSection(Map<String, dynamic>? child) {
+    final apps = usageTopApps(child).take(4).toList();
+
     return _whiteCard(
       child: Column(
         children: [
@@ -755,7 +916,9 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (_) => const UsageSummaryScreen(),
+                      builder: (_) => UsageSummaryScreen(
+                        childProfileId: _primaryChildId ?? '',
+                      ),
                     ),
                   );
                 },
@@ -767,37 +930,65 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
             ],
           ),
           const SizedBox(height: 6),
-          _appUsageRow(
-            icon: Icons.play_arrow_rounded,
-            iconColor: Colors.red,
-            appName: 'YouTube',
-            time: '1h 45m',
-            value: 0.70,
-          ),
-          _appUsageRow(
-            icon: Icons.music_note_rounded,
-            iconColor: Colors.black,
-            appName: 'TikTok',
-            time: '1h 10m',
-            value: 0.52,
-          ),
-          _appUsageRow(
-            icon: Icons.public_rounded,
-            iconColor: Colors.blue,
-            appName: 'Facebook',
-            time: '40m',
-            value: 0.41,
-          ),
-          _appUsageRow(
-            icon: Icons.sports_esports_rounded,
-            iconColor: Colors.blueGrey,
-            appName: 'Mobile Game',
-            time: '50m',
-            value: 0.47,
-          ),
+          if (apps.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 18),
+              child: Text(
+                'No usage data synced yet. Ask your child to open WellScreen '
+                'and tap "Sync Usage".',
+                style: TextStyle(color: grayText, fontWeight: FontWeight.w600),
+              ),
+            )
+          else
+            ..._buildTopAppRows(apps),
         ],
       ),
     );
+  }
+
+  List<Widget> _buildTopAppRows(List<Map<String, dynamic>> apps) {
+    final maxDurationMs = apps
+        .map((app) => (app['usageDurationMs'] as num?)?.toInt() ?? 0)
+        .fold<int>(0, (highest, value) => value > highest ? value : highest);
+
+    return apps.map((app) {
+      final durationMs = (app['usageDurationMs'] as num?)?.toInt() ?? 0;
+      final displayName =
+          (app['displayName'] ?? app['packageName'] ?? 'Unknown app')
+              .toString();
+      final ratio = maxDurationMs > 0 ? durationMs / maxDurationMs : 0.0;
+
+      return _appUsageRow(
+        icon: _iconForApp(displayName),
+        iconColor: purple,
+        appName: displayName,
+        time: formatDurationLabel(Duration(milliseconds: durationMs)),
+        value: ratio.clamp(0.0, 1.0),
+      );
+    }).toList();
+  }
+
+  IconData _iconForApp(String name) {
+    final lower = name.toLowerCase();
+
+    if (lower.contains('youtube') || lower.contains('video')) {
+      return Icons.play_arrow_rounded;
+    }
+    if (lower.contains('tiktok') || lower.contains('music')) {
+      return Icons.music_note_rounded;
+    }
+    if (lower.contains('facebook') ||
+        lower.contains('chrome') ||
+        lower.contains('browser')) {
+      return Icons.public_rounded;
+    }
+    if (lower.contains('game') ||
+        lower.contains('legends') ||
+        lower.contains('pubg')) {
+      return Icons.sports_esports_rounded;
+    }
+
+    return Icons.apps_rounded;
   }
 
   Widget _appUsageRow({
@@ -860,10 +1051,13 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     );
   }
 
+  /// Was a hardcoded bar chart (Mon-Sun, made-up hour values) with no data
+  /// source. Only today's report is currently synced/stored (see
+  /// syncUsageReport in child_home_screen.dart) - there is no per-day
+  /// history collection yet, so a real weekly trend can't be computed
+  /// honestly. Showing a placeholder instead of fabricated numbers until
+  /// daily history storage is built.
   Widget _weeklyTrendSection() {
-    final days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    final values = [8.0, 4.2, 6.0, 3.3, 8.0, 5.5, 7.2];
-
     return _whiteCard(
       child: Column(
         children: [
@@ -879,50 +1073,22 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                   ),
                 ),
               ),
-              Text(
-                'This Week',
-                style: TextStyle(color: grayText, fontWeight: FontWeight.w800),
-              ),
-              Icon(Icons.keyboard_arrow_down_rounded, color: grayText),
             ],
           ),
-          const SizedBox(height: 18),
-          SizedBox(
-            height: 150,
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: List.generate(days.length, (index) {
-                final height = 24 + (values[index] / 8.0) * 88;
-
-                return Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      AnimatedContainer(
-                        duration: const Duration(milliseconds: 200),
-                        width: 28,
-                        height: height,
-                        decoration: BoxDecoration(
-                          color: purple,
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Text(
-                          days[index],
-                          style: const TextStyle(
-                            color: purple,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              }),
-            ),
+          const SizedBox(height: 14),
+          const Icon(Icons.bar_chart_rounded, color: grayText, size: 42),
+          const SizedBox(height: 10),
+          const Text(
+            'Weekly trends aren\'t available yet',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: darkText, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'This needs several days of synced usage reports stored per '
+            'day. Today\'s report only.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: grayText, fontSize: 12),
           ),
         ],
       ),

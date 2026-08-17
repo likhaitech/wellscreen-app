@@ -4,7 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 
 import '../models/app_rule.dart';
+import '../models/app_usage_summary.dart';
 import '../services/app_rules_service.dart';
+import '../services/usage_dashboard_controller_service.dart';
+import '../services/usage_tracking_service.dart';
 import '../widgets/wellscreen_bottom_nav.dart';
 import 'login_screen.dart';
 import 'profile_settings_screen.dart';
@@ -16,7 +19,8 @@ class ChildHomeScreen extends StatefulWidget {
   State<ChildHomeScreen> createState() => _ChildHomeScreenState();
 }
 
-class _ChildHomeScreenState extends State<ChildHomeScreen> {
+class _ChildHomeScreenState extends State<ChildHomeScreen>
+    with WidgetsBindingObserver {
   static const Color purple = Color(0xFF5B2BBF);
   static const Color deepPurple = Color(0xFF3F1E8A);
   static const Color teal = Color(0xFF57C49B);
@@ -28,16 +32,65 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
   static const Color softRed = Color(0xFFFFEFEF);
 
   final AppRulesService _rulesService = AppRulesService();
+  final UsageTrackingService _usageTrackingService = UsageTrackingService();
+  final UsageDashboardControllerService _usageDashboardController =
+      UsageDashboardControllerService();
   final pairingCodeController = TextEditingController();
 
   int currentIndex = 0;
   bool isPairing = false;
   bool isSharingLocation = false;
+  bool isSyncingUsage = false;
+
+  // Real local usage data loaded via UsageDashboardControllerService, which
+  // wraps UsageTrackingService (Android UsageStats), PatternDetectionService
+  // and ScreenTimeGoalService. This layer already existed in the codebase
+  // (usage_dashboard_controller_service.dart etc.) but nothing imported it
+  // from any screen, so this card was showing hardcoded "4h 25m" / "Low
+  // Risk" / "32/100" placeholders instead. See BRANCH_REAUDIT for details.
+  UsageDashboardControllerState? _usageDashboardState;
+  bool _loadingUsageDashboard = true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _loadUsageDashboard();
+  }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     pairingCodeController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Android's "Usage Access" permission is granted from system Settings,
+    // outside the app, so there's no in-app callback for it. Re-check when
+    // the user comes back to the app (e.g. after granting the permission)
+    // instead of requiring a manual refresh every time.
+    if (state == AppLifecycleState.resumed) {
+      _loadUsageDashboard();
+    }
+  }
+
+  Future<void> _loadUsageDashboard() async {
+    if (!mounted) return;
+    setState(() => _loadingUsageDashboard = true);
+
+    try {
+      final state = await _usageDashboardController.loadTodayDashboardState();
+      if (!mounted) return;
+      setState(() {
+        _usageDashboardState = state;
+        _loadingUsageDashboard = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loadingUsageDashboard = false);
+    }
   }
 
   Future<void> pairWithParent() async {
@@ -246,6 +299,95 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
         timeLimit: Duration(seconds: 20),
       ),
     );
+  }
+
+  /// Syncs today's real on-device usage data to
+  /// child_profiles/{childProfileId}.latestUsageReport, so the parent
+  /// dashboard (ParentDashboardScreen's Screen Time/Usage Pattern/Top Apps
+  /// cards and UsageSummaryScreen) can display it. Mirrors the
+  /// shareCurrentLocation pattern above - same childProfileId lookup, same
+  /// Firestore transaction shape.
+  ///
+  /// Requires Android's special "Usage Access" permission, which can only
+  /// be granted from system Settings (not a normal runtime permission
+  /// dialog). If it isn't granted yet, this opens that settings screen and
+  /// asks the user to come back and tap again - didChangeAppLifecycleState
+  /// above will also silently refresh the local dashboard when they return.
+  Future<void> syncUsageReport(Map<String, dynamic> data) async {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      showMessage('Please log in again.');
+      return;
+    }
+
+    final childProfileId = (data['pairedChildProfileId'] ?? '').toString();
+
+    if (childProfileId.isEmpty) {
+      showMessage('Pair this device first before syncing usage data.');
+      return;
+    }
+
+    setState(() => isSyncingUsage = true);
+
+    try {
+      final hasPermission = await _usageTrackingService.hasUsagePermission();
+
+      if (!hasPermission) {
+        await _usageTrackingService.openUsageAccessSettings();
+        if (!mounted) return;
+        showMessage(
+          'Grant "WellScreen" access under Usage Access in Settings, then '
+          'come back and tap Sync Usage again.',
+        );
+        return;
+      }
+
+      final summaries = await _usageTrackingService.getTodayUsage();
+      final report = await _usageTrackingService.getTodayUsageReport();
+
+      final topApps = summaries
+          .map(
+            (AppUsageSummary app) => {
+              'packageName': app.packageName,
+              'displayName': app.displayName,
+              'usageDurationMs': app.usageDuration.inMilliseconds,
+              'lastTimeUsed': app.lastTimeUsed?.toIso8601String(),
+            },
+          )
+          .toList();
+
+      final usageReportData = {
+        'totalUsageDurationMs': report.totalUsageDuration.inMilliseconds,
+        'topApps': topApps,
+        'unhealthyAppCount': report.unhealthyAppCount,
+        'patternStatus': report.patternStatus.name,
+        'recommendationMessage': report.recommendationMessage,
+        'capturedAt': report.generatedAt.toIso8601String(),
+      };
+
+      final firestore = FirebaseFirestore.instance;
+      final childProfileRef = firestore
+          .collection('child_profiles')
+          .doc(childProfileId);
+
+      await childProfileRef.set({
+        'latestUsageReport': usageReportData,
+        'usageReportUpdatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      if (!mounted) return;
+
+      showMessage('Today\'s usage report synced to the parent dashboard.');
+      await _loadUsageDashboard();
+    } catch (e) {
+      if (!mounted) return;
+      showMessage(e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) {
+        setState(() => isSyncingUsage = false);
+      }
+    }
   }
 
   Future<void> logout() async {
@@ -628,34 +770,48 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
             ],
           );
 
-          final buttons = Row(
+          final buttons = Column(
             children: [
-              Expanded(
-                child: _smallPurpleButton(
-                  label: connected ? 'Share GPS' : 'Pair Device',
-                  onTap: () {
-                    if (connected) {
-                      shareCurrentLocation(data);
-                    } else {
-                      showMessage('Enter the pairing code below.');
-                    }
-                  },
-                ),
+              Row(
+                children: [
+                  Expanded(
+                    child: _smallPurpleButton(
+                      label: connected ? 'Share GPS' : 'Pair Device',
+                      onTap: () {
+                        if (connected) {
+                          shareCurrentLocation(data);
+                        } else {
+                          showMessage('Enter the pairing code below.');
+                        }
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _smallPurpleButton(
+                      label: 'Profile',
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const ProfileSettingsScreen(),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _smallPurpleButton(
-                  label: 'Profile',
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => const ProfileSettingsScreen(),
-                      ),
-                    );
-                  },
+              if (connected) ...[
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  child: _smallPurpleButton(
+                    label: isSyncingUsage ? 'Syncing...' : 'Sync Usage',
+                    onTap: isSyncingUsage ? null : () => syncUsageReport(data),
+                  ),
                 ),
-              ),
+              ],
             ],
           );
 
@@ -760,7 +916,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
 
   Widget _smallPurpleButton({
     required String label,
-    required VoidCallback onTap,
+    required VoidCallback? onTap,
   }) {
     return SizedBox(
       height: 40,
@@ -858,18 +1014,76 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
     );
   }
 
+  String _durationLabel(Duration duration) {
+    final hours = duration.inHours;
+    final minutes = duration.inMinutes.remainder(60);
+
+    if (hours > 0) return '${hours}h ${minutes}m';
+    if (minutes > 0) return '${minutes}m';
+    return '${duration.inSeconds}s';
+  }
+
   Widget _screenTimeAndRiskSection() {
+    if (_loadingUsageDashboard) {
+      return const SizedBox(
+        height: 170,
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    final state = _usageDashboardState;
+
+    if (state == null || !state.viewModel.hasUsagePermission) {
+      return _usageAccessPrompt(state);
+    }
+
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Expanded(child: _screenTimeCard()),
+        Expanded(child: _screenTimeCard(state)),
         const SizedBox(width: 14),
-        Expanded(child: _riskCard()),
+        Expanded(child: _riskCard(state)),
       ],
     );
   }
 
-  Widget _screenTimeCard() {
+  /// Shown when Android's "Usage Access" permission (a special permission
+  /// only grantable from system Settings, not a normal runtime dialog)
+  /// hasn't been granted yet - real device usage stats can't be read
+  /// without it. loadTodayDashboardState() (usage_dashboard_service.dart)
+  /// already falls back to a cached report when this happens; if there's
+  /// no cache either, this prompts the child to grant access.
+  Widget _usageAccessPrompt(UsageDashboardControllerState? state) {
+    return _whiteCard(
+      child: Column(
+        children: [
+          const Icon(Icons.bar_chart_rounded, color: purple, size: 42),
+          const SizedBox(height: 10),
+          Text(
+            state?.viewModel.errorMessage ??
+                'Usage access permission is required to show real screen '
+                    'time data.',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: grayText, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 12),
+          _smallPurpleButton(
+            label: 'Grant Usage Access',
+            onTap: () async {
+              await _usageTrackingService.openUsageAccessSettings();
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _screenTimeCard(UsageDashboardControllerState state) {
+    final goal = state.screenTimeGoalResult;
+    final totalLabel = state.viewModel.totalUsageLabel;
+    final limitLabel = _durationLabel(state.dailyScreenTimeLimit);
+    final progress = (goal?.progressPercent ?? 0).clamp(0.0, 1.0);
+
     return _whiteCard(
       child: SizedBox(
         height: 170,
@@ -886,56 +1100,29 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
               ),
             ),
             const Spacer(),
-            const FittedBox(
+            FittedBox(
               fit: BoxFit.scaleDown,
-              child: Text.rich(
-                TextSpan(
-                  children: [
-                    TextSpan(
-                      text: '4',
-                      style: TextStyle(
-                        fontSize: 43,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                    TextSpan(
-                      text: 'h ',
-                      style: TextStyle(
-                        fontSize: 26,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                    TextSpan(
-                      text: '25',
-                      style: TextStyle(
-                        fontSize: 43,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                    TextSpan(
-                      text: 'm',
-                      style: TextStyle(
-                        fontSize: 26,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                  ],
+              child: Text(
+                totalLabel,
+                style: const TextStyle(
+                  fontSize: 34,
+                  fontWeight: FontWeight.w900,
                 ),
               ),
             ),
             const SizedBox(height: 8),
-            const Text(
-              'Daily Limit: 6h',
-              style: TextStyle(color: grayText, fontWeight: FontWeight.w800),
+            Text(
+              'Daily Limit: $limitLabel',
+              style: const TextStyle(color: grayText, fontWeight: FontWeight.w800),
             ),
             const SizedBox(height: 10),
             ClipRRect(
               borderRadius: BorderRadius.circular(20),
-              child: const LinearProgressIndicator(
-                value: 0.72,
+              child: LinearProgressIndicator(
+                value: progress,
                 minHeight: 7,
                 color: purple,
-                backgroundColor: Color(0xFFD1D5DB),
+                backgroundColor: const Color(0xFFD1D5DB),
               ),
             ),
           ],
@@ -944,14 +1131,33 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
     );
   }
 
-  Widget _riskCard() {
+  Widget _riskCard(UsageDashboardControllerState state) {
+    final status = state.viewModel.statusLabel;
+
+    Color statusColor;
+    IconData statusIcon;
+
+    switch (status) {
+      case 'Unhealthy':
+        statusColor = const Color(0xFFDC2626);
+        statusIcon = Icons.warning_rounded;
+        break;
+      case 'Warning':
+        statusColor = const Color(0xFFD97706);
+        statusIcon = Icons.shield_moon_rounded;
+        break;
+      default:
+        statusColor = teal;
+        statusIcon = Icons.shield_rounded;
+    }
+
     return _whiteCard(
-      child: const SizedBox(
+      child: SizedBox(
         height: 170,
         child: Column(
           children: [
-            Text(
-              'Wellness Level',
+            const Text(
+              'Usage Pattern',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: darkText,
@@ -959,28 +1165,28 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
                 fontWeight: FontWeight.w900,
               ),
             ),
-            Spacer(),
-            Icon(Icons.shield_rounded, color: teal, size: 62),
-            SizedBox(height: 6),
+            const Spacer(),
+            Icon(statusIcon, color: statusColor, size: 62),
+            const SizedBox(height: 6),
             FittedBox(
               fit: BoxFit.scaleDown,
               child: Text(
-                'Low Risk',
+                status,
                 style: TextStyle(
-                  color: teal,
+                  color: statusColor,
                   fontSize: 20,
                   fontWeight: FontWeight.w900,
                 ),
               ),
             ),
-            SizedBox(height: 2),
+            const SizedBox(height: 2),
             FittedBox(
               fit: BoxFit.scaleDown,
               child: Text(
-                '32/100',
-                style: TextStyle(
+                state.viewModel.unhealthyAppCountLabel,
+                style: const TextStyle(
                   color: darkText,
-                  fontSize: 24,
+                  fontSize: 14,
                   fontWeight: FontWeight.w900,
                 ),
               ),
@@ -1424,12 +1630,21 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
     );
   }
 
+  /// Was explicitly labeled "Demo Data" with four hardcoded rows - honest
+  /// about being fake, but still fake. Now reads
+  /// UsageDashboardControllerState.appUsageList, the real top-10
+  /// UsageStats-backed list loaded in _loadUsageDashboard().
   Widget _topAppsSection() {
+    final apps = (_usageDashboardState?.appUsageList ?? []).take(4).toList();
+    final maxDurationMs = apps
+        .map((app) => app.usageDuration.inMilliseconds)
+        .fold<int>(0, (highest, value) => value > highest ? value : highest);
+
     return _whiteCard(
       child: Column(
         children: [
-          Row(
-            children: const [
+          const Row(
+            children: [
               Expanded(
                 child: Text(
                   'Top Apps Today',
@@ -1440,44 +1655,62 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
                   ),
                 ),
               ),
-              Text(
-                'Demo Data',
-                style: TextStyle(color: purple, fontWeight: FontWeight.w900),
-              ),
             ],
           ),
           const SizedBox(height: 16),
-          _appUsageRow(
-            icon: Icons.play_arrow_rounded,
-            iconColor: Colors.red,
-            appName: 'YouTube',
-            time: '1h 45m',
-            value: 0.70,
-          ),
-          _appUsageRow(
-            icon: Icons.music_note_rounded,
-            iconColor: Colors.black,
-            appName: 'TikTok',
-            time: '1h 10m',
-            value: 0.52,
-          ),
-          _appUsageRow(
-            icon: Icons.public_rounded,
-            iconColor: Colors.blue,
-            appName: 'Facebook',
-            time: '40m',
-            value: 0.41,
-          ),
-          _appUsageRow(
-            icon: Icons.sports_esports_rounded,
-            iconColor: Colors.blueGrey,
-            appName: 'Mobile Game',
-            time: '50m',
-            value: 0.47,
-          ),
+          if (_loadingUsageDashboard)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Center(child: CircularProgressIndicator()),
+            )
+          else if (apps.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text(
+                'No app usage recorded yet today.',
+                style: TextStyle(color: grayText, fontWeight: FontWeight.w600),
+              ),
+            )
+          else
+            ...apps.map((app) {
+              final ratio = maxDurationMs > 0
+                  ? app.usageDuration.inMilliseconds / maxDurationMs
+                  : 0.0;
+
+              return _appUsageRow(
+                icon: _iconForAppName(app.displayName),
+                iconColor: purple,
+                appName: app.displayName,
+                time: app.usageLabel,
+                value: ratio.clamp(0.0, 1.0),
+              );
+            }),
         ],
       ),
     );
+  }
+
+  IconData _iconForAppName(String name) {
+    final lower = name.toLowerCase();
+
+    if (lower.contains('youtube') || lower.contains('video')) {
+      return Icons.play_arrow_rounded;
+    }
+    if (lower.contains('tiktok') || lower.contains('music')) {
+      return Icons.music_note_rounded;
+    }
+    if (lower.contains('facebook') ||
+        lower.contains('chrome') ||
+        lower.contains('browser')) {
+      return Icons.public_rounded;
+    }
+    if (lower.contains('game') ||
+        lower.contains('legends') ||
+        lower.contains('pubg')) {
+      return Icons.sports_esports_rounded;
+    }
+
+    return Icons.apps_rounded;
   }
 
   Widget _appUsageRow({
@@ -1540,15 +1773,15 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
     );
   }
 
+  /// Same fabricated Mon-Sun bar chart as the parent dashboard's version -
+  /// see the note on ParentDashboardScreen._weeklyTrendSection. No daily
+  /// history is stored yet, so this is an honest placeholder instead.
   Widget _weeklyTrendSection() {
-    final days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    final values = [8.0, 4.2, 6.0, 3.3, 8.0, 5.5, 7.2];
-
     return _whiteCard(
       child: Column(
         children: [
-          Row(
-            children: const [
+          const Row(
+            children: [
               Expanded(
                 child: Text(
                   'Weekly Trend',
@@ -1559,50 +1792,22 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
                   ),
                 ),
               ),
-              Text(
-                'This Week',
-                style: TextStyle(color: grayText, fontWeight: FontWeight.w800),
-              ),
-              Icon(Icons.keyboard_arrow_down_rounded, color: grayText),
             ],
           ),
-          const SizedBox(height: 18),
-          SizedBox(
-            height: 150,
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: List.generate(days.length, (index) {
-                final height = 24 + (values[index] / 8.0) * 88;
-
-                return Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      AnimatedContainer(
-                        duration: const Duration(milliseconds: 200),
-                        width: 28,
-                        height: height,
-                        decoration: BoxDecoration(
-                          color: purple,
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Text(
-                          days[index],
-                          style: const TextStyle(
-                            color: purple,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              }),
-            ),
+          const SizedBox(height: 14),
+          const Icon(Icons.bar_chart_rounded, color: grayText, size: 42),
+          const SizedBox(height: 10),
+          const Text(
+            'Weekly trends aren\'t available yet',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: darkText, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'This needs several days of usage reports stored per day. '
+            'Today\'s data only, for now.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: grayText, fontSize: 12),
           ),
         ],
       ),

@@ -112,8 +112,21 @@ class PatternDetectionService {
 
     return riskyKeywords.any(
       (keyword) =>
-          packageName.contains(keyword) || displayName.contains(keyword),
+          _matchesKeyword(packageName, keyword) ||
+          _matchesKeyword(displayName, keyword),
     );
+  }
+
+  /// Matches [keyword] as a whole token within [text] rather than as a bare
+  /// substring, so short/common keywords like 'x' or 'cod' don't false-match
+  /// unrelated names such as "Firefox" or "VSCode". A token boundary is any
+  /// character that isn't a letter or digit (covers package-name separators
+  /// like '.', '_', '-', and spaces in display names).
+  bool _matchesKeyword(String text, String keyword) {
+    final pattern = RegExp(
+      r'(?<![a-z0-9])' + RegExp.escape(keyword) + r'(?![a-z0-9])',
+    );
+    return pattern.hasMatch(text);
   }
 
   UsagePatternStatus _detectStatus({
