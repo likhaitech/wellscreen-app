@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 
 import '../models/app_rule.dart';
 import '../services/app_rules_service.dart';
@@ -138,7 +139,12 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
     }
   }
 
-  Future<void> shareDemoLocation(Map<String, dynamic> data) async {
+  /// Requests the device's real GPS position via [Geolocator] and shares it
+  /// to the parent dashboard. Replaces the previous shareDemoLocation, which
+  /// wrote a hardcoded constant coordinate regardless of the device's actual
+  /// position - see the WellScreen re-audit notes for why that was a
+  /// data-integrity problem, not just a missing feature.
+  Future<void> shareCurrentLocation(Map<String, dynamic> data) async {
     final user = FirebaseAuth.instance.currentUser;
 
     if (user == null) {
@@ -156,40 +162,90 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
     setState(() => isSharingLocation = true);
 
     try {
+      final position = await _getCurrentPositionOrThrow();
+
       final firestore = FirebaseFirestore.instance;
       final userRef = firestore.collection('users').doc(user.uid);
       final childProfileRef = firestore
           .collection('child_profiles')
           .doc(childProfileId);
 
-      final demoLocation = {
-        'latitude': 10.34030,
-        'longitude': 123.94160,
-        'label': 'Mandaue City, Cebu demo location',
+      final sharedLocation = {
+        'latitude': position.latitude,
+        'longitude': position.longitude,
+        'accuracyMeters': position.accuracy,
+        'capturedAt': position.timestamp.toIso8601String(),
       };
 
       await firestore.runTransaction((transaction) async {
         transaction.set(userRef, {
-          'latestLocation': demoLocation,
+          'latestLocation': sharedLocation,
           'locationUpdatedAt': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));
 
         transaction.set(childProfileRef, {
-          'latestLocation': demoLocation,
+          'latestLocation': sharedLocation,
           'locationUpdatedAt': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));
       });
 
       if (!mounted) return;
 
-      showMessage('Demo GPS location shared to parent dashboard.');
+      showMessage('Current GPS location shared to parent dashboard.');
     } catch (e) {
-      showMessage('Failed to share GPS location: $e');
+      if (!mounted) return;
+      showMessage(e.toString().replaceFirst('Exception: ', ''));
     } finally {
       if (mounted) {
         setState(() => isSharingLocation = false);
       }
     }
+  }
+
+  /// Walks the full geolocator permission/service flow and returns a real
+  /// device [Position], or throws a user-readable Exception describing
+  /// exactly which step failed (services off, permission denied, permission
+  /// permanently denied, or a timeout getting a fix).
+  ///
+  /// NOT verified on a physical device or emulator - this sandbox has no
+  /// Android runtime to test against. The permission flow and API calls
+  /// follow the documented geolocator ^14.x contract, but this needs a real
+  /// on-device pass (indoors AND outdoors, and with location services
+  /// toggled off) before this row can honestly move to "Done" in the
+  /// tracker.
+  Future<Position> _getCurrentPositionOrThrow() async {
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+
+    if (!serviceEnabled) {
+      throw Exception(
+        'Location services are turned off on this device. Enable GPS/location and try again.',
+      );
+    }
+
+    var permission = await Geolocator.checkPermission();
+
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+
+    if (permission == LocationPermission.denied) {
+      throw Exception(
+        'Location permission was denied. Allow location access for WellScreen and try again.',
+      );
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      throw Exception(
+        'Location permission is permanently denied. Enable it from this device\'s App Settings > Permissions.',
+      );
+    }
+
+    return Geolocator.getCurrentPosition(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        timeLimit: Duration(seconds: 20),
+      ),
+    );
   }
 
   Future<void> logout() async {
@@ -579,7 +635,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
                   label: connected ? 'Share GPS' : 'Pair Device',
                   onTap: () {
                     if (connected) {
-                      shareDemoLocation(data);
+                      shareCurrentLocation(data);
                     } else {
                       showMessage('Enter the pairing code below.');
                     }
@@ -994,7 +1050,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen> {
           ),
           IconButton(
             onPressed: connected && !isSharingLocation
-                ? () => shareDemoLocation(data)
+                ? () => shareCurrentLocation(data)
                 : null,
             icon: Icon(
               isSharingLocation
