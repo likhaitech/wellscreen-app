@@ -16,7 +16,9 @@ import android.content.Intent
 class SmsDeliveredReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val packageName = intent.getStringExtra(SmsAlertSender.EXTRA_PACKAGE_NAME) ?: return
+        val triggeredAtMs = intent.getLongExtra(SmsAlertSender.EXTRA_TRIGGERED_AT_MS, -1L)
+            .takeIf { it > 0 }
         val outcome = if (resultCode == Activity.RESULT_OK) "delivered" else "undelivered"
-        SmsAlertSender.recordOutcome(context, packageName, outcome)
+        SmsAlertSender.recordOutcome(context, packageName, outcome, triggeredAtMs)
     }
 }

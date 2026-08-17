@@ -35,11 +35,24 @@ class WellScreenAccessibilityService : AccessibilityService() {
             if (!recentlyBlockedSameApp) {
                 lastBlockedPackage = currentPackage
                 lastBlockTime = now
-                openBlockedScreen(currentPackage)
+
+                try {
+                    openBlockedScreen(currentPackage)
+                    RestrictionLogger.recordOutcome(this, currentPackage, "blocked", now)
+                } catch (_: Exception) {
+                    RestrictionLogger.recordOutcome(
+                        this,
+                        currentPackage,
+                        "failed_exception",
+                        now,
+                    )
+                }
+
                 SmsAlertSender.maybeSendRestrictedAppAlert(
                     this,
                     currentPackage,
                     getAppLabel(currentPackage),
+                    now,
                 )
             }
         }

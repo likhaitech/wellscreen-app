@@ -40,6 +40,15 @@ class AlertsReportsScreen extends StatelessWidget {
     return '$month/$day $hour:$minute';
   }
 
+  List<Map<String, dynamic>> _decodeLog(dynamic raw) {
+    if (raw is! List) return <Map<String, dynamic>>[];
+
+    return raw
+        .whereType<Map>()
+        .map((entry) => Map<String, dynamic>.from(entry))
+        .toList();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -68,14 +77,10 @@ class AlertsReportsScreen extends StatelessWidget {
                 final data = snapshot.data?.data() ?? <String, dynamic>{};
                 final usageReport = data['latestUsageReport'];
                 final location = data['latestLocation'];
-                final rawSmsLog = data['smsAlertLog'];
 
-                final smsLog = rawSmsLog is List
-                    ? rawSmsLog
-                        .whereType<Map>()
-                        .map((entry) => Map<String, dynamic>.from(entry))
-                        .toList()
-                    : <Map<String, dynamic>>[];
+                final smsLog = _decodeLog(data['smsAlertLog']);
+                final restrictionLog = _decodeLog(data['restrictionLog']);
+                final pushAlertLog = _decodeLog(data['pushAlertLog']);
 
                 return ListView(
                   padding: const EdgeInsets.all(24),
@@ -117,6 +122,32 @@ class AlertsReportsScreen extends StatelessWidget {
                             'child device.',
                       ),
                     _smsAlertSection(smsLog),
+                    _logSummarySection(
+                      log: restrictionLog,
+                      icon: Icons.block_rounded,
+                      iconColor: Colors.deepOrange,
+                      title: 'Restriction Enforcement',
+                      emptySubtitle: 'No restricted-app blocks recorded '
+                          'yet on the child device.',
+                      isSuccess: (entry) => entry['outcome'] == 'blocked',
+                      entryLabel: (entry) =>
+                          '${entry['packageName'] ?? 'unknown app'} · '
+                          '${entry['outcome'] ?? 'unknown'}',
+                    ),
+                    _logSummarySection(
+                      log: pushAlertLog,
+                      icon: Icons.notifications_active_rounded,
+                      iconColor: Colors.blueAccent,
+                      title: 'Push Notification Delivery',
+                      emptySubtitle: 'No push notifications sent yet - '
+                          'these fire when an unhealthy usage pattern or '
+                          'new location is shared, and require the backend '
+                          'to be deployed (see backend/DEPLOYMENT.md).',
+                      isSuccess: (entry) => entry['outcome'] == 'sent',
+                      entryLabel: (entry) =>
+                          '${entry['alertType'] ?? 'alert'} · '
+                          '${entry['outcome'] ?? 'unknown'}',
+                    ),
                     const AlertReportCard(
                       icon: Icons.category_rounded,
                       iconColor: purple,
@@ -268,6 +299,120 @@ class AlertsReportsScreen extends StatelessWidget {
                       child: Text(
                         '$packageName · $outcome · '
                         '${_formatTimestamp(entry['timestampMs'])}',
+                        style: const TextStyle(
+                          color: grayText,
+                          fontSize: 12,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Generic outcome-log card shared by the restriction-enforcement and
+  /// push-notification-delivery sections below (both are the same shape as
+  /// the SMS log above: a list of {outcome, responseTimeMs, timestampMs,
+  /// ...} entries recorded natively/client-side at the moment each attempt
+  /// happened, not simulated). Shows a real success/failure count and, when
+  /// present, the average response time across recorded attempts - this is
+  /// the "response time" panel criterion, measured per subsystem (blocking,
+  /// SMS, push) rather than one single end-to-end timer, since those are
+  /// genuinely different operations with different real latencies.
+  Widget _logSummarySection({
+    required List<Map<String, dynamic>> log,
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    required String emptySubtitle,
+    required bool Function(Map<String, dynamic> entry) isSuccess,
+    required String Function(Map<String, dynamic> entry) entryLabel,
+  }) {
+    if (log.isEmpty) {
+      return AlertReportCard(
+        icon: icon,
+        iconColor: iconColor,
+        title: title,
+        subtitle: emptySubtitle,
+      );
+    }
+
+    final successCount = log.where(isSuccess).length;
+    final failedCount = log.length - successCount;
+
+    final responseTimes = log
+        .map((entry) => entry['responseTimeMs'])
+        .whereType<num>()
+        .map((n) => n.toInt())
+        .toList();
+    final avgResponseMs = responseTimes.isEmpty
+        ? null
+        : (responseTimes.reduce((a, b) => a + b) / responseTimes.length)
+            .round();
+
+    final recent = log.reversed.take(5).toList();
+
+    return Card(
+      elevation: 2,
+      shadowColor: Colors.black12,
+      margin: const EdgeInsets.only(bottom: 14),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, color: iconColor, size: 30),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: const TextStyle(
+                      color: darkText,
+                      fontWeight: FontWeight.w900,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '$successCount succeeded, $failedCount failed, out of '
+              '${log.length} attempt${log.length == 1 ? '' : 's'}'
+              '${avgResponseMs != null ? ' · avg response time ${avgResponseMs}ms' : ''}.',
+              style: const TextStyle(color: grayText, height: 1.4),
+            ),
+            const SizedBox(height: 10),
+            ...recent.map((entry) {
+              final success = isSuccess(entry);
+              final responseTimeMs = entry['responseTimeMs'];
+
+              return Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Row(
+                  children: [
+                    Icon(
+                      success
+                          ? Icons.check_circle_rounded
+                          : Icons.error_rounded,
+                      color: success ? Colors.green : Colors.redAccent,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        '${entryLabel(entry)} · '
+                        '${_formatTimestamp(entry['timestampMs'])}'
+                        '${responseTimeMs is num ? ' · ${responseTimeMs}ms' : ''}',
                         style: const TextStyle(
                           color: grayText,
                           fontSize: 12,

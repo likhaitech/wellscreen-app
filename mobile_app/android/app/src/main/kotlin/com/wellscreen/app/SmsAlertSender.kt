@@ -43,8 +43,14 @@ object SmsAlertSender {
     const val ACTION_SMS_SENT = "com.wellscreen.app.SMS_SENT"
     const val ACTION_SMS_DELIVERED = "com.wellscreen.app.SMS_DELIVERED"
     const val EXTRA_PACKAGE_NAME = "package_name"
+    const val EXTRA_TRIGGERED_AT_MS = "triggered_at_ms"
 
-    fun maybeSendRestrictedAppAlert(context: Context, blockedPackage: String, appLabel: String) {
+    fun maybeSendRestrictedAppAlert(
+        context: Context,
+        blockedPackage: String,
+        appLabel: String,
+        triggeredAtMs: Long,
+    ) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val phoneNumber = prefs.getString(PHONE_NUMBER_KEY, null)
 
@@ -58,7 +64,7 @@ object SmsAlertSender {
 
         try {
             val smsManager = getSmsManager(context) ?: run {
-                recordOutcome(context, blockedPackage, "failed_no_manager")
+                recordOutcome(context, blockedPackage, "failed_no_manager", triggeredAtMs)
                 return
             }
 
@@ -68,6 +74,7 @@ object SmsAlertSender {
                 Intent(ACTION_SMS_SENT).apply {
                     setPackage(context.packageName)
                     putExtra(EXTRA_PACKAGE_NAME, blockedPackage)
+                    putExtra(EXTRA_TRIGGERED_AT_MS, triggeredAtMs)
                 },
                 pendingIntentFlags(),
             )
@@ -78,13 +85,14 @@ object SmsAlertSender {
                 Intent(ACTION_SMS_DELIVERED).apply {
                     setPackage(context.packageName)
                     putExtra(EXTRA_PACKAGE_NAME, blockedPackage)
+                    putExtra(EXTRA_TRIGGERED_AT_MS, triggeredAtMs)
                 },
                 pendingIntentFlags(),
             )
 
             smsManager.sendTextMessage(phoneNumber, null, message, sentPI, deliveredPI)
         } catch (_: Exception) {
-            recordOutcome(context, blockedPackage, "failed_exception")
+            recordOutcome(context, blockedPackage, "failed_exception", triggeredAtMs)
         }
     }
 
@@ -132,15 +140,25 @@ object SmsAlertSender {
         }
     }
 
-    fun recordOutcome(context: Context, packageName: String, outcome: String) {
+    fun recordOutcome(
+        context: Context,
+        packageName: String,
+        outcome: String,
+        triggeredAtMs: Long? = null,
+    ) {
         try {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val log = JSONArray(prefs.getString(LOG_KEY, "[]") ?: "[]")
 
+            val now = System.currentTimeMillis()
+
             val entry = JSONObject()
             entry.put("packageName", packageName)
             entry.put("outcome", outcome)
-            entry.put("timestampMs", System.currentTimeMillis())
+            if (triggeredAtMs != null) {
+                entry.put("responseTimeMs", now - triggeredAtMs)
+            }
+            entry.put("timestampMs", now)
             log.put(entry)
 
             val trimmed = JSONArray()

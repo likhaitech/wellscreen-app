@@ -138,7 +138,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     final status = await Permission.sms.status;
     final prefs = await SharedPreferences.getInstance();
     final phoneNumber = prefs.getString('parent_phone_number');
-    final log = _decodeSmsAlertLog(prefs.getString('sms_alert_log_json'));
+    final log = _decodeJsonList(prefs.getString('sms_alert_log_json'));
 
     if (!mounted) return;
 
@@ -150,7 +150,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     });
   }
 
-  List<Map<String, dynamic>> _decodeSmsAlertLog(String? raw) {
+  List<Map<String, dynamic>> _decodeJsonList(String? raw) {
     if (raw == null || raw.isEmpty) return [];
 
     try {
@@ -364,6 +364,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
           title: 'New location shared',
           body: 'Your child\'s device just shared its current location.',
           alertType: 'location_shared',
+          childProfileId: childProfileId,
         ),
       );
     } catch (e) {
@@ -488,13 +489,19 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       };
 
       // Also push the local SMS backup-alert log (written natively by
-      // SmsSentReceiver/SmsDeliveredReceiver) so the parent can see real
-      // sent/delivered/failed outcomes, not just whether the feature is
-      // turned on. Reuses this same sync button rather than adding a
-      // separate one.
+      // SmsSentReceiver/SmsDeliveredReceiver) and the restriction
+      // enforcement log (written natively by RestrictionLogger when
+      // WellScreenAccessibilityService blocks a restricted app) so the
+      // parent can see real sent/delivered/failed and blocked/failed
+      // outcomes with response times, not just whether the features are
+      // turned on. Reuses this same sync button rather than adding
+      // separate ones.
       final prefs = await SharedPreferences.getInstance();
-      final smsAlertLog = _decodeSmsAlertLog(
+      final smsAlertLog = _decodeJsonList(
         prefs.getString('sms_alert_log_json'),
+      );
+      final restrictionLog = _decodeJsonList(
+        prefs.getString('restriction_log_json'),
       );
 
       final firestore = FirebaseFirestore.instance;
@@ -506,6 +513,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         'latestUsageReport': usageReportData,
         'usageReportUpdatedAt': FieldValue.serverTimestamp(),
         if (smsAlertLog.isNotEmpty) 'smsAlertLog': smsAlertLog,
+        if (restrictionLog.isNotEmpty) 'restrictionLog': restrictionLog,
       }, SetOptions(merge: true));
 
       if (!mounted) return;
@@ -525,6 +533,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
             title: 'Unhealthy usage pattern detected',
             body: report.recommendationMessage,
             alertType: 'unhealthy_usage',
+            childProfileId: childProfileId,
           ),
         );
       }

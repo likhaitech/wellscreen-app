@@ -16,6 +16,8 @@ import android.telephony.SmsManager
 class SmsSentReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val packageName = intent.getStringExtra(SmsAlertSender.EXTRA_PACKAGE_NAME) ?: return
+        val triggeredAtMs = intent.getLongExtra(SmsAlertSender.EXTRA_TRIGGERED_AT_MS, -1L)
+            .takeIf { it > 0 }
 
         val outcome = when (resultCode) {
             Activity.RESULT_OK -> "sent"
@@ -26,6 +28,6 @@ class SmsSentReceiver : BroadcastReceiver() {
             else -> "failed_unknown"
         }
 
-        SmsAlertSender.recordOutcome(context, packageName, outcome)
+        SmsAlertSender.recordOutcome(context, packageName, outcome, triggeredAtMs)
     }
 }
