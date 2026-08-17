@@ -19,7 +19,6 @@ dependencies:
   firebase_messaging: ^16.4.1
 
   flutter_bloc: ^9.1.1
-  tflite_flutter: ^0.12.1
   fl_chart: ^1.2.0
 
   app_usage: ^4.1.0
@@ -51,6 +50,7 @@ flutter:
 
   assets:
     - assets/icons/wellscreen_icon.png
+    - assets/ml/forest_rules.json
 
 flutter_launcher_icons:
   android: true

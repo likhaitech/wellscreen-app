@@ -10,8 +10,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_rule.dart';
 import '../models/app_usage_summary.dart';
+import '../models/usage_report.dart';
 import '../services/alert_notification_client.dart';
 import '../services/app_rules_service.dart';
+import '../services/daily_screen_time_limit_service.dart';
+import '../services/ml_risk_classifier_service.dart';
 import '../services/sync_status_service.dart';
 import '../services/usage_dashboard_controller_service.dart';
 import '../services/usage_tracking_service.dart';
@@ -45,6 +48,10 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   final UsageDashboardControllerService _usageDashboardController =
       UsageDashboardControllerService();
   final SyncStatusService _syncStatusService = SyncStatusService();
+  final MlRiskClassifierService _mlRiskClassifierService =
+      MlRiskClassifierService();
+  final DailyScreenTimeLimitService _dailyScreenTimeLimitService =
+      DailyScreenTimeLimitService();
   final pairingCodeController = TextEditingController();
   StreamSubscription<bool>? _connectivitySubscription;
 
@@ -650,6 +657,74 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     );
   }
 
+  /// Builds the 6-feature input vector for MlRiskClassifierService, using
+  /// only data the app can genuinely compute today - see
+  /// ml/generate_dataset.py's doc comment for which of the manuscript's
+  /// Table 6 indicators are included and which are deferred (frequent-app
+  /// launch counting and harmful-category detection aren't built yet, so
+  /// they're not faked here).
+  Map<String, num> _buildMlFeatures({
+    required UsageReport report,
+    required List<AppUsageSummary> summaries,
+    required List<Map<String, dynamic>> restrictionLog,
+    required int dailyLimitMinutes,
+  }) {
+    var lateNightMinutes = 0;
+    var longestSessionMinutes = 0;
+
+    for (final app in summaries) {
+      final minutes = app.usageDuration.inMinutes;
+
+      if (minutes > longestSessionMinutes) {
+        longestSessionMinutes = minutes;
+      }
+
+      final lastUsed = app.lastTimeUsed;
+      if (lastUsed != null && (lastUsed.hour >= 22 || lastUsed.hour < 5)) {
+        // Best-effort proxy: AppUsageSummary only exposes a last-used
+        // timestamp, not a minute-by-minute breakdown, so an app last
+        // touched in the late-night window has its whole usage duration
+        // counted toward late-night minutes. Same underlying signal
+        // PatternDetectionService._hasLateNightUsage already uses (a
+        // last-used-hour check), just summed into a duration instead of
+        // left as a boolean.
+        lateNightMinutes += minutes;
+      }
+    }
+
+    final now = DateTime.now();
+    final startOfDay = DateTime(now.year, now.month, now.day);
+    final sevenDaysAgo = now.subtract(const Duration(days: 7));
+
+    var attemptsToday = 0;
+    var violations7d = 0;
+
+    for (final entry in restrictionLog) {
+      if (entry['outcome'] != 'blocked') continue;
+
+      final timestampMs = entry['timestampMs'];
+      if (timestampMs is! int) continue;
+
+      final eventTime = DateTime.fromMillisecondsSinceEpoch(timestampMs);
+
+      if (!eventTime.isBefore(startOfDay)) {
+        attemptsToday++;
+      }
+      if (eventTime.isAfter(sevenDaysAgo)) {
+        violations7d++;
+      }
+    }
+
+    return {
+      'total_screen_time_minutes': report.totalUsageDuration.inMinutes,
+      'daily_limit_minutes': dailyLimitMinutes,
+      'late_night_minutes': lateNightMinutes,
+      'longest_session_minutes': longestSessionMinutes,
+      'restricted_app_attempts_today': attemptsToday,
+      'rule_violations_7d': violations7d,
+    };
+  }
+
   /// Syncs today's real on-device usage data to
   /// child_profiles/{childProfileId}.latestUsageReport, so the parent
   /// dashboard (ParentDashboardScreen's Screen Time/Usage Pattern/Top Apps
@@ -733,6 +808,38 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       );
       final syncLog = _decodeJsonList(prefs.getString('sync_log_json'));
 
+      // Proposed ML Extension (manuscript Ch. 3) - a real, trained,
+      // evaluated Random Forest classifier (see ml/train_model.py and
+      // ml/output/evaluation_report.txt), run on-device via
+      // MlRiskClassifierService. Supplements PatternDetectionService's
+      // rule-based status above; doesn't replace it. Best-effort: a
+      // classification failure (e.g. the asset failing to load) should
+      // never block the real sync.
+      Map<String, dynamic>? mlRiskAssessmentData;
+      try {
+        final dailyLimit = await _dailyScreenTimeLimitService.getDailyLimit();
+        final mlFeatures = _buildMlFeatures(
+          report: report,
+          summaries: summaries,
+          restrictionLog: restrictionLog,
+          dailyLimitMinutes: dailyLimit.inMinutes,
+        );
+        final assessment = await _mlRiskClassifierService.classify(
+          mlFeatures,
+        );
+
+        mlRiskAssessmentData = {
+          'label': assessment.label,
+          'confidence': assessment.confidence,
+          'classProbabilities': assessment.classProbabilities,
+          'modelVersion': assessment.modelVersion,
+          'inputFeatures': mlFeatures,
+          'timestampMs': DateTime.now().millisecondsSinceEpoch,
+        };
+      } catch (_) {
+        // Best-effort - see above. The rule-based status still syncs.
+      }
+
       // _attemptFirestoreSync handles offline detection, the write timeout
       // (cloud_firestore's set() hangs forever offline instead of throwing
       // - firebase/flutterfire#17643), local queuing for automatic retry on
@@ -744,6 +851,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
           if (smsAlertLog.isNotEmpty) 'smsAlertLog': smsAlertLog,
           if (restrictionLog.isNotEmpty) 'restrictionLog': restrictionLog,
           if (syncLog.isNotEmpty) 'syncLog': syncLog,
+          'mlRiskAssessment': ?mlRiskAssessmentData,
         },
         trigger: 'manual',
       );

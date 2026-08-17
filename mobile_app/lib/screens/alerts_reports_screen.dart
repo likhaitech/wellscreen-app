@@ -82,6 +82,7 @@ class AlertsReportsScreen extends StatelessWidget {
                 final restrictionLog = _decodeLog(data['restrictionLog']);
                 final pushAlertLog = _decodeLog(data['pushAlertLog']);
                 final syncLog = _decodeLog(data['syncLog']);
+                final mlRiskAssessment = data['mlRiskAssessment'];
 
                 return ListView(
                   padding: const EdgeInsets.all(24),
@@ -109,6 +110,19 @@ class AlertsReportsScreen extends StatelessWidget {
                         iconColor: Colors.orange,
                         title: 'Usage Pattern',
                         subtitle: 'No usage report synced yet from the '
+                            'child device.',
+                      ),
+                    if (mlRiskAssessment is Map)
+                      _mlRiskAssessmentCard(
+                        Map<String, dynamic>.from(mlRiskAssessment),
+                      )
+                    else
+                      const AlertReportCard(
+                        icon: Icons.psychology_alt_rounded,
+                        iconColor: Colors.deepPurple,
+                        title: 'AI Risk Assessment (Proposed Extension)',
+                        subtitle: 'Not synced yet - runs automatically the '
+                            'next time usage data is synced from the '
                             'child device.',
                       ),
                     if (location is Map)
@@ -217,6 +231,85 @@ class AlertsReportsScreen extends StatelessWidget {
       iconColor: color,
       title: title,
       subtitle: recommendation,
+    );
+  }
+
+  /// Real output from MlRiskClassifierService - a trained, evaluated
+  /// Random Forest (see ml/train_model.py, ml/output/evaluation_report.txt)
+  /// run on-device against today's real usage data. Labeled "Proposed
+  /// Extension" and explicitly noted as simulated-data-trained, per the
+  /// manuscript's own instruction not to present it as more validated than
+  /// it is (Ch. 3: "should not be presented as fully trained unless the
+  /// researchers already have the dataset, training results, and
+  /// evaluation outputs" - it does have those now, just not from real
+  /// child usage data). This supplements the rule-based Usage Pattern card
+  /// above; it doesn't replace it.
+  Widget _mlRiskAssessmentCard(Map<String, dynamic> assessment) {
+    final label = (assessment['label'] ?? 'Unknown').toString();
+    final confidence = assessment['confidence'];
+    final confidencePercent =
+        confidence is num ? (confidence * 100).toStringAsFixed(0) : null;
+
+    final icon = switch (label) {
+      'High Risk' => Icons.warning_amber_rounded,
+      'Moderate Risk' => Icons.shield_moon_rounded,
+      _ => Icons.check_circle_rounded,
+    };
+
+    final color = switch (label) {
+      'High Risk' => Colors.redAccent,
+      'Moderate Risk' => Colors.orange,
+      _ => Colors.green,
+    };
+
+    return Card(
+      elevation: 2,
+      shadowColor: Colors.black12,
+      margin: const EdgeInsets.only(bottom: 14),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, color: color, size: 30),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Text(
+                    'AI Risk Assessment (Proposed Extension)',
+                    style: TextStyle(
+                      color: darkText,
+                      fontWeight: FontWeight.w900,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              confidencePercent != null
+                  ? '$label ($confidencePercent% confidence)'
+                  : label,
+              style: TextStyle(
+                color: color,
+                fontWeight: FontWeight.w800,
+                fontSize: 14,
+              ),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Random Forest classifier, trained and evaluated on '
+              'simulated usage data (no real dataset exists yet - see '
+              'ml/README.md). Supplements the rule-based Usage Pattern '
+              'above; not a medical or diagnostic assessment.',
+              style: TextStyle(color: grayText, fontSize: 12, height: 1.4),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
