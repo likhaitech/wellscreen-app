@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'admin_settings_screen.dart';
 import 'child_home_screen.dart';
 import 'parent_dashboard_screen.dart';
 import 'register_screen.dart';
@@ -55,6 +56,25 @@ class _LoginScreenState extends State<LoginScreen> {
         throw Exception('Login failed. Please try again.');
       }
 
+      // Refresh Firebase ID token so the latest custom claims are loaded.
+      final tokenResult = await user.getIdTokenResult(true);
+      final claims = tokenResult.claims ?? <String, dynamic>{};
+
+      final isAdmin = claims['admin'] == true || claims['role'] == 'admin';
+
+      if (!mounted) return;
+
+      // Admin accounts go directly to the Admin System Settings screen.
+      if (isAdmin) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const AdminSettingsScreen()),
+        );
+
+        return;
+      }
+
+      // Normal parent / child accounts use their Firestore role.
       final userDoc = await FirebaseFirestore.instance
           .collection('users')
           .doc(user.uid)
@@ -104,6 +124,10 @@ class _LoginScreenState extends State<LoginScreen> {
 
     if (code == 'invalid-credential') {
       return 'Invalid email or password.';
+    }
+
+    if (code == 'user-disabled') {
+      return 'This account has been disabled.';
     }
 
     if (code == 'network-request-failed') {
@@ -248,7 +272,11 @@ class _LoginScreenState extends State<LoginScreen> {
             controller: passwordController,
             obscureText: obscurePassword,
             textInputAction: TextInputAction.done,
-            onSubmitted: (_) => isLoading ? null : loginUser(),
+            onSubmitted: (_) {
+              if (!isLoading) {
+                loginUser();
+              }
+            },
             decoration: InputDecoration(
               labelText: 'Password',
               prefixIcon: const Icon(Icons.lock_rounded, color: purple),
