@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -9,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_rule.dart';
 import '../models/app_usage_summary.dart';
+import '../services/alert_notification_client.dart';
 import '../services/app_rules_service.dart';
 import '../services/usage_dashboard_controller_service.dart';
 import '../services/usage_tracking_service.dart';
@@ -37,6 +39,8 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
 
   final AppRulesService _rulesService = AppRulesService();
   final UsageTrackingService _usageTrackingService = UsageTrackingService();
+  final AlertNotificationClient _alertNotificationClient =
+      AlertNotificationClient();
   final UsageDashboardControllerService _usageDashboardController =
       UsageDashboardControllerService();
   final pairingCodeController = TextEditingController();
@@ -352,6 +356,16 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       if (!mounted) return;
 
       showMessage('Current GPS location shared to parent dashboard.');
+
+      final parentId = (data['pairedParentId'] ?? '').toString();
+      unawaited(
+        _alertNotificationClient.notifyParent(
+          parentUid: parentId,
+          title: 'New location shared',
+          body: 'Your child\'s device just shared its current location.',
+          alertType: 'location_shared',
+        ),
+      );
     } catch (e) {
       if (!mounted) return;
       showMessage(e.toString().replaceFirst('Exception: ', ''));
@@ -499,6 +513,21 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       showMessage('Today\'s usage report synced to the parent dashboard.');
       await _loadUsageDashboard();
       await _refreshSmsAlertStatus();
+
+      // Push a real notification only for the pattern that actually
+      // matters to a parent (unhealthy) rather than on every sync - a
+      // healthy-usage push every time would just be noise.
+      if (report.patternStatus.name == 'unhealthy') {
+        final parentId = (data['pairedParentId'] ?? '').toString();
+        unawaited(
+          _alertNotificationClient.notifyParent(
+            parentUid: parentId,
+            title: 'Unhealthy usage pattern detected',
+            body: report.recommendationMessage,
+            alertType: 'unhealthy_usage',
+          ),
+        );
+      }
     } catch (e) {
       if (!mounted) return;
       showMessage(e.toString().replaceFirst('Exception: ', ''));

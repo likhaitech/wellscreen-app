@@ -1,12 +1,18 @@
 import 'package:dio/dio.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+import '../config/app_config.dart';
+
 class AdminSettingsApiService {
   AdminSettingsApiService()
     : _dio = Dio(
         BaseOptions(
-          // Android Emulator -> your Windows PC localhost
-          baseUrl: 'http://10.0.2.2:8000',
+          // Was hardcoded to the Android-emulator-only address
+          // 'http://10.0.2.2:8000' - moved to AppConfig.backendBaseUrl so
+          // this and the new push-notification client (see
+          // alert_notification_client.dart) share one place to update once
+          // the backend is actually deployed, instead of two.
+          baseUrl: AppConfig.backendBaseUrl,
           connectTimeout: const Duration(seconds: 10),
           receiveTimeout: const Duration(seconds: 10),
         ),

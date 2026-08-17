@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../services/pattern_detection_service.dart';
+import '../services/push_notification_service.dart';
 import '../widgets/wellscreen_bottom_nav.dart';
 import 'alerts_reports_screen.dart';
 import 'device_pairing_screen.dart';
@@ -38,6 +39,19 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
   // taps (which run outside build()) know which paired child's usage
   // report to open. Real Firestore doc id, not a fabricated field.
   String? _primaryChildId;
+
+  final PushNotificationService _pushNotificationService =
+      PushNotificationService();
+
+  @override
+  void initState() {
+    super.initState();
+    // Registers this device for push (saves an fcmToken to
+    // users/{uid}), and starts listening for foreground messages so real
+    // alerts sent via backend/app/services/notification_service.py
+    // actually show up while the app is open. See push_notification_service.dart.
+    _pushNotificationService.initialize();
+  }
 
   Stream<QuerySnapshot<Map<String, dynamic>>> childProfilesStream(String uid) {
     return FirebaseFirestore.instance
