@@ -36,6 +36,11 @@ class WellScreenAccessibilityService : AccessibilityService() {
                 lastBlockedPackage = currentPackage
                 lastBlockTime = now
                 openBlockedScreen(currentPackage)
+                SmsAlertSender.maybeSendRestrictedAppAlert(
+                    this,
+                    currentPackage,
+                    getAppLabel(currentPackage),
+                )
             }
         }
     }
@@ -61,6 +66,15 @@ class WellScreenAccessibilityService : AccessibilityService() {
             result
         } catch (_: Exception) {
             emptySet()
+        }
+    }
+
+    private fun getAppLabel(packageName: String): String {
+        return try {
+            val info = packageManager.getApplicationInfo(packageName, 0)
+            packageManager.getApplicationLabel(info).toString()
+        } catch (_: Exception) {
+            packageName
         }
     }
 

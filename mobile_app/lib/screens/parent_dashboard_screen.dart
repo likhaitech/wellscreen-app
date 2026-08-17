@@ -408,7 +408,11 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
             onPressed: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(builder: (_) => const AlertsReportsScreen()),
+                MaterialPageRoute(
+                  builder: (_) => AlertsReportsScreen(
+                    childProfileId: _primaryChildId ?? '',
+                  ),
+                ),
               );
             },
             icon: const Icon(

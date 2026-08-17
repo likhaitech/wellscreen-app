@@ -14,6 +14,11 @@
     <!-- Keep this for notifications if used -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Backup SMS alert to the paired parent's phone when a restricted app
+         is blocked - see SmsAlertSender.kt. Requested at runtime via
+         permission_handler; declared here so the OS allows the request. -->
+    <uses-permission android:name="android.permission.SEND_SMS" />
+
     <application
         android:label="WellScreen"
         android:name="${applicationName}"
@@ -64,6 +69,16 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!-- Receive the sent/delivered outcome of each backup SMS alert so
+             it can be logged and shown to the parent as a real delivery
+             success rate, not just fire-and-forget. -->
+        <receiver
+            android:name=".SmsSentReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".SmsDeliveredReceiver"
+            android:exported="false" />
 
     </application>
 

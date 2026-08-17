@@ -1,7 +1,11 @@
+import 'dart:convert';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_rule.dart';
 import '../models/app_usage_summary.dart';
@@ -51,11 +55,22 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   UsageDashboardControllerState? _usageDashboardState;
   bool _loadingUsageDashboard = true;
 
+  // SMS backup-alert status (see SmsAlertSender.kt). The actual sending
+  // happens natively in WellScreenAccessibilityService when a restricted
+  // app is blocked - this state is just what the Flutter UI needs to show
+  // whether that's actually wired up (permission granted + a parent phone
+  // number cached) and a log of what's happened so far.
+  bool _smsPermissionGranted = false;
+  String? _cachedParentPhoneNumber;
+  List<Map<String, dynamic>> _smsAlertLog = [];
+  String? _syncedParentIdForPhoneNumber;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _loadUsageDashboard();
+    _refreshSmsAlertStatus();
   }
 
   @override
@@ -73,7 +88,99 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     // instead of requiring a manual refresh every time.
     if (state == AppLifecycleState.resumed) {
       _loadUsageDashboard();
+      _refreshSmsAlertStatus();
     }
+  }
+
+  /// Caches the paired parent's phone number locally (SharedPreferences),
+  /// because WellScreenAccessibilityService.kt / SmsAlertSender.kt run in
+  /// native Kotlin with no Firestore access of their own - they read the
+  /// same "FlutterSharedPreferences" file the Flutter app writes to, the
+  /// same pattern app_rules_service.dart already uses for restricted-app
+  /// package lists. The number itself lives on users/{parentId}.phoneNumber
+  /// (ProfileSettingsScreen), set by the parent on their own device.
+  Future<void> _maybeSyncParentPhoneNumber(Map<String, dynamic> data) async {
+    final parentId = (data['pairedParentId'] ?? '').toString();
+
+    if (parentId.isEmpty || parentId == _syncedParentIdForPhoneNumber) {
+      return;
+    }
+
+    _syncedParentIdForPhoneNumber = parentId;
+
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(parentId)
+          .get();
+
+      final phoneNumber = (doc.data()?['phoneNumber'] ?? '').toString().trim();
+      final prefs = await SharedPreferences.getInstance();
+
+      if (phoneNumber.isEmpty) {
+        await prefs.remove('parent_phone_number');
+      } else {
+        await prefs.setString('parent_phone_number', phoneNumber);
+      }
+
+      await _refreshSmsAlertStatus();
+    } catch (_) {
+      // Best-effort - if this fails, SmsAlertSender simply has no cached
+      // number yet and skips sending, same as the "no number yet" state.
+    }
+  }
+
+  Future<void> _refreshSmsAlertStatus() async {
+    final status = await Permission.sms.status;
+    final prefs = await SharedPreferences.getInstance();
+    final phoneNumber = prefs.getString('parent_phone_number');
+    final log = _decodeSmsAlertLog(prefs.getString('sms_alert_log_json'));
+
+    if (!mounted) return;
+
+    setState(() {
+      _smsPermissionGranted = status.isGranted;
+      _cachedParentPhoneNumber =
+          (phoneNumber != null && phoneNumber.isNotEmpty) ? phoneNumber : null;
+      _smsAlertLog = log;
+    });
+  }
+
+  List<Map<String, dynamic>> _decodeSmsAlertLog(String? raw) {
+    if (raw == null || raw.isEmpty) return [];
+
+    try {
+      final decoded = jsonDecode(raw);
+
+      if (decoded is! List) return [];
+
+      return decoded
+          .whereType<Map>()
+          .map((entry) => Map<String, dynamic>.from(entry))
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> _requestSmsPermission() async {
+    final status = await Permission.sms.request();
+
+    if (!mounted) return;
+
+    setState(() => _smsPermissionGranted = status.isGranted);
+
+    showMessage(
+      status.isGranted
+          ? 'SMS backup alerts enabled.'
+          : 'SMS permission was not granted. Backup alerts will stay off '
+              'until it\'s allowed.',
+    );
+  }
+
+  String _maskPhoneNumber(String phone) {
+    if (phone.length <= 4) return phone;
+    return '${'*' * (phone.length - 4)}${phone.substring(phone.length - 4)}';
   }
 
   Future<void> _loadUsageDashboard() async {
@@ -366,6 +473,16 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         'capturedAt': report.generatedAt.toIso8601String(),
       };
 
+      // Also push the local SMS backup-alert log (written natively by
+      // SmsSentReceiver/SmsDeliveredReceiver) so the parent can see real
+      // sent/delivered/failed outcomes, not just whether the feature is
+      // turned on. Reuses this same sync button rather than adding a
+      // separate one.
+      final prefs = await SharedPreferences.getInstance();
+      final smsAlertLog = _decodeSmsAlertLog(
+        prefs.getString('sms_alert_log_json'),
+      );
+
       final firestore = FirebaseFirestore.instance;
       final childProfileRef = firestore
           .collection('child_profiles')
@@ -374,12 +491,14 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       await childProfileRef.set({
         'latestUsageReport': usageReportData,
         'usageReportUpdatedAt': FieldValue.serverTimestamp(),
+        if (smsAlertLog.isNotEmpty) 'smsAlertLog': smsAlertLog,
       }, SetOptions(merge: true));
 
       if (!mounted) return;
 
       showMessage('Today\'s usage report synced to the parent dashboard.');
       await _loadUsageDashboard();
+      await _refreshSmsAlertStatus();
     } catch (e) {
       if (!mounted) return;
       showMessage(e.toString().replaceFirst('Exception: ', ''));
@@ -623,6 +742,10 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
             final data = snapshot.data?.data() ?? <String, dynamic>{};
             final connected = isConnected(data);
 
+            if (connected) {
+              _maybeSyncParentPhoneNumber(data);
+            }
+
             return ListView(
               padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
               children: [
@@ -635,6 +758,8 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
                 _screenTimeAndRiskSection(),
                 const SizedBox(height: 18),
                 _gpsCard(data, connected),
+                if (connected) const SizedBox(height: 22),
+                if (connected) _smsAlertsCard(),
                 if (connected) const SizedBox(height: 22),
                 if (connected) _activeRulesCard(data),
                 const SizedBox(height: 22),
@@ -1266,6 +1391,82 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
               size: 30,
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  /// Backup SMS alert status. The actual send happens natively (see
+  /// SmsAlertSender.kt, triggered from WellScreenAccessibilityService when
+  /// a restricted app is blocked) so it keeps working even if this Flutter
+  /// screen isn't open - this card only shows whether it's actually able to
+  /// fire (permission + a cached parent phone number) and a running tally
+  /// from the real local delivery log.
+  Widget _smsAlertsCard() {
+    final hasPhoneNumber = _cachedParentPhoneNumber != null;
+    final sentCount = _smsAlertLog
+        .where((entry) =>
+            entry['outcome'] == 'sent' || entry['outcome'] == 'delivered')
+        .length;
+    final failedCount = _smsAlertLog
+        .where((entry) => (entry['outcome'] as String? ?? '').startsWith('failed'))
+        .length;
+
+    return _whiteCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.sms_rounded, color: purple, size: 26),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'SMS Backup Alerts',
+                  style: TextStyle(
+                    color: darkText,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            !_smsPermissionGranted
+                ? 'Off. Grant SMS permission so a backup text alert can '
+                    'reach your parent even without internet, when a '
+                    'restricted app is opened.'
+                : hasPhoneNumber
+                    ? 'Enabled. Blocked-app alerts will text '
+                        '${_maskPhoneNumber(_cachedParentPhoneNumber!)}.'
+                    : 'Permission granted, but your parent hasn\'t added a '
+                        'phone number yet in their Profile Settings.',
+            style: const TextStyle(
+              color: grayText,
+              fontWeight: FontWeight.w600,
+              height: 1.35,
+            ),
+          ),
+          if (!_smsPermissionGranted) ...[
+            const SizedBox(height: 12),
+            _smallPurpleButton(
+              label: 'Enable SMS Alerts',
+              onTap: _requestSmsPermission,
+            ),
+          ],
+          if (_smsAlertLog.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Text(
+              'Recent attempts: $sentCount sent, $failedCount failed',
+              style: const TextStyle(
+                color: darkText,
+                fontWeight: FontWeight.w800,
+                fontSize: 13,
+              ),
+            ),
+          ],
         ],
       ),
     );
