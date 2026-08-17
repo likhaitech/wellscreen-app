@@ -93,16 +93,21 @@ class AlertNotificationClient {
             .collection('child_profiles')
             .doc(childProfileId)
             .set({
-          'pushAlertLog': FieldValue.arrayUnion([
-            {
-              'alertType': alertType,
-              'outcome': outcome,
-              'responseTimeMs': stopwatch.elapsedMilliseconds,
-              'timestampMs': DateTime.now().millisecondsSinceEpoch,
-              'error': ?error,
-            },
-          ]),
-        }, SetOptions(merge: true));
+              'pushAlertLog': FieldValue.arrayUnion([
+                {
+                  'alertType': alertType,
+                  'outcome': outcome,
+                  'responseTimeMs': stopwatch.elapsedMilliseconds,
+                  'timestampMs': DateTime.now().millisecondsSinceEpoch,
+                  'error': ?error,
+                },
+              ]),
+            }, SetOptions(merge: true))
+            // cloud_firestore's set() hangs forever offline instead of
+            // throwing (firebase/flutterfire#17643) - this is best-effort
+            // logging, so a timeout here should just be swallowed like any
+            // other failure, not hang the caller.
+            .timeout(const Duration(seconds: 10));
       } catch (_) {
         // Logging failure doesn't matter beyond the push attempt above.
       }

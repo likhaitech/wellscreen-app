@@ -12,6 +12,7 @@ import '../models/app_rule.dart';
 import '../models/app_usage_summary.dart';
 import '../services/alert_notification_client.dart';
 import '../services/app_rules_service.dart';
+import '../services/sync_status_service.dart';
 import '../services/usage_dashboard_controller_service.dart';
 import '../services/usage_tracking_service.dart';
 import '../widgets/wellscreen_bottom_nav.dart';
@@ -43,7 +44,9 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       AlertNotificationClient();
   final UsageDashboardControllerService _usageDashboardController =
       UsageDashboardControllerService();
+  final SyncStatusService _syncStatusService = SyncStatusService();
   final pairingCodeController = TextEditingController();
+  StreamSubscription<bool>? _connectivitySubscription;
 
   int currentIndex = 0;
   bool isPairing = false;
@@ -69,18 +72,31 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   List<Map<String, dynamic>> _smsAlertLog = [];
   String? _syncedParentIdForPhoneNumber;
 
+  // Synchronization status (see SyncStatusService / _attemptFirestoreSync
+  // below). cloud_firestore's set()/update() Futures hang indefinitely when
+  // offline instead of throwing (firebase/flutterfire#17643) - this state
+  // tracks real online/offline status and a log of what actually happened
+  // on each sync attempt (synced / queued_offline / failed_timeout), not
+  // just whether the sync button was tapped.
+  bool _isOnline = true;
+  List<Map<String, dynamic>> _syncLog = [];
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _loadUsageDashboard();
     _refreshSmsAlertStatus();
+    _refreshSyncStatus();
+    _connectivitySubscription =
+        _syncStatusService.onlineStatusChanges.listen(_handleConnectivityChange);
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     pairingCodeController.dispose();
+    _connectivitySubscription?.cancel();
     super.dispose();
   }
 
@@ -93,6 +109,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     if (state == AppLifecycleState.resumed) {
       _loadUsageDashboard();
       _refreshSmsAlertStatus();
+      _refreshSyncStatus();
     }
   }
 
@@ -165,6 +182,201 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     } catch (_) {
       return [];
     }
+  }
+
+  /// Fires once per actual online<->offline transition (see
+  /// SyncStatusService.onlineStatusChanges). On regaining connectivity,
+  /// flushes whatever was cached by _queuePendingSync while offline - this
+  /// is the "automatic retry after reconnecting" half of the offline-sync
+  /// story; syncUsageReport()'s manual button press is the other half.
+  Future<void> _handleConnectivityChange(bool isOnline) async {
+    if (mounted) {
+      setState(() => _isOnline = isOnline);
+    }
+
+    if (!isOnline) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final pendingRaw = prefs.getString('pending_sync_payload_json');
+    if (pendingRaw == null) return;
+
+    try {
+      final pending = jsonDecode(pendingRaw);
+      if (pending is! Map) {
+        await prefs.remove('pending_sync_payload_json');
+        return;
+      }
+
+      final childProfileId = (pending['childProfileId'] ?? '').toString();
+      final payload = pending['payload'];
+      final queuedAtMs = pending['queuedAtMs'];
+
+      if (childProfileId.isEmpty || payload is! Map) {
+        await prefs.remove('pending_sync_payload_json');
+        return;
+      }
+
+      await _attemptFirestoreSync(
+        childProfileId: childProfileId,
+        payload: Map<String, dynamic>.from(payload),
+        trigger: 'auto_reconnect',
+        queuedAtMs: queuedAtMs is int ? queuedAtMs : null,
+      );
+    } catch (_) {
+      // Malformed cache entry - drop it rather than retry forever.
+      await prefs.remove('pending_sync_payload_json');
+    }
+  }
+
+  Future<void> _queuePendingSync(
+    String childProfileId,
+    Map<String, dynamic> payload,
+    int queuedAtMs,
+  ) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      'pending_sync_payload_json',
+      jsonEncode({
+        'childProfileId': childProfileId,
+        'payload': payload,
+        'queuedAtMs': queuedAtMs,
+      }),
+    );
+  }
+
+  Future<void> _clearPendingSync() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('pending_sync_payload_json');
+  }
+
+  Future<void> _recordSyncOutcome({
+    required String outcome,
+    required String trigger,
+    int? responseTimeMs,
+    int? recoveryTimeMs,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    final log = _decodeJsonList(prefs.getString('sync_log_json'));
+
+    log.add({
+      'outcome': outcome,
+      'trigger': trigger,
+      'responseTimeMs': ?responseTimeMs,
+      'recoveryTimeMs': ?recoveryTimeMs,
+      'timestampMs': DateTime.now().millisecondsSinceEpoch,
+    });
+
+    final trimmed = log.length > 50 ? log.sublist(log.length - 50) : log;
+    await prefs.setString('sync_log_json', jsonEncode(trimmed));
+  }
+
+  Future<void> _refreshSyncStatus() async {
+    final prefs = await SharedPreferences.getInstance();
+    final log = _decodeJsonList(prefs.getString('sync_log_json'));
+    final online = await _syncStatusService.isOnline();
+
+    if (!mounted) return;
+    setState(() {
+      _syncLog = log;
+      _isOnline = online;
+    });
+  }
+
+  /// Single choke point for writing the usage/SMS/restriction snapshot to
+  /// child_profiles/{childProfileId} - used by both syncUsageReport()'s
+  /// manual button and _handleConnectivityChange()'s automatic
+  /// reconnect flush above.
+  ///
+  /// Always caches the payload locally BEFORE attempting the write (cleared
+  /// only on confirmed success), and wraps the write in a timeout, because
+  /// cloud_firestore's set() hangs forever offline instead of throwing
+  /// (firebase/flutterfire#17643) - without this, a sync attempted while
+  /// offline would spin the loading indicator forever with no error and no
+  /// way to recover except restarting the app.
+  ///
+  /// [payload] must not contain FieldValue sentinels (e.g.
+  /// FieldValue.serverTimestamp()) - those aren't JSON-encodable for the
+  /// local cache; the server timestamp is added here, right before the
+  /// real Firestore write.
+  Future<bool> _attemptFirestoreSync({
+    required String childProfileId,
+    required Map<String, dynamic> payload,
+    required String trigger,
+    int? queuedAtMs,
+  }) async {
+    final stopwatch = Stopwatch()..start();
+    final attemptStartMs = DateTime.now().millisecondsSinceEpoch;
+    final effectiveQueuedAtMs = queuedAtMs ?? attemptStartMs;
+    String outcome;
+
+    await _queuePendingSync(childProfileId, payload, effectiveQueuedAtMs);
+
+    try {
+      final online = await _syncStatusService.isOnline();
+
+      if (!online) {
+        outcome = 'queued_offline';
+      } else {
+        await FirebaseFirestore.instance
+            .collection('child_profiles')
+            .doc(childProfileId)
+            .set({
+              ...payload,
+              'usageReportUpdatedAt': FieldValue.serverTimestamp(),
+            }, SetOptions(merge: true))
+            .timeout(const Duration(seconds: 10));
+
+        await _clearPendingSync();
+        outcome = 'synced';
+      }
+    } on TimeoutException {
+      outcome = 'failed_timeout';
+    } catch (_) {
+      outcome = 'failed_exception';
+    }
+
+    stopwatch.stop();
+
+    final recoveryTimeMs = (outcome == 'synced' && queuedAtMs != null)
+        ? DateTime.now().millisecondsSinceEpoch - queuedAtMs
+        : null;
+
+    await _recordSyncOutcome(
+      outcome: outcome,
+      trigger: trigger,
+      responseTimeMs: stopwatch.elapsedMilliseconds,
+      recoveryTimeMs: recoveryTimeMs,
+    );
+
+    if (!mounted) return outcome == 'synced';
+
+    if (outcome == 'synced') {
+      if (trigger == 'auto_reconnect') {
+        showMessage(
+          'Usage data synced automatically now that you\'re back online.',
+        );
+        await _loadUsageDashboard();
+        await _refreshSmsAlertStatus();
+      }
+    } else if (outcome == 'queued_offline') {
+      showMessage(
+        'You\'re offline - this data is saved on your device and will '
+        'sync automatically once you\'re back online.',
+      );
+    } else if (outcome == 'failed_timeout') {
+      showMessage(
+        'Sync is taking too long - your data is saved locally and will '
+        'retry automatically when the connection improves.',
+      );
+    } else {
+      showMessage(
+        'Sync failed. Your data is saved locally - try again shortly.',
+      );
+    }
+
+    await _refreshSyncStatus();
+
+    return outcome == 'synced';
   }
 
   Future<void> _requestSmsPermission() async {
@@ -341,17 +553,26 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         'capturedAt': position.timestamp.toIso8601String(),
       };
 
-      await firestore.runTransaction((transaction) async {
-        transaction.set(userRef, {
-          'latestLocation': sharedLocation,
-          'locationUpdatedAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
+      // Location isn't queued/auto-retried like usage data (see
+      // _attemptFirestoreSync) - a stale GPS fix replayed automatically
+      // after reconnecting would show the parent an outdated position
+      // without saying so, which is worse than just failing visibly. It
+      // still gets a timeout instead of hanging forever, though - same
+      // underlying cloud_firestore bug (set()/runTransaction() never
+      // complete offline: firebase/flutterfire#17643) applies here too.
+      await firestore
+          .runTransaction((transaction) async {
+            transaction.set(userRef, {
+              'latestLocation': sharedLocation,
+              'locationUpdatedAt': FieldValue.serverTimestamp(),
+            }, SetOptions(merge: true));
 
-        transaction.set(childProfileRef, {
-          'latestLocation': sharedLocation,
-          'locationUpdatedAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
-      });
+            transaction.set(childProfileRef, {
+              'latestLocation': sharedLocation,
+              'locationUpdatedAt': FieldValue.serverTimestamp(),
+            }, SetOptions(merge: true));
+          })
+          .timeout(const Duration(seconds: 10));
 
       if (!mounted) return;
 
@@ -366,6 +587,12 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
           alertType: 'location_shared',
           childProfileId: childProfileId,
         ),
+      );
+    } on TimeoutException {
+      if (!mounted) return;
+      showMessage(
+        'Sharing location is taking too long - check your connection and '
+        'try again.',
       );
     } catch (e) {
       if (!mounted) return;
@@ -489,13 +716,14 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       };
 
       // Also push the local SMS backup-alert log (written natively by
-      // SmsSentReceiver/SmsDeliveredReceiver) and the restriction
-      // enforcement log (written natively by RestrictionLogger when
-      // WellScreenAccessibilityService blocks a restricted app) so the
-      // parent can see real sent/delivered/failed and blocked/failed
-      // outcomes with response times, not just whether the features are
-      // turned on. Reuses this same sync button rather than adding
-      // separate ones.
+      // SmsSentReceiver/SmsDeliveredReceiver), the restriction enforcement
+      // log (written natively by RestrictionLogger when
+      // WellScreenAccessibilityService blocks a restricted app), and this
+      // device's own sync-attempt log (see _recordSyncOutcome) so the
+      // parent can see real sent/delivered/failed, blocked/failed, and
+      // synced/queued-offline/failed outcomes with response times, not
+      // just whether the features are turned on. Reuses this same sync
+      // button rather than adding separate ones.
       final prefs = await SharedPreferences.getInstance();
       final smsAlertLog = _decodeJsonList(
         prefs.getString('sms_alert_log_json'),
@@ -503,28 +731,36 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       final restrictionLog = _decodeJsonList(
         prefs.getString('restriction_log_json'),
       );
+      final syncLog = _decodeJsonList(prefs.getString('sync_log_json'));
 
-      final firestore = FirebaseFirestore.instance;
-      final childProfileRef = firestore
-          .collection('child_profiles')
-          .doc(childProfileId);
-
-      await childProfileRef.set({
-        'latestUsageReport': usageReportData,
-        'usageReportUpdatedAt': FieldValue.serverTimestamp(),
-        if (smsAlertLog.isNotEmpty) 'smsAlertLog': smsAlertLog,
-        if (restrictionLog.isNotEmpty) 'restrictionLog': restrictionLog,
-      }, SetOptions(merge: true));
+      // _attemptFirestoreSync handles offline detection, the write timeout
+      // (cloud_firestore's set() hangs forever offline instead of throwing
+      // - firebase/flutterfire#17643), local queuing for automatic retry on
+      // reconnect, and outcome logging - see its doc comment above.
+      final synced = await _attemptFirestoreSync(
+        childProfileId: childProfileId,
+        payload: {
+          'latestUsageReport': usageReportData,
+          if (smsAlertLog.isNotEmpty) 'smsAlertLog': smsAlertLog,
+          if (restrictionLog.isNotEmpty) 'restrictionLog': restrictionLog,
+          if (syncLog.isNotEmpty) 'syncLog': syncLog,
+        },
+        trigger: 'manual',
+      );
 
       if (!mounted) return;
 
-      showMessage('Today\'s usage report synced to the parent dashboard.');
-      await _loadUsageDashboard();
-      await _refreshSmsAlertStatus();
+      if (synced) {
+        showMessage('Today\'s usage report synced to the parent dashboard.');
+        await _loadUsageDashboard();
+        await _refreshSmsAlertStatus();
+      }
 
       // Push a real notification only for the pattern that actually
       // matters to a parent (unhealthy) rather than on every sync - a
-      // healthy-usage push every time would just be noise.
+      // healthy-usage push every time would just be noise. Fired regardless
+      // of whether the Firestore sync above succeeded - it's an
+      // independent, best-effort channel (see AlertNotificationClient).
       if (report.patternStatus.name == 'unhealthy') {
         final parentId = (data['pairedParentId'] ?? '').toString();
         unawaited(
@@ -974,6 +1210,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
                     onTap: isSyncingUsage ? null : () => syncUsageReport(data),
                   ),
                 ),
+                _syncStatusIndicator(),
               ],
             ],
           );
@@ -1427,6 +1664,52 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
                   : Icons.my_location_rounded,
               color: connected ? purple : grayText,
               size: 30,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Compact real online/offline + last-sync-outcome line shown right under
+  /// the Sync Usage button, sourced from SyncStatusService (_isOnline) and
+  /// _recordSyncOutcome's local log (_syncLog) - not a decorative always-on
+  /// indicator. Full history with response/recovery times lives in
+  /// AlertsReportsScreen's Synchronization Status card.
+  Widget _syncStatusIndicator() {
+    final lastOutcome =
+        _syncLog.isNotEmpty ? _syncLog.last['outcome']?.toString() : null;
+
+    String label;
+    if (!_isOnline) {
+      label = 'Offline - usage data will sync automatically once '
+          'reconnected.';
+    } else if (lastOutcome == 'synced') {
+      label = 'Online - last sync succeeded.';
+    } else if (lastOutcome == 'queued_offline' ||
+        lastOutcome == 'failed_timeout') {
+      label = 'Online - retrying a queued sync from earlier...';
+    } else if (lastOutcome != null) {
+      label = 'Online - last sync failed. Tap Sync Usage to retry.';
+    } else {
+      label = 'Online';
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(
+        children: [
+          Icon(
+            Icons.circle,
+            size: 8,
+            color: _isOnline ? teal : Colors.redAccent,
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              label,
+              style: const TextStyle(color: grayText, fontSize: 11),
+              overflow: TextOverflow.ellipsis,
             ),
           ),
         ],

@@ -81,6 +81,7 @@ class AlertsReportsScreen extends StatelessWidget {
                 final smsLog = _decodeLog(data['smsAlertLog']);
                 final restrictionLog = _decodeLog(data['restrictionLog']);
                 final pushAlertLog = _decodeLog(data['pushAlertLog']);
+                final syncLog = _decodeLog(data['syncLog']);
 
                 return ListView(
                   padding: const EdgeInsets.all(24),
@@ -147,6 +148,28 @@ class AlertsReportsScreen extends StatelessWidget {
                       entryLabel: (entry) =>
                           '${entry['alertType'] ?? 'alert'} · '
                           '${entry['outcome'] ?? 'unknown'}',
+                    ),
+                    _logSummarySection(
+                      log: syncLog,
+                      icon: Icons.sync_rounded,
+                      iconColor: Colors.teal,
+                      title: 'Synchronization Status',
+                      emptySubtitle: 'No sync attempts recorded yet - this '
+                          'tracks whether "Sync Usage" actually reached the '
+                          'server, including automatic retries after being '
+                          'offline.',
+                      isSuccess: (entry) => entry['outcome'] == 'synced',
+                      entryLabel: (entry) {
+                        final trigger = entry['trigger'] == 'auto_reconnect'
+                            ? 'auto-reconnect'
+                            : 'manual';
+                        final recovery = entry['recoveryTimeMs'];
+                        final recoverySuffix = recovery is num
+                            ? ' · recovered in ${recovery}ms'
+                            : '';
+                        return '$trigger · '
+                            '${entry['outcome'] ?? 'unknown'}$recoverySuffix';
+                      },
                     ),
                     const AlertReportCard(
                       icon: Icons.category_rounded,
