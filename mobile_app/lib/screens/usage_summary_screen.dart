@@ -37,7 +37,7 @@ class UsageSummaryScreen extends StatelessWidget {
     final hour = date.hour.toString().padLeft(2, '0');
     final minute = date.minute.toString().padLeft(2, '0');
 
-    return '$month/$day ${hour}:$minute';
+    return '$month/$day $hour:$minute';
   }
 
   @override
