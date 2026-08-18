@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import 'admin_settings_screen.dart';
+import 'child_home_screen.dart';
 import 'parent_dashboard_screen.dart';
 import 'register_screen.dart';
 
@@ -24,6 +25,8 @@ class _LoginScreenState extends State<LoginScreen> {
   bool isLoading = false;
   bool obscurePassword = true;
 
+  String selectedRole = 'parent';
+
   @override
   void dispose() {
     emailController.dispose();
@@ -31,7 +34,7 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
-  Future<void> loginParent() async {
+  Future<void> loginUser() async {
     final email = emailController.text.trim();
     final password = passwordController.text.trim();
 
@@ -55,7 +58,7 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
 
-      // Refresh the Firebase token so the latest custom claims are available.
+      // Refresh the Firebase token so the latest admin claims are available.
       final tokenResult = await user.getIdTokenResult(true);
       final claims = tokenResult.claims ?? <String, dynamic>{};
 
@@ -63,32 +66,91 @@ class _LoginScreenState extends State<LoginScreen> {
 
       if (!mounted) return;
 
-      // Admin accounts go directly to the Admin System Settings screen.
+      // Admin accounts use Firebase custom claims and go directly
+      // to the Admin System Settings screen.
       if (isAdmin) {
         Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(builder: (_) => const AdminSettingsScreen()),
+          MaterialPageRoute(
+            builder: (_) => const AdminSettingsScreen(),
+          ),
           (route) => false,
         );
 
         return;
       }
 
-      // Preserve the current main-branch parent login behavior.
+      // Read the account role saved during registration.
+      final userDocument = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+
+      if (!userDocument.exists) {
+        await FirebaseAuth.instance.signOut();
+
+        if (!mounted) return;
+
+        showMessage(
+          'Account profile was not found. Please register the account first.',
+        );
+        return;
+      }
+
+      final data = userDocument.data();
+      final storedRole = data?['role']?.toString().trim().toLowerCase();
+
+      if (storedRole != 'parent' && storedRole != 'child') {
+        await FirebaseAuth.instance.signOut();
+
+        if (!mounted) return;
+
+        showMessage('This account does not have a valid role.');
+        return;
+      }
+
+      // The role selected on the Login page must match the account role.
+      if (storedRole != selectedRole) {
+        await FirebaseAuth.instance.signOut();
+
+        if (!mounted) return;
+
+        final expectedRole = storedRole == 'parent'
+            ? 'Parent / Guardian'
+            : 'Child';
+
+        showMessage(
+          'This account is registered as $expectedRole. '
+          'Please select the correct role.',
+        );
+        return;
+      }
+
+      // Only update login information.
+      // IMPORTANT: Do not overwrite the saved account role here.
       await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
-        'uid': user.uid,
-        'email': user.email,
-        'role': 'parent',
         'lastLoginAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
 
       if (!mounted) return;
 
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute(builder: (_) => const ParentDashboardScreen()),
-        (route) => false,
-      );
+      if (storedRole == 'child') {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(
+            builder: (_) => const ChildHomeScreen(),
+          ),
+          (route) => false,
+        );
+      } else {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(
+            builder: (_) => const ParentDashboardScreen(),
+          ),
+          (route) => false,
+        );
+      }
     } on FirebaseAuthException catch (e) {
       showMessage(e.message ?? 'Invalid email or password.');
     } catch (e) {
@@ -105,7 +167,11 @@ class _LoginScreenState extends State<LoginScreen> {
 
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+    ).showSnackBar(
+      SnackBar(
+        content: Text(message),
+      ),
+    );
   }
 
   @override
@@ -142,9 +208,13 @@ class _LoginScreenState extends State<LoginScreen> {
             const SizedBox(height: 8),
 
             const Text(
-              'Parent access for digital wellness monitoring',
+              'Digital wellness monitoring for parents and children',
               textAlign: TextAlign.center,
-              style: TextStyle(color: grayText, fontSize: 15, height: 1.4),
+              style: TextStyle(
+                color: grayText,
+                fontSize: 15,
+                height: 1.4,
+              ),
             ),
 
             const SizedBox(height: 36),
@@ -152,6 +222,7 @@ class _LoginScreenState extends State<LoginScreen> {
             TextField(
               controller: emailController,
               keyboardType: TextInputType.emailAddress,
+              textInputAction: TextInputAction.next,
               decoration: InputDecoration(
                 labelText: 'Email Address',
                 prefixIcon: const Icon(Icons.email_rounded),
@@ -166,6 +237,7 @@ class _LoginScreenState extends State<LoginScreen> {
             TextField(
               controller: passwordController,
               obscureText: obscurePassword,
+              textInputAction: TextInputAction.done,
               decoration: InputDecoration(
                 labelText: 'Password',
                 prefixIcon: const Icon(Icons.lock_rounded),
@@ -176,7 +248,9 @@ class _LoginScreenState extends State<LoginScreen> {
                         : Icons.visibility_off_rounded,
                   ),
                   onPressed: () {
-                    setState(() => obscurePassword = !obscurePassword);
+                    setState(() {
+                      obscurePassword = !obscurePassword;
+                    });
                   },
                 ),
                 border: OutlineInputBorder(
@@ -185,12 +259,44 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
             ),
 
+            const SizedBox(height: 16),
+
+            DropdownButtonFormField<String>(
+              initialValue: selectedRole,
+              decoration: InputDecoration(
+                labelText: 'Role',
+                prefixIcon: const Icon(Icons.manage_accounts_rounded),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+              ),
+              items: const [
+                DropdownMenuItem(
+                  value: 'parent',
+                  child: Text('Parent / Guardian'),
+                ),
+                DropdownMenuItem(
+                  value: 'child',
+                  child: Text('Child'),
+                ),
+              ],
+              onChanged: isLoading
+                  ? null
+                  : (value) {
+                      if (value == null) return;
+
+                      setState(() {
+                        selectedRole = value;
+                      });
+                    },
+            ),
+
             const SizedBox(height: 24),
 
             SizedBox(
               height: 54,
               child: FilledButton(
-                onPressed: isLoading ? null : loginParent,
+                onPressed: isLoading ? null : loginUser,
                 style: FilledButton.styleFrom(
                   backgroundColor: purple,
                   shape: RoundedRectangleBorder(
@@ -222,12 +328,17 @@ class _LoginScreenState extends State<LoginScreen> {
               onPressed: () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (_) => const RegisterScreen()),
+                  MaterialPageRoute(
+                    builder: (_) => const RegisterScreen(),
+                  ),
                 );
               },
               child: const Text(
-                'Create Parent / Guardian Account',
-                style: TextStyle(color: purple, fontWeight: FontWeight.w800),
+                'Create Account',
+                style: TextStyle(
+                  color: purple,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
             ),
 
@@ -240,7 +351,9 @@ class _LoginScreenState extends State<LoginScreen> {
                 borderRadius: BorderRadius.circular(16),
               ),
               child: const Text(
-                'Monitored child devices are connected through the Device Pairing page using a pairing code or QR option.',
+                'Parent accounts manage child profiles and pairing. '
+                'Child accounts connect their Android device using the '
+                'pairing code provided by the parent.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: darkText,
