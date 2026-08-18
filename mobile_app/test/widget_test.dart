@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:app/main.dart';
@@ -14,11 +15,17 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      find.text('Parent access for digital wellness monitoring'),
+      find.text('Digital wellness monitoring for parents and children'),
       findsOneWidget,
     );
 
     expect(find.text('Log In'), findsOneWidget);
-    expect(find.text('Create Parent / Guardian Account'), findsOneWidget);
+    expect(find.text('Parent / Guardian'), findsOneWidget);
+
+    // The Create Account button is lower in the scrollable login screen.
+    await tester.drag(find.byType(ListView), const Offset(0, -400));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Create Account'), findsOneWidget);
   });
 }
