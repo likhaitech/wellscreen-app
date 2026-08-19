@@ -82,6 +82,7 @@ class AlertsReportsScreen extends StatelessWidget {
                 final restrictionLog = _decodeLog(data['restrictionLog']);
                 final pushAlertLog = _decodeLog(data['pushAlertLog']);
                 final syncLog = _decodeLog(data['syncLog']);
+                final browsingLog = _decodeLog(data['browsingLog']);
                 final mlRiskAssessment = data['mlRiskAssessment'];
 
                 return ListView(
@@ -185,15 +186,26 @@ class AlertsReportsScreen extends StatelessWidget {
                             '${entry['outcome'] ?? 'unknown'}$recoverySuffix';
                       },
                     ),
+                    _browsingActivitySection(browsingLog),
                     const AlertReportCard(
                       icon: Icons.category_rounded,
                       iconColor: purple,
                       title: 'Category-Level Detection',
                       subtitle:
-                          'Not implemented yet - detection is currently '
-                          'limited to the risky-keyword list in '
-                          'PatternDetectionService, not per-category '
-                          'analysis.',
+                          'Live now: captured domains are matched on-device '
+                          '(SiteCategoryService) against the real, cleaned '
+                          'UT1 dataset in data_cleaned/site_categories/ - a '
+                          'match (gambling, drugs, or dangerous_material) '
+                          'shows a category tag in Recent Browsing Activity '
+                          'above and sends the parent a push alert. This is '
+                          'detection and after-the-fact alerting, not '
+                          'blocking - the page still loads, since real-time '
+                          'prevention would need this same check running '
+                          'natively before the page renders, which isn\'t '
+                          'built yet. No self-harm category exists in the '
+                          'source data (see ml/site_category/README.md); '
+                          'PatternDetectionService\'s risky-keyword list is '
+                          'still the only thing covering that.',
                     ),
                   ],
                 );
@@ -540,6 +552,115 @@ class AlertsReportsScreen extends StatelessWidget {
                 ),
               );
             }),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Real domains captured natively by BrowserUrlExtractor/BrowsingLogger
+  /// (see WellScreenAccessibilityService.kt) whenever a supported browser
+  /// is used on the child device, then classified against the real UT1
+  /// dataset by SiteCategoryService in syncUsageReport() - entries with a
+  /// 'category' key matched the dataset and triggered a parent alert.
+  /// Deliberately NOT built on _logSummarySection above - that widget's
+  /// "N succeeded, N failed" framing is for pass/fail attempt logs
+  /// (blocking, SMS, sync); a captured domain isn't a success or a
+  /// failure, it's just a fact, so reusing that wording here would be
+  /// misleading rather than honest.
+  Widget _browsingActivitySection(List<Map<String, dynamic>> log) {
+    if (log.isEmpty) {
+      return const AlertReportCard(
+        icon: Icons.public_rounded,
+        iconColor: Colors.indigo,
+        title: 'Recent Browsing Activity',
+        subtitle: 'No browser domains captured yet - requires '
+            'WellScreen\'s Accessibility permission and one of the '
+            'supported browsers (Chrome, Firefox, Samsung Internet, Edge, '
+            'Opera, DuckDuckGo) to be used on the child device.',
+      );
+    }
+
+    final recent = log.reversed.take(5).toList();
+
+    return Card(
+      elevation: 2,
+      shadowColor: Colors.black12,
+      margin: const EdgeInsets.only(bottom: 14),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.public_rounded, color: Colors.indigo, size: 30),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Recent Browsing Activity',
+                    style: TextStyle(
+                      color: darkText,
+                      fontWeight: FontWeight.w900,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Builder(
+              builder: (context) {
+                final flaggedCount =
+                    log.where((e) => e['category'] != null).length;
+                final flaggedSuffix = flaggedCount > 0
+                    ? ' $flaggedCount flagged by category matching.'
+                    : ' None matched a harmful category.';
+                return Text(
+                  '${log.length} domain${log.length == 1 ? '' : 's'} '
+                  'captured.$flaggedSuffix',
+                  style: const TextStyle(color: grayText, height: 1.4),
+                );
+              },
+            ),
+            const SizedBox(height: 10),
+            ...recent.map(
+              (entry) => Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(
+                  children: [
+                    Icon(
+                      entry['category'] != null
+                          ? Icons.warning_amber_rounded
+                          : Icons.circle,
+                      color: entry['category'] != null
+                          ? Colors.redAccent
+                          : Colors.indigo,
+                      size: entry['category'] != null ? 14 : 8,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '${entry['domain'] ?? 'unknown domain'}'
+                        '${entry['category'] != null ? ' · ${entry['category']}' : ''} · '
+                        '${_formatTimestamp(entry['timestampMs'])}',
+                        style: TextStyle(
+                          color: entry['category'] != null
+                              ? Colors.redAccent
+                              : grayText,
+                          fontSize: 12,
+                          fontWeight: entry['category'] != null
+                              ? FontWeight.w700
+                              : FontWeight.normal,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ],
         ),
       ),

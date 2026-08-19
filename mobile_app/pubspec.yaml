@@ -51,6 +51,7 @@ flutter:
   assets:
     - assets/icons/wellscreen_icon.png
     - assets/ml/forest_rules.json
+    - assets/site_categories/cleaned_site_categories.csv
 
 flutter_launcher_icons:
   android: true

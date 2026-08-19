@@ -1,0 +1,45 @@
+WellScreen Site-Category Dataset - Cleaning Report
+Source: UT1 Blacklists (Universite Toulouse Capitole), CC BY-SA 4.0
+Mirror: github.com/olbat/ut1-blacklists, fetched from raw files in raw/
+
+Per-category cleaning steps and counts
+============================================================
+
+[gambling]
+  raw lines read:                32247
+  blank/comment lines removed:   0
+  IP-address entries removed:    14
+    example(s): 159.153.253.16, 193.172.39.6, 205.134.167.8
+  malformed entries removed:     0
+  in-category duplicates removed:0
+  clean, category-unique count:  32233
+
+[drugs]
+  raw lines read:                603
+  blank/comment lines removed:   0
+  IP-address entries removed:    167
+    example(s): 128.121.123.198, 128.242.103.21, 128.242.103.22
+  malformed entries removed:     0
+  in-category duplicates removed:0
+  clean, category-unique count:  436
+
+[dangerous_material]
+  raw lines read:                35
+  blank/comment lines removed:   0
+  IP-address entries removed:    0
+  malformed entries removed:     0
+  in-category duplicates removed:0
+  clean, category-unique count:  35
+
+Cross-category resolution
+============================================================
+  domains appearing in >1 category file: 0
+
+Final dataset
+============================================================
+  gambling: 32233 domains
+  drugs: 436 domains
+  dangerous_material: 35 domains
+  TOTAL raw lines across sources:  32885
+  TOTAL cleaned, deduplicated rows: 32704
+  Rows removed by cleaning: 181 (0.6% of raw input)

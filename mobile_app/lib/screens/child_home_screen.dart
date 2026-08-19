@@ -15,6 +15,7 @@ import '../services/alert_notification_client.dart';
 import '../services/app_rules_service.dart';
 import '../services/daily_screen_time_limit_service.dart';
 import '../services/ml_risk_classifier_service.dart';
+import '../services/site_category_service.dart';
 import '../services/sync_status_service.dart';
 import '../services/usage_dashboard_controller_service.dart';
 import '../services/usage_tracking_service.dart';
@@ -50,6 +51,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   final SyncStatusService _syncStatusService = SyncStatusService();
   final MlRiskClassifierService _mlRiskClassifierService =
       MlRiskClassifierService();
+  final SiteCategoryService _siteCategoryService = SiteCategoryService();
   final DailyScreenTimeLimitService _dailyScreenTimeLimitService =
       DailyScreenTimeLimitService();
   final pairingCodeController = TextEditingController();
@@ -808,6 +810,54 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       );
       final syncLog = _decodeJsonList(prefs.getString('sync_log_json'));
 
+      // Browsed domains captured natively by BrowserUrlExtractor /
+      // BrowsingLogger (see WellScreenAccessibilityService.kt), then
+      // classified here against the real, cleaned UT1 dataset via
+      // SiteCategoryService (see data_cleaned/site_categories/ and
+      // ml/site_category/README.md). This tags each entry with a category
+      // (gambling/drugs/dangerous_material) when it matches, and alerts the
+      // parent below when one does - it does NOT block the page from
+      // loading, since that would need this same check running natively,
+      // before the page renders, which isn't built yet.
+      final browsingLog = _decodeJsonList(
+        prefs.getString('browsing_log_json'),
+      );
+      // Only alert for harmful entries newer than the last one already
+      // alerted on - without this watermark, every sync would re-scan the
+      // whole rolling (up to 50-entry) log and re-fire a push for the same
+      // old visit every time "Sync Usage" is pressed, which would falsely
+      // read as "this just happened again."
+      final lastAlertedMs =
+          prefs.getInt('last_browsing_alert_timestamp_ms') ?? 0;
+      var newestAlertedMs = lastAlertedMs;
+
+      final categorizedBrowsingLog = <Map<String, dynamic>>[];
+      String? mostRecentHarmfulCategory;
+      String? mostRecentHarmfulDomain;
+      for (final entry in browsingLog) {
+        final domain = (entry['domain'] ?? '').toString();
+        final timestampMs = entry['timestampMs'];
+        String? category;
+        if (domain.isNotEmpty) {
+          try {
+            category = await _siteCategoryService.classify(domain);
+          } catch (_) {
+            // Best-effort - a classification failure just leaves this one
+            // entry uncategorized, it never blocks the real sync.
+          }
+        }
+        categorizedBrowsingLog.add({...entry, 'category': ?category});
+        if (category != null &&
+            timestampMs is num &&
+            timestampMs > lastAlertedMs) {
+          mostRecentHarmfulCategory = category;
+          mostRecentHarmfulDomain = domain;
+          if (timestampMs > newestAlertedMs) {
+            newestAlertedMs = timestampMs.toInt();
+          }
+        }
+      }
+
       // Proposed ML Extension (manuscript Ch. 3) - a real, trained,
       // evaluated Random Forest classifier (see ml/train_model.py and
       // ml/output/evaluation_report.txt), run on-device via
@@ -851,6 +901,8 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
           if (smsAlertLog.isNotEmpty) 'smsAlertLog': smsAlertLog,
           if (restrictionLog.isNotEmpty) 'restrictionLog': restrictionLog,
           if (syncLog.isNotEmpty) 'syncLog': syncLog,
+          if (categorizedBrowsingLog.isNotEmpty)
+            'browsingLog': categorizedBrowsingLog,
           'mlRiskAssessment': ?mlRiskAssessmentData,
         },
         trigger: 'manual',
@@ -880,6 +932,28 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
             childProfileId: childProfileId,
           ),
         );
+      }
+
+      // Same reasoning as the unhealthy-pattern push above, for a harmful
+      // site category found by SiteCategoryService just now. This is an
+      // after-the-fact alert (the page was already viewed - see
+      // SiteCategoryService's doc comment on why this doesn't block in real
+      // time yet), not a prevention, and that's said plainly in the alert
+      // body rather than implied.
+      if (mostRecentHarmfulCategory != null) {
+        final parentId = (data['pairedParentId'] ?? '').toString();
+        unawaited(
+          _alertNotificationClient.notifyParent(
+            parentUid: parentId,
+            title: 'Harmful site category detected',
+            body: 'Visited a site categorized as '
+                '$mostRecentHarmfulCategory'
+                '${mostRecentHarmfulDomain != null && mostRecentHarmfulDomain.isNotEmpty ? ' ($mostRecentHarmfulDomain)' : ''}.',
+            alertType: 'harmful_site_category',
+            childProfileId: childProfileId,
+          ),
+        );
+        await prefs.setInt('last_browsing_alert_timestamp_ms', newestAlertedMs);
       }
     } catch (e) {
       if (!mounted) return;
