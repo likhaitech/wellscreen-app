@@ -63,25 +63,27 @@ class FirestoreChildUsageReportService {
 
     for (final childDoc in childProfilesSnapshot.docs) {
       final childData = childDoc.data();
+
       final childId = childData['childId'] as String? ?? childDoc.id;
 
-      final reportHeaderSnapshot = await _firestore
-          .collection('child_usage_reports')
-          .doc(childId)
-          .get();
+      // The child profile is updated when the child successfully
+      // syncs a usage report.
+      //
+      // If there is no report date yet, do not attempt to read
+      // child_usage_reports/{childId}. That document may not exist yet.
+      final lastUsageReportDate = childData['lastUsageReportDate'] as String?;
 
-      final reportHeaderData = reportHeaderSnapshot.data();
-      final lastReportDate = reportHeaderData?['lastReportDate'] as String?;
-
-      if (lastReportDate == null || lastReportDate.isEmpty) {
+      if (lastUsageReportDate == null || lastUsageReportDate.trim().isEmpty) {
         continue;
       }
+
+      final reportDate = lastUsageReportDate.trim();
 
       final dailyReportSnapshot = await _firestore
           .collection('child_usage_reports')
           .doc(childId)
           .collection('daily_reports')
-          .doc(lastReportDate)
+          .doc(reportDate)
           .get();
 
       final dailyReportData = dailyReportSnapshot.data();
@@ -95,7 +97,7 @@ class FirestoreChildUsageReportService {
           parentId: user.uid,
           childId: childId,
           childData: childData,
-          reportDate: lastReportDate,
+          reportDate: reportDate,
           reportData: dailyReportData,
         ),
       );
@@ -135,6 +137,7 @@ class FirestoreChildUsageReportService {
     );
 
     final generatedAtValue = reportData['generatedAt'];
+
     final generatedAt = generatedAtValue is Timestamp
         ? generatedAtValue.toDate()
         : DateTime.now();
@@ -142,6 +145,7 @@ class FirestoreChildUsageReportService {
     final topUsedApp = _appUsageFromMap(reportData['topUsedApp']);
 
     final appUsageListValue = reportData['appUsageList'];
+
     final appUsageList = appUsageListValue is Iterable
         ? appUsageListValue
               .map(_appUsageFromMap)
@@ -183,7 +187,9 @@ class FirestoreChildUsageReportService {
     final data = Map<String, dynamic>.from(value);
 
     final packageName = data['packageName'] as String?;
+
     final displayName = data['displayName'] as String?;
+
     final usageDurationMs = _readInt(data['usageDurationMs']);
 
     if (packageName == null || displayName == null) {
@@ -191,6 +197,7 @@ class FirestoreChildUsageReportService {
     }
 
     final lastTimeUsedValue = data['lastTimeUsed'];
+
     final lastTimeUsed = lastTimeUsedValue is Timestamp
         ? lastTimeUsedValue.toDate()
         : null;

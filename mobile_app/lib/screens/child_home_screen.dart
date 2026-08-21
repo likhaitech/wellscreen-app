@@ -1,4 +1,5 @@
 ﻿import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -10,6 +11,7 @@ import '../services/location_tracking_service.dart';
 import '../services/native_restriction_rules_service.dart';
 import '../services/notification_service.dart';
 import '../services/usage_tracking_service.dart';
+import 'login_screen.dart';
 
 class ChildHomeScreen extends StatefulWidget {
   const ChildHomeScreen({super.key});
@@ -29,37 +31,45 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
 
   final FirestoreUsageReportSyncService _usageReportSyncService =
       FirestoreUsageReportSyncService();
+
   final UsageTrackingService _usageTrackingService = UsageTrackingService();
+
   final AccessibilityServiceStatusService _accessibilityStatusService =
       AccessibilityServiceStatusService();
+
   final LocationTrackingService _locationTrackingService =
       LocationTrackingService();
 
   bool isPairing = false;
+
   bool isSyncingUsageReport = false;
   String? lastSyncStatusMessage;
 
-  // Usage-access permission status.
   bool? hasUsageAccess;
   bool isCheckingUsageAccess = false;
 
-  // Accessibility service status.
   bool? hasAccessibilityAccess;
   bool isCheckingAccessibilityAccess = false;
 
-  // GPS location permission and sync status.
   LocationPermissionStatus? locationPermissionStatus;
   bool isCheckingLocationPermission = false;
+
   bool isSyncingLocation = false;
   String? lastLocationSyncMessage;
+
+  int selectedTabIndex = 0;
+  bool showRulesPage = false;
 
   @override
   void initState() {
     super.initState();
+
     WidgetsBinding.instance.addObserver(this);
+
     _checkUsagePermission();
     _checkAccessibilityPermission();
     _checkLocationPermission();
+
     unawaited(
       NotificationService.instance.initializeForCurrentUser(
         contextLabel: 'child_home',
@@ -79,11 +89,24 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     if (state == AppLifecycleState.resumed) {
       _checkUsagePermission();
       _checkAccessibilityPermission();
+      _checkLocationPermission();
     }
   }
 
+  Future<void> _refreshEverything() async {
+    await Future.wait([
+      _checkUsagePermission(),
+      _checkAccessibilityPermission(),
+      _checkLocationPermission(),
+    ]);
+  }
+
   Future<void> _checkUsagePermission() async {
-    setState(() => isCheckingUsageAccess = true);
+    if (mounted) {
+      setState(() {
+        isCheckingUsageAccess = true;
+      });
+    }
 
     try {
       final granted = await _usageTrackingService.hasUsagePermission();
@@ -94,15 +117,21 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         hasUsageAccess = granted;
         isCheckingUsageAccess = false;
       });
-    } catch (e) {
+    } catch (_) {
       if (!mounted) return;
 
-      setState(() => isCheckingUsageAccess = false);
+      setState(() {
+        isCheckingUsageAccess = false;
+      });
     }
   }
 
   Future<void> _checkAccessibilityPermission() async {
-    setState(() => isCheckingAccessibilityAccess = true);
+    if (mounted) {
+      setState(() {
+        isCheckingAccessibilityAccess = true;
+      });
+    }
 
     try {
       final granted = await _accessibilityStatusService
@@ -114,10 +143,104 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         hasAccessibilityAccess = granted;
         isCheckingAccessibilityAccess = false;
       });
+    } catch (_) {
+      if (!mounted) return;
+
+      setState(() {
+        isCheckingAccessibilityAccess = false;
+      });
+    }
+  }
+
+  Future<void> _checkLocationPermission() async {
+    if (mounted) {
+      setState(() {
+        isCheckingLocationPermission = true;
+      });
+    }
+
+    try {
+      final status = await _locationTrackingService.checkPermissionStatus();
+
+      if (!mounted) return;
+
+      setState(() {
+        locationPermissionStatus = status;
+        isCheckingLocationPermission = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+
+      setState(() {
+        isCheckingLocationPermission = false;
+      });
+    }
+  }
+
+  Future<void> _requestLocationPermission() async {
+    setState(() {
+      isCheckingLocationPermission = true;
+    });
+
+    try {
+      final status = await _locationTrackingService.requestPermission();
+
+      if (!mounted) return;
+
+      setState(() {
+        locationPermissionStatus = status;
+        isCheckingLocationPermission = false;
+      });
+
+      if (status == LocationPermissionStatus.granted) {
+        showMessage('Location permission granted.');
+      } else if (status == LocationPermissionStatus.serviceDisabled) {
+        showMessage('Turn on device location services first.');
+      } else {
+        showMessage('Location permission is needed for GPS tracking.');
+      }
     } catch (e) {
       if (!mounted) return;
 
-      setState(() => isCheckingAccessibilityAccess = false);
+      setState(() {
+        isCheckingLocationPermission = false;
+      });
+
+      showMessage(_cleanErrorMessage(e));
+    }
+  }
+
+  Future<void> _openLocationSettings() async {
+    try {
+      await _locationTrackingService.openLocationSettings();
+
+      showMessage('Turn on Location, then return to WellScreen.');
+    } catch (e) {
+      showMessage(_cleanErrorMessage(e));
+    }
+  }
+
+  Future<void> openUsageAccessSettings() async {
+    try {
+      await _usageTrackingService.openUsageAccessSettings();
+
+      showMessage(
+        'Enable Usage Access for WellScreen, then return to the app.',
+      );
+    } catch (e) {
+      showMessage(_cleanErrorMessage(e));
+    }
+  }
+
+  Future<void> openAccessibilitySettings() async {
+    try {
+      await _accessibilityStatusService.openAccessibilitySettings();
+
+      showMessage(
+        'Enable WellScreen under Accessibility settings, then return to the app.',
+      );
+    } catch (e) {
+      showMessage(_cleanErrorMessage(e));
     }
   }
 
@@ -136,7 +259,9 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       return;
     }
 
-    setState(() => isPairing = true);
+    setState(() {
+      isPairing = true;
+    });
 
     try {
       final pairingRef = FirebaseFirestore.instance
@@ -157,7 +282,9 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         }
 
         final status = data['status'] as String? ?? 'inactive';
+
         final isPaired = data['isPaired'] as bool? ?? false;
+
         final expiresAt = data['expiresAt'];
 
         if (status != 'active') {
@@ -174,7 +301,15 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         }
 
         final childId = data['childId'] as String?;
+
         final parentId = data['parentId'] as String?;
+
+        final parentNameValue = data['parentName'];
+
+        final parentName =
+            parentNameValue is String && parentNameValue.trim().isNotEmpty
+            ? parentNameValue.trim()
+            : null;
 
         if (childId == null || parentId == null) {
           throw Exception('Pairing record is incomplete.');
@@ -201,6 +336,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         transaction.set(childProfileRef, {
           'childId': childId,
           'parentId': parentId,
+          'parentName': ?parentName,
           'childUserId': user.uid,
           'childEmail': user.email,
           'pairingCode': code,
@@ -215,6 +351,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
           'childUserId': user.uid,
           'childEmail': user.email,
           'parentId': parentId,
+          'parentName': ?parentName,
           'childId': childId,
           'pairingCode': code,
           'deviceName': 'Android Child Device',
@@ -226,12 +363,15 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       });
 
       pairingCodeController.clear();
+
       showMessage('Device paired successfully.');
     } catch (e) {
       showMessage(_cleanErrorMessage(e));
     } finally {
       if (mounted) {
-        setState(() => isPairing = false);
+        setState(() {
+          isPairing = false;
+        });
       }
     }
   }
@@ -246,19 +386,23 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
 
     setState(() {
       isSyncingUsageReport = true;
-      lastSyncStatusMessage = 'Syncing todayâ€™s usage report...';
+      lastSyncStatusMessage = 'Syncing today\'s usage report...';
     });
 
     try {
       final result = await _usageReportSyncService.syncTodayUsageReport();
 
       final message =
-          'Usage report synced: ${result.report.totalUsageLabel} for ${result.reportDate}.';
+          'Usage report synced: '
+          '${result.report.totalUsageLabel} '
+          'for ${result.reportDate}.';
 
       if (!mounted) return;
 
       setState(() {
-        lastSyncStatusMessage = '$message\nSaved to: ${result.reportPath}';
+        lastSyncStatusMessage =
+            '$message\n'
+            'Saved to: ${result.reportPath}';
       });
 
       showMessage(message);
@@ -274,64 +418,10 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       showMessage(message);
     } finally {
       if (mounted) {
-        setState(() => isSyncingUsageReport = false);
+        setState(() {
+          isSyncingUsageReport = false;
+        });
       }
-    }
-  }
-
-  Future<void> _checkLocationPermission() async {
-    setState(() => isCheckingLocationPermission = true);
-
-    try {
-      final status = await _locationTrackingService.checkPermissionStatus();
-
-      if (!mounted) return;
-
-      setState(() {
-        locationPermissionStatus = status;
-        isCheckingLocationPermission = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-
-      setState(() => isCheckingLocationPermission = false);
-    }
-  }
-
-  Future<void> _requestLocationPermission() async {
-    setState(() => isCheckingLocationPermission = true);
-
-    try {
-      final status = await _locationTrackingService.requestPermission();
-
-      if (!mounted) return;
-
-      setState(() {
-        locationPermissionStatus = status;
-        isCheckingLocationPermission = false;
-      });
-
-      if (status == LocationPermissionStatus.granted) {
-        showMessage('Location permission granted.');
-      } else if (status == LocationPermissionStatus.serviceDisabled) {
-        showMessage('Turn on device location services first.');
-      } else {
-        showMessage('Location permission is needed for GPS tracking.');
-      }
-    } catch (e) {
-      if (!mounted) return;
-
-      setState(() => isCheckingLocationPermission = false);
-      showMessage(_cleanErrorMessage(e));
-    }
-  }
-
-  Future<void> _openLocationSettings() async {
-    try {
-      await _locationTrackingService.openLocationSettings();
-      showMessage('Turn on Location, then return to WellScreen.');
-    } catch (e) {
-      showMessage(_cleanErrorMessage(e));
     }
   }
 
@@ -342,15 +432,17 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     });
 
     try {
-      final result =
-          await _locationTrackingService.captureAndSyncCurrentLocation();
+      final result = await _locationTrackingService
+          .captureAndSyncCurrentLocation();
 
       if (!mounted) return;
 
       setState(() {
         lastLocationSyncMessage =
-            'Location synced at ${result.capturedAtLabel}.\n'
-            'Coordinates: ${result.coordinateLabel}\n'
+            'Location synced at '
+            '${result.capturedAtLabel}.\n'
+            'Coordinates: '
+            '${result.coordinateLabel}\n'
             '${result.accuracyLabel}\n'
             '${result.geoFenceLabel}';
       });
@@ -368,28 +460,87 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       showMessage(message);
     } finally {
       if (mounted) {
-        setState(() => isSyncingLocation = false);
+        setState(() {
+          isSyncingLocation = false;
+        });
       }
     }
   }
-  Future<void> openUsageAccessSettings() async {
+
+  Future<void> _logout() async {
+    await FirebaseAuth.instance.signOut();
+
+    if (!mounted) return;
+
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (_) => const LoginScreen()),
+      (route) => false,
+    );
+  }
+
+  Future<void> _contactParent(Map<String, dynamic> deviceData) async {
+    final user = FirebaseAuth.instance.currentUser;
+
+    final parentId = deviceData['parentId'] as String?;
+    final childId = deviceData['childId'] as String?;
+
+    final parentNameValue = deviceData['parentName'];
+
+    final parentName =
+        parentNameValue is String && parentNameValue.trim().isNotEmpty
+        ? parentNameValue.trim()
+        : 'Parent';
+
+    if (user == null || parentId == null || parentId.isEmpty) {
+      showMessage('Parent account information is unavailable.');
+      return;
+    }
+
+    final message = await showDialog<String>(
+      context: context,
+      builder: (_) {
+        return ContactParentDialog(parentName: parentName);
+      },
+    );
+
+    if (message == null || message.trim().isEmpty) {
+      return;
+    }
+
     try {
-      await _usageTrackingService.openUsageAccessSettings();
-      showMessage('Enable Usage Access for WellScreen, then return to sync.');
+      await NotificationService.instance.createInAppAlert(
+        recipientUserId: parentId,
+        parentId: parentId,
+        childId: childId,
+        title: 'Message from Child',
+        message: message.trim(),
+        triggerType: 'child_contact_parent',
+        priority: 'medium',
+        extraData: {'childUserId': user.uid, 'childEmail': user.email},
+      );
+
+      showMessage('Message sent to $parentName.');
     } catch (e) {
-      showMessage(_cleanErrorMessage(e));
+      showMessage('Unable to contact parent: ${_cleanErrorMessage(e)}');
     }
   }
 
-  Future<void> openAccessibilitySettings() async {
-    try {
-      await _accessibilityStatusService.openAccessibilitySettings();
-      showMessage(
-        'Enable WellScreen under Accessibility settings, then return to this screen.',
-      );
-    } catch (e) {
-      showMessage(_cleanErrorMessage(e));
+  void _openNotifications() {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      return;
     }
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) {
+        return ChildNotificationsPanel(childUserId: user.uid);
+      },
+    );
   }
 
   String _cleanErrorMessage(Object error) {
@@ -404,246 +555,249 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Widget _buildDeviceAndRulesSection(String childUserId) {
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
-          .collection('child_devices')
-          .doc(childUserId)
-          .snapshots(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const ChildStatusCard(
-            icon: Icons.hourglass_top_rounded,
-            iconColor: purple,
-            title: 'Checking pairing status',
-            subtitle: 'Preparing child device information...',
-          );
-        }
+  Widget _buildUnpairedScreen() {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 30, 20, 30),
+      children: [
+        const SizedBox(height: 30),
 
-        if (snapshot.hasError) {
-          return ChildStatusCard(
-            icon: Icons.error_outline_rounded,
-            iconColor: Colors.red,
-            title: 'Unable to load device status',
-            subtitle: snapshot.error.toString(),
-          );
-        }
+        const Icon(Icons.phone_android_rounded, color: purple, size: 74),
 
-        final data = snapshot.data?.data();
+        const SizedBox(height: 18),
 
-        if (data == null) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
-              ChildStatusCard(
-                icon: Icons.link_off_rounded,
-                iconColor: Colors.orange,
-                title: 'Not paired yet',
-                subtitle:
-                    'Enter the parent pairing code above to connect this device.',
-              ),
-              SizedBox(height: 16),
-              Text(
-                'Parent Rules',
-                style: TextStyle(
-                  fontSize: 21,
+        const Text(
+          'Connect This Device',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: darkText,
+            fontSize: 27,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+
+        const SizedBox(height: 8),
+
+        const Text(
+          'Enter the 6-digit pairing code provided by your parent or guardian.',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: grayText, height: 1.4),
+        ),
+
+        const SizedBox(height: 28),
+
+        Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: softPurple,
+            borderRadius: BorderRadius.circular(22),
+          ),
+          child: Column(
+            children: [
+              TextField(
+                controller: pairingCodeController,
+                keyboardType: TextInputType.number,
+                textAlign: TextAlign.center,
+                maxLength: 6,
+                inputFormatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(6),
+                ],
+                style: const TextStyle(
+                  fontSize: 28,
                   fontWeight: FontWeight.w900,
-                  color: darkText,
+                  letterSpacing: 8,
+                ),
+                decoration: InputDecoration(
+                  counterText: '',
+                  hintText: '------',
+                  filled: true,
+                  fillColor: Colors.white,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
                 ),
               ),
-              SizedBox(height: 12),
-              ChildStatusCard(
-                icon: Icons.rule_rounded,
-                iconColor: Colors.orange,
-                title: 'No parent rules available',
-                subtitle:
-                    'Pair this device first so the parentâ€™s saved restrictions can appear here.',
+
+              const SizedBox(height: 16),
+
+              SizedBox(
+                width: double.infinity,
+                height: 52,
+                child: FilledButton.icon(
+                  onPressed: isPairing ? null : pairChildDevice,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: purple,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                  icon: const Icon(Icons.link_rounded),
+                  label: Text(
+                    isPairing ? 'Connecting...' : 'Connect to Parent',
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
               ),
             ],
-          );
-        }
-
-        final pairingStatus = data['pairingStatus'] as String? ?? 'waiting';
-        final deviceStatus = data['deviceStatus'] as String? ?? 'not_connected';
-        final childEmail = data['childEmail'] as String? ?? 'Child user';
-        final code = data['pairingCode'] as String? ?? 'No code';
-        final parentId = data['parentId'] as String?;
-        final childId = data['childId'] as String?;
-
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            ChildStatusCard(
-              icon: Icons.check_circle_rounded,
-              iconColor: Colors.green,
-              title: 'Connected to Parent Account',
-              subtitle:
-                  'Account: $childEmail\nPairing: ${_formatStatus(pairingStatus)}\nDevice: ${_formatStatus(deviceStatus)}\nCode: $code',
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'Parent Rules',
-              style: TextStyle(
-                fontSize: 21,
-                fontWeight: FontWeight.w900,
-                color: darkText,
-              ),
-            ),
-            const SizedBox(height: 12),
-            ParentRulesSection(parentId: parentId),
-            const SizedBox(height: 16),
-            EmergencyAccessRequestSection(
-              parentId: parentId,
-              childId: childId,
-              childEmail: childEmail,
-            ),
-          ],
-        );
-      },
+          ),
+        ),
+      ],
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final user = FirebaseAuth.instance.currentUser;
+  Widget _buildHomeTab(Map<String, dynamic> data) {
+    final pairingStatus = data['pairingStatus'] as String? ?? 'waiting';
 
-    return Scaffold(
-      backgroundColor: Colors.white,
-      appBar: AppBar(
-        title: const Text(
-          'Child Home',
-          style: TextStyle(fontWeight: FontWeight.w800),
-        ),
-        backgroundColor: Colors.white,
-        foregroundColor: darkText,
-        elevation: 0,
+    final deviceStatus = data['deviceStatus'] as String? ?? 'not_connected';
+
+    final parentNameValue = data['parentName'];
+
+    final parentName =
+        parentNameValue is String && parentNameValue.trim().isNotEmpty
+        ? parentNameValue.trim()
+        : 'Parent / Guardian';
+
+    final isConnected =
+        pairingStatus == 'paired' || deviceStatus == 'connected';
+
+    final monitoringReady =
+        isConnected && hasUsageAccess == true && hasAccessibilityAccess == true;
+
+    final updatedAt = data['updatedAt'];
+
+    final updatedDate = updatedAt is Timestamp ? updatedAt.toDate() : null;
+
+    return RefreshIndicator(
+      onRefresh: _refreshEverything,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(20, 24, 20, 30),
+        children: [
+          ProtectedStatusCard(isProtected: monitoringReady),
+
+          const SizedBox(height: 20),
+
+          Card(
+            elevation: 1.5,
+            shadowColor: Colors.black12,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                children: [
+                  ChildInfoRow(
+                    icon: Icons.person_outline_rounded,
+                    label: 'Parent',
+                    value: parentName,
+                  ),
+
+                  ChildInfoRow(
+                    icon: Icons.shield_outlined,
+                    label: 'Status',
+                    value: monitoringReady ? 'Protected' : 'Setup Needed',
+                    valueColor: monitoringReady ? Colors.green : Colors.orange,
+                  ),
+
+                  ChildInfoRow(
+                    icon: Icons.sync_rounded,
+                    label: 'Connection',
+                    value: isConnected ? 'Active' : 'Offline',
+                    valueColor: isConnected ? Colors.green : Colors.orange,
+                  ),
+
+                  ChildInfoRow(
+                    icon: Icons.schedule_rounded,
+                    label: 'Last Update',
+                    value: _formatLastUpdate(updatedDate),
+                    isLast: true,
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 22),
+
+          ChildActionTile(
+            icon: Icons.fact_check_outlined,
+            title: 'View Rules',
+            subtitle: 'See current rules and limits',
+            onTap: () {
+              setState(() {
+                showRulesPage = true;
+              });
+            },
+          ),
+
+          ChildActionTile(
+            icon: Icons.chat_bubble_outline_rounded,
+            title: 'Contact Parent',
+            subtitle: 'Send a message to $parentName',
+            onTap: () {
+              _contactParent(data);
+            },
+          ),
+
+          ChildActionTile(
+            icon: Icons.notifications_none_rounded,
+            title: 'Notifications',
+            subtitle: 'View messages and alerts',
+            onTap: _openNotifications,
+          ),
+        ],
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(24),
+    );
+  }
+
+  Widget _buildPermissionsTab() {
+    return RefreshIndicator(
+      onRefresh: _refreshEverything,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(20, 26, 20, 30),
         children: [
           const Text(
-            'Child Device Setup',
+            'Device Permissions',
             style: TextStyle(
-              fontSize: 25,
-              fontWeight: FontWeight.w900,
               color: darkText,
+              fontSize: 27,
+              fontWeight: FontWeight.w900,
             ),
           ),
-          const SizedBox(height: 8),
+
+          const SizedBox(height: 7),
+
           const Text(
-            'Enter the pairing code from the parent device to connect this monitored Android device.',
+            'WellScreen needs these permissions to monitor the device and apply parent rules.',
             style: TextStyle(color: grayText, height: 1.4),
           ),
-          const SizedBox(height: 24),
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: softPurple,
-              borderRadius: BorderRadius.circular(22),
-            ),
-            child: Column(
-              children: [
-                const Icon(
-                  Icons.phone_android_rounded,
-                  color: purple,
-                  size: 72,
-                ),
-                const SizedBox(height: 12),
-                const Text(
-                  'Pair This Device',
-                  style: TextStyle(
-                    color: darkText,
-                    fontSize: 19,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Ask your parent or guardian for the 6-digit pairing code.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: grayText, height: 1.4),
-                ),
-                const SizedBox(height: 18),
-                TextField(
-                  controller: pairingCodeController,
-                  keyboardType: TextInputType.number,
-                  textAlign: TextAlign.center,
-                  maxLength: 6,
-                  inputFormatters: [
-                    FilteringTextInputFormatter.digitsOnly,
-                    LengthLimitingTextInputFormatter(6),
-                  ],
-                  style: const TextStyle(
-                    fontSize: 28,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 8,
-                  ),
-                  decoration: InputDecoration(
-                    counterText: '',
-                    hintText: '------',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    filled: true,
-                    fillColor: Colors.white,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                SizedBox(
-                  height: 52,
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed: isPairing ? null : pairChildDevice,
-                    style: FilledButton.styleFrom(
-                      backgroundColor: purple,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                    ),
-                    icon: const Icon(Icons.link_rounded),
-                    label: Text(
-                      isPairing ? 'Pairing...' : 'Connect to Parent',
-                      style: const TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                  ),
-                ),
-              ],
-            ),
+
+          const SizedBox(height: 22),
+
+          PermissionOverviewCard(
+            hasUsageAccess: hasUsageAccess,
+            hasAccessibilityAccess: hasAccessibilityAccess,
+            locationStatus: locationPermissionStatus,
           ),
-          const SizedBox(height: 24),
-          const Text(
-            'Device Status',
-            style: TextStyle(
-              fontSize: 21,
-              fontWeight: FontWeight.w900,
-              color: darkText,
-            ),
-          ),
-          const SizedBox(height: 12),
-          if (user == null)
-            const ChildStatusCard(
-              icon: Icons.info_outline_rounded,
-              iconColor: Colors.orange,
-              title: 'No child account found',
-              subtitle: 'Please log in again before pairing this device.',
-            )
-          else
-            _buildDeviceAndRulesSection(user.uid),
-          const SizedBox(height: 16),
+
+          const SizedBox(height: 14),
+
           UsageAccessStatusCard(
             hasUsageAccess: hasUsageAccess,
             isChecking: isCheckingUsageAccess,
             onRecheck: _checkUsagePermission,
             onOpenSettings: openUsageAccessSettings,
           ),
-          const SizedBox(height: 16),
+
           AccessibilityServiceStatusCard(
             hasAccessibilityAccess: hasAccessibilityAccess,
             isChecking: isCheckingAccessibilityAccess,
             onRecheck: _checkAccessibilityPermission,
             onOpenSettings: openAccessibilitySettings,
           ),
-          const SizedBox(height: 16),
+
           LocationPermissionStatusCard(
             status: locationPermissionStatus,
             isChecking: isCheckingLocationPermission,
@@ -651,26 +805,937 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
             onRequestPermission: _requestLocationPermission,
             onOpenLocationSettings: _openLocationSettings,
           ),
-          const SizedBox(height: 16),
-          LocationSyncCard(
-            isSyncing: isSyncingLocation,
-            lastSyncMessage: lastLocationSyncMessage,
-            onSync: user == null ? null : _syncCurrentLocation,
-          ),
-          const SizedBox(height: 16),
-          UsageSyncCard(
-            isSyncing: isSyncingUsageReport,
-            lastSyncMessage: lastSyncStatusMessage,
-            onSync: user == null ? null : syncTodayUsageReport,
-            onOpenUsageAccess: openUsageAccessSettings,
-          ),
+
+          const SmsBackupPermissionSection(),
         ],
       ),
     );
   }
 
-  String _formatStatus(String value) {
-    return value.replaceAll('_', ' ').toUpperCase();
+  Widget _buildServiceTab(Map<String, dynamic> data) {
+    final parentId = data['parentId'] as String?;
+
+    final childId = data['childId'] as String?;
+
+    final childEmail =
+        data['childEmail'] as String? ??
+        FirebaseAuth.instance.currentUser?.email ??
+        'Child';
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 26, 20, 30),
+      children: [
+        const Text(
+          'Device Service',
+          style: TextStyle(
+            color: darkText,
+            fontSize: 27,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+
+        const SizedBox(height: 7),
+
+        const Text(
+          'Sync monitoring information and access safety features.',
+          style: TextStyle(color: grayText, height: 1.4),
+        ),
+
+        const SizedBox(height: 22),
+
+        UsageSyncCard(
+          isSyncing: isSyncingUsageReport,
+          lastSyncMessage: lastSyncStatusMessage,
+          onSync: syncTodayUsageReport,
+          onOpenUsageAccess: openUsageAccessSettings,
+        ),
+
+        LocationSyncCard(
+          isSyncing: isSyncingLocation,
+          lastSyncMessage: lastLocationSyncMessage,
+          onSync: _syncCurrentLocation,
+        ),
+
+        const SizedBox(height: 10),
+
+        const ChildSectionHeader(
+          title: 'Emergency Access',
+          subtitle:
+              'Request temporary access for an urgent or essential reason.',
+        ),
+
+        const SizedBox(height: 12),
+
+        EmergencyAccessRequestSection(
+          parentId: parentId,
+          childId: childId,
+          childEmail: childEmail,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSettingsTab(Map<String, dynamic> data) {
+    final user = FirebaseAuth.instance.currentUser;
+
+    final connected =
+        data['deviceStatus'] == 'connected' ||
+        data['pairingStatus'] == 'paired';
+
+    final parentNameValue = data['parentName'];
+
+    final parentName =
+        parentNameValue is String && parentNameValue.trim().isNotEmpty
+        ? parentNameValue.trim()
+        : 'Parent / Guardian';
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 26, 20, 30),
+      children: [
+        const Text(
+          'Settings',
+          style: TextStyle(
+            color: darkText,
+            fontSize: 27,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+
+        const SizedBox(height: 20),
+
+        Container(
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            color: softPurple,
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Row(
+            children: [
+              const CircleAvatar(
+                radius: 27,
+                backgroundColor: Colors.white,
+                child: Icon(Icons.person_rounded, color: purple, size: 30),
+              ),
+
+              const SizedBox(width: 14),
+
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Child Account',
+                      style: TextStyle(
+                        color: darkText,
+                        fontSize: 17,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+
+                    const SizedBox(height: 4),
+
+                    Text(
+                      user?.email ?? 'No email available',
+                      style: const TextStyle(color: grayText),
+                    ),
+
+                    const SizedBox(height: 5),
+
+                    Text(
+                      connected ? 'Connected to $parentName' : 'Not connected',
+                      style: TextStyle(
+                        color: connected ? Colors.green : Colors.orange,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: 18),
+
+        const ChildStatusCard(
+          icon: Icons.info_outline_rounded,
+          iconColor: purple,
+          title: 'About WellScreen',
+          subtitle:
+              'WellScreen helps parents and children build healthier digital habits through screen-time monitoring, safety rules, and device wellness features.',
+        ),
+
+        const SizedBox(height: 10),
+
+        SizedBox(
+          height: 52,
+          child: OutlinedButton.icon(
+            onPressed: _logout,
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.red,
+              side: const BorderSide(color: Colors.redAccent),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+            ),
+            icon: const Icon(Icons.logout_rounded),
+            label: const Text(
+              'Logout',
+              style: TextStyle(fontWeight: FontWeight.w800),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildRulesPage(Map<String, dynamic> data) {
+    final parentId = data['parentId'] as String?;
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 24, 20, 30),
+      children: [
+        const Text(
+          'Rules',
+          style: TextStyle(
+            color: darkText,
+            fontSize: 29,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+
+        const SizedBox(height: 6),
+
+        const Text(
+          'These rules are set by your parent or guardian.',
+          style: TextStyle(color: grayText, height: 1.4),
+        ),
+
+        const SizedBox(height: 22),
+
+        ParentRulesSection(parentId: parentId),
+
+        const SizedBox(height: 12),
+
+        const Center(
+          child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: 25),
+            child: Text(
+              'These rules are set by your parent to help you build healthy digital habits.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: purple,
+                fontWeight: FontWeight.w800,
+                height: 1.4,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _formatLastUpdate(DateTime? value) {
+    if (value == null) {
+      return 'Not available';
+    }
+
+    final difference = DateTime.now().difference(value);
+
+    if (difference.inMinutes < 1) {
+      return 'Just now';
+    }
+
+    if (difference.inMinutes < 60) {
+      return '${difference.inMinutes} min ago';
+    }
+
+    if (difference.inHours < 24) {
+      return '${difference.inHours}h ago';
+    }
+
+    return '${difference.inDays}d ago';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      return Scaffold(
+        body: Center(
+          child: FilledButton(
+            onPressed: _logout,
+            child: const Text('Return to Login'),
+          ),
+        ),
+      );
+    }
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('child_devices')
+          .doc(user.uid)
+          .snapshots(),
+      builder: (context, snapshot) {
+        final deviceData = snapshot.data?.data();
+
+        final isPaired =
+            deviceData != null &&
+            (deviceData['pairingStatus'] == 'paired' ||
+                deviceData['deviceStatus'] == 'connected');
+
+        return Scaffold(
+          backgroundColor: Colors.white,
+
+          appBar: AppBar(
+            automaticallyImplyLeading: false,
+            backgroundColor: purple,
+            foregroundColor: Colors.white,
+            elevation: 0,
+            titleSpacing: 16,
+            leading: showRulesPage && isPaired
+                ? IconButton(
+                    onPressed: () {
+                      setState(() {
+                        showRulesPage = false;
+                      });
+                    },
+                    icon: const Icon(Icons.arrow_back_rounded),
+                  )
+                : null,
+            title: Row(
+              children: [
+                Container(
+                  width: 36,
+                  height: 36,
+                  padding: const EdgeInsets.all(4),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(11),
+                  ),
+                  child: Image.asset(
+                    'assets/icons/wellscreen_icon.png',
+                    fit: BoxFit.contain,
+                  ),
+                ),
+
+                const SizedBox(width: 10),
+
+                Text(
+                  showRulesPage ? 'Rules' : 'WellScreen Child',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w900,
+                    fontSize: 19,
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              if (isPaired)
+                UnreadNotificationBadgeButton(
+                  userId: user.uid,
+                  tooltip: 'Notifications',
+                  onPressed: _openNotifications,
+                ),
+            ],
+          ),
+
+          body: snapshot.connectionState == ConnectionState.waiting
+              ? const Center(child: CircularProgressIndicator())
+              : snapshot.hasError
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(
+                      snapshot.error.toString(),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                )
+              : !isPaired
+              ? _buildUnpairedScreen()
+              : showRulesPage
+              ? _buildRulesPage(deviceData)
+              : switch (selectedTabIndex) {
+                  0 => _buildHomeTab(deviceData),
+                  1 => _buildPermissionsTab(),
+                  2 => _buildServiceTab(deviceData),
+                  _ => _buildSettingsTab(deviceData),
+                },
+
+          bottomNavigationBar: isPaired && !showRulesPage
+              ? NavigationBar(
+                  selectedIndex: selectedTabIndex,
+                  onDestinationSelected: (index) {
+                    setState(() {
+                      selectedTabIndex = index;
+                    });
+                  },
+                  indicatorColor: softPurple,
+                  backgroundColor: const Color(0xFFF3F4F6),
+                  destinations: const [
+                    NavigationDestination(
+                      icon: Icon(Icons.home_outlined),
+                      selectedIcon: Icon(Icons.home_rounded, color: purple),
+                      label: 'Home',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.security_outlined),
+                      selectedIcon: Icon(Icons.security_rounded, color: purple),
+                      label: 'Permissions',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.health_and_safety_outlined),
+                      selectedIcon: Icon(
+                        Icons.health_and_safety_rounded,
+                        color: purple,
+                      ),
+                      label: 'Service',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.settings_outlined),
+                      selectedIcon: Icon(Icons.settings_rounded, color: purple),
+                      label: 'Settings',
+                    ),
+                  ],
+                )
+              : null,
+        );
+      },
+    );
+  }
+}
+
+class ProtectedStatusCard extends StatelessWidget {
+  const ProtectedStatusCard({super.key, required this.isProtected});
+
+  final bool isProtected;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isProtected ? Colors.green : Colors.orange;
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF9FAFB),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 70,
+            height: 70,
+            decoration: BoxDecoration(
+              color: isProtected
+                  ? const Color(0xFFE8F7EE)
+                  : const Color(0xFFFFF4E5),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Icon(
+              isProtected
+                  ? Icons.verified_user_rounded
+                  : Icons.warning_amber_rounded,
+              color: color,
+              size: 44,
+            ),
+          ),
+
+          const SizedBox(width: 16),
+
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  isProtected ? 'You are protected' : 'Setup needed',
+                  style: const TextStyle(
+                    color: Color(0xFF111827),
+                    fontSize: 21,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+
+                const SizedBox(height: 5),
+
+                Text(
+                  isProtected
+                      ? 'WellScreen is active and currently monitoring your device.'
+                      : 'Enable the required permissions so WellScreen can fully monitor this device.',
+                  style: const TextStyle(
+                    color: Color(0xFF4B5563),
+                    height: 1.4,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class ChildInfoRow extends StatelessWidget {
+  const ChildInfoRow({
+    super.key,
+    required this.icon,
+    required this.label,
+    required this.value,
+    this.valueColor,
+    this.isLast = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color? valueColor;
+  final bool isLast;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: isLast ? 0 : 18),
+      child: Row(
+        children: [
+          Icon(icon, color: const Color(0xFF111827), size: 25),
+
+          const SizedBox(width: 13),
+
+          Expanded(
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: Color(0xFF111827),
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+
+          Flexible(
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                color: valueColor ?? const Color(0xFF4B5563),
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class ChildActionTile extends StatelessWidget {
+  const ChildActionTile({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 0,
+      margin: const EdgeInsets.only(bottom: 10),
+      child: ListTile(
+        onTap: onTap,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        leading: Container(
+          width: 48,
+          height: 48,
+          decoration: BoxDecoration(
+            color: const Color(0xFFF4F0FF),
+            borderRadius: BorderRadius.circular(13),
+          ),
+          child: Icon(icon, color: const Color(0xFF5B2BBF)),
+        ),
+        title: Text(
+          title,
+          style: const TextStyle(
+            color: Color(0xFF5B2BBF),
+            fontWeight: FontWeight.w900,
+            fontSize: 16,
+          ),
+        ),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(
+            subtitle,
+            style: const TextStyle(
+              color: Color(0xFF4B5563),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+        trailing: const Icon(
+          Icons.chevron_right_rounded,
+          color: Color(0xFF5B2BBF),
+          size: 30,
+        ),
+      ),
+    );
+  }
+}
+
+class ContactParentDialog extends StatefulWidget {
+  const ContactParentDialog({super.key, required this.parentName});
+
+  final String parentName;
+
+  @override
+  State<ContactParentDialog> createState() => _ContactParentDialogState();
+}
+
+class _ContactParentDialogState extends State<ContactParentDialog> {
+  static const Color purple = Color(0xFF5B2BBF);
+
+  final TextEditingController messageController = TextEditingController();
+
+  String selectedQuickMessage = 'Please contact me when you can.';
+
+  @override
+  void initState() {
+    super.initState();
+    messageController.text = selectedQuickMessage;
+  }
+
+  @override
+  void dispose() {
+    messageController.dispose();
+    super.dispose();
+  }
+
+  void selectQuickMessage(String message) {
+    setState(() {
+      selectedQuickMessage = message;
+      messageController.text = message;
+      messageController.selection = TextSelection.collapsed(
+        offset: messageController.text.length,
+      );
+    });
+  }
+
+  void sendMessage() {
+    final message = messageController.text.trim();
+
+    if (message.isEmpty) {
+      return;
+    }
+
+    Navigator.of(context).pop(message);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const quickMessages = [
+      'Please contact me when you can.',
+      'I need help.',
+      'Please call me.',
+    ];
+
+    return AlertDialog(
+      title: Text(
+        'Contact ${widget.parentName}',
+        style: const TextStyle(fontWeight: FontWeight.w900),
+      ),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Choose a quick message or write your own.'),
+            const SizedBox(height: 16),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: quickMessages.map((message) {
+                return ChoiceChip(
+                  label: Text(message),
+                  selected: selectedQuickMessage == message,
+                  onSelected: (_) {
+                    selectQuickMessage(message);
+                  },
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: messageController,
+              maxLines: 3,
+              decoration: InputDecoration(
+                labelText: 'Message',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () {
+            Navigator.of(context).pop();
+          },
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: sendMessage,
+          style: FilledButton.styleFrom(backgroundColor: purple),
+          child: const Text('Send'),
+        ),
+      ],
+    );
+  }
+}
+
+class ChildNotificationsPanel extends StatelessWidget {
+  const ChildNotificationsPanel({super.key, required this.childUserId});
+
+  final String childUserId;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: SizedBox(
+        height: MediaQuery.sizeOf(context).height * 0.7,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Notifications',
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900),
+              ),
+
+              const SizedBox(height: 14),
+
+              Expanded(
+                child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                  stream: FirebaseFirestore.instance
+                      .collection('in_app_alerts')
+                      .where('recipientUserId', isEqualTo: childUserId)
+                      .limit(20)
+                      .snapshots(),
+                  builder: (context, snapshot) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+
+                    if (snapshot.hasError) {
+                      return Center(
+                        child: Text(
+                          snapshot.error.toString(),
+                          textAlign: TextAlign.center,
+                        ),
+                      );
+                    }
+
+                    final docs = [...?snapshot.data?.docs];
+
+                    docs.sort((a, b) {
+                      final aTime = a.data()['createdAt'];
+
+                      final bTime = b.data()['createdAt'];
+
+                      if (aTime is Timestamp && bTime is Timestamp) {
+                        return bTime.compareTo(aTime);
+                      }
+
+                      return 0;
+                    });
+
+                    if (docs.isEmpty) {
+                      return const Center(
+                        child: Text(
+                          'No notifications yet.',
+                          style: TextStyle(color: Color(0xFF4B5563)),
+                        ),
+                      );
+                    }
+
+                    return ListView.builder(
+                      itemCount: docs.length,
+                      itemBuilder: (context, index) {
+                        final doc = docs[index];
+
+                        final data = doc.data();
+
+                        final title = data['title'] as String? ?? 'WellScreen';
+
+                        final message = data['message'] as String? ?? '';
+
+                        final isRead = data['isRead'] as bool? ?? false;
+
+                        return Card(
+                          color: isRead
+                              ? Colors.white
+                              : const Color(0xFFF4F0FF),
+                          child: ListTile(
+                            onTap: () async {
+                              await doc.reference.set({
+                                'isRead': true,
+                                'readAt': FieldValue.serverTimestamp(),
+                              }, SetOptions(merge: true));
+                            },
+                            leading: Icon(
+                              isRead
+                                  ? Icons.notifications_none_rounded
+                                  : Icons.notifications_active_rounded,
+                              color: const Color(0xFF5B2BBF),
+                            ),
+                            title: Text(
+                              title,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            subtitle: Text(message),
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class ChildSectionHeader extends StatelessWidget {
+  const ChildSectionHeader({super.key, required this.title, this.subtitle});
+
+  final String title;
+  final String? subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: const TextStyle(
+            color: Color(0xFF111827),
+            fontSize: 20,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+
+        if (subtitle != null) ...[
+          const SizedBox(height: 4),
+
+          Text(
+            subtitle!,
+            style: const TextStyle(
+              color: Color(0xFF4B5563),
+              height: 1.35,
+              fontSize: 13,
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class PermissionOverviewCard extends StatelessWidget {
+  const PermissionOverviewCard({
+    super.key,
+    required this.hasUsageAccess,
+    required this.hasAccessibilityAccess,
+    required this.locationStatus,
+  });
+
+  final bool? hasUsageAccess;
+  final bool? hasAccessibilityAccess;
+
+  final LocationPermissionStatus? locationStatus;
+
+  @override
+  Widget build(BuildContext context) {
+    final locationGranted = locationStatus == LocationPermissionStatus.granted;
+
+    final enabledCount = [
+      hasUsageAccess == true,
+      hasAccessibilityAccess == true,
+      locationGranted,
+    ].where((value) => value).length;
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4F0FF),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Row(
+        children: [
+          const CircleAvatar(
+            radius: 26,
+            backgroundColor: Colors.white,
+            child: Icon(
+              Icons.security_rounded,
+              color: Color(0xFF5B2BBF),
+              size: 29,
+            ),
+          ),
+
+          const SizedBox(width: 14),
+
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Permission Status',
+                  style: TextStyle(
+                    color: Color(0xFF111827),
+                    fontSize: 16,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+
+                const SizedBox(height: 4),
+
+                Text(
+                  '$enabledCount of 3 main monitoring permissions enabled',
+                  style: const TextStyle(
+                    color: Color(0xFF4B5563),
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          Text(
+            '$enabledCount/3',
+            style: const TextStyle(
+              color: Color(0xFF5B2BBF),
+              fontSize: 22,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -685,86 +1750,24 @@ class UsageAccessStatusCard extends StatelessWidget {
 
   final bool? hasUsageAccess;
   final bool isChecking;
-  final Future<void> Function() onRecheck;
-  final Future<void> Function() onOpenSettings;
 
-  static const Color purple = Color(0xFF5B2BBF);
-  static const Color darkText = Color(0xFF111827);
-  static const Color grayText = Color(0xFF4B5563);
+  final Future<void> Function() onRecheck;
+
+  final Future<void> Function() onOpenSettings;
 
   @override
   Widget build(BuildContext context) {
-    final IconData icon;
-    final Color color;
-    final String title;
-    final String subtitle;
+    final granted = hasUsageAccess == true;
 
-    if (isChecking && hasUsageAccess == null) {
-      icon = Icons.hourglass_top_rounded;
-      color = purple;
-      title = 'Checking Usage Access';
-      subtitle = 'Checking whether Usage Access permission is granted...';
-    } else if (hasUsageAccess == true) {
-      icon = Icons.check_circle_rounded;
-      color = Colors.green;
-      title = 'Usage Access Granted';
-      subtitle =
-          'WellScreen can read app usage data needed for monitoring and reports.';
-    } else {
-      icon = Icons.warning_amber_rounded;
-      color = Colors.orange;
-      title = 'Usage Access Permission Missing';
-      subtitle =
-          'WellScreen needs Usage Access permission to track screen time. '
-          'Tap "Open Usage Access Settings" below, enable it for WellScreen, '
-          'then return to this screen.';
-    }
-
-    return Card(
-      elevation: 2,
-      shadowColor: Colors.black12,
-      margin: const EdgeInsets.only(bottom: 12),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(icon, color: color, size: 34),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      color: darkText,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    subtitle,
-                    style: const TextStyle(color: grayText, height: 1.4),
-                  ),
-                ],
-              ),
-            ),
-            IconButton(
-              tooltip: 'Recheck permission',
-              icon: isChecking
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.refresh_rounded),
-              onPressed: isChecking ? null : () => onRecheck(),
-            ),
-          ],
-        ),
-      ),
+    return PermissionCard(
+      icon: Icons.bar_chart_rounded,
+      title: 'Usage Access',
+      subtitle: 'Track screen time and app usage.',
+      granted: granted,
+      isChecking: isChecking,
+      onRecheck: onRecheck,
+      onEnable: onOpenSettings,
+      buttonText: 'Open Usage Access Settings',
     );
   }
 }
@@ -779,58 +1782,122 @@ class AccessibilityServiceStatusCard extends StatelessWidget {
   });
 
   final bool? hasAccessibilityAccess;
-  final bool isChecking;
-  final Future<void> Function() onRecheck;
-  final Future<void> Function() onOpenSettings;
 
-  static const Color purple = Color(0xFF5B2BBF);
-  static const Color darkText = Color(0xFF111827);
-  static const Color grayText = Color(0xFF4B5563);
+  final bool isChecking;
+
+  final Future<void> Function() onRecheck;
+
+  final Future<void> Function() onOpenSettings;
 
   @override
   Widget build(BuildContext context) {
-    final IconData icon;
-    final Color color;
-    final String title;
-    final String subtitle;
+    return PermissionCard(
+      icon: Icons.accessibility_new_rounded,
+      title: 'Accessibility Service',
+      subtitle: 'Detect blocked apps and enforce parent rules.',
+      granted: hasAccessibilityAccess == true,
+      isChecking: isChecking,
+      onRecheck: onRecheck,
+      onEnable: onOpenSettings,
+      buttonText: 'Open Accessibility Settings',
+    );
+  }
+}
 
-    if (isChecking && hasAccessibilityAccess == null) {
-      icon = Icons.hourglass_top_rounded;
-      color = purple;
-      title = 'Checking Accessibility Service';
-      subtitle =
-          'Checking whether the WellScreen Accessibility Service is enabled...';
-    } else if (hasAccessibilityAccess == true) {
-      icon = Icons.check_circle_rounded;
-      color = Colors.green;
-      title = 'Accessibility Service Enabled';
-      subtitle =
-          'WellScreen can prepare app-level enforcement features on this device.';
-    } else {
-      icon = Icons.warning_amber_rounded;
-      color = Colors.orange;
-      title = 'Accessibility Service Not Enabled';
-      subtitle =
-          'Enforcement features (like app blocking and focus mode) require the '
-          'WellScreen Accessibility Service. Tap "Open Accessibility Settings" '
-          'below, enable WellScreen, then return to this screen.';
-    }
+class LocationPermissionStatusCard extends StatelessWidget {
+  const LocationPermissionStatusCard({
+    super.key,
+    required this.status,
+    required this.isChecking,
+    required this.onRecheck,
+    required this.onRequestPermission,
+    required this.onOpenLocationSettings,
+  });
 
+  final LocationPermissionStatus? status;
+
+  final bool isChecking;
+
+  final Future<void> Function() onRecheck;
+
+  final Future<void> Function() onRequestPermission;
+
+  final Future<void> Function() onOpenLocationSettings;
+
+  @override
+  Widget build(BuildContext context) {
+    final granted = status == LocationPermissionStatus.granted;
+
+    return PermissionCard(
+      icon: Icons.location_on_rounded,
+      title: 'Location Permission',
+      subtitle: 'Share safety location information with the parent account.',
+      granted: granted,
+      isChecking: isChecking,
+      onRecheck: onRecheck,
+      onEnable: status == LocationPermissionStatus.serviceDisabled
+          ? onOpenLocationSettings
+          : onRequestPermission,
+      buttonText: status == LocationPermissionStatus.serviceDisabled
+          ? 'Open Location Settings'
+          : 'Allow Location Permission',
+    );
+  }
+}
+
+class PermissionCard extends StatelessWidget {
+  const PermissionCard({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.granted,
+    required this.isChecking,
+    required this.onRecheck,
+    required this.onEnable,
+    required this.buttonText,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final bool granted;
+  final bool isChecking;
+
+  final Future<void> Function() onRecheck;
+
+  final Future<void> Function() onEnable;
+
+  final String buttonText;
+
+  @override
+  Widget build(BuildContext context) {
     return Card(
-      elevation: 2,
+      elevation: 1.5,
       shadowColor: Colors.black12,
       margin: const EdgeInsets.only(bottom: 12),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       child: Padding(
         padding: const EdgeInsets.all(18),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(icon, color: color, size: 34),
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF4F0FF),
+                    borderRadius: BorderRadius.circular(13),
+                  ),
+                  child: Icon(
+                    icon,
+                    color: granted ? Colors.green : const Color(0xFF5B2BBF),
+                  ),
+                ),
+
                 const SizedBox(width: 14),
+
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -838,41 +1905,53 @@ class AccessibilityServiceStatusCard extends StatelessWidget {
                       Text(
                         title,
                         style: const TextStyle(
-                          color: darkText,
                           fontWeight: FontWeight.w900,
+                          color: Color(0xFF111827),
                         ),
                       ),
-                      const SizedBox(height: 6),
+
+                      const SizedBox(height: 5),
+
                       Text(
                         subtitle,
-                        style: const TextStyle(color: grayText, height: 1.4),
+                        style: const TextStyle(
+                          color: Color(0xFF4B5563),
+                          height: 1.35,
+                        ),
                       ),
                     ],
                   ),
                 ),
+
                 IconButton(
-                  tooltip: 'Recheck permission',
+                  onPressed: isChecking ? null : () => onRecheck(),
                   icon: isChecking
                       ? const SizedBox(
                           width: 20,
                           height: 20,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
-                      : const Icon(Icons.refresh_rounded),
-                  onPressed: isChecking ? null : () => onRecheck(),
+                      : Icon(
+                          granted
+                              ? Icons.check_circle_rounded
+                              : Icons.refresh_rounded,
+                          color: granted ? Colors.green : null,
+                        ),
                 ),
               ],
             ),
-            if (hasAccessibilityAccess != true) ...[
+
+            if (!granted) ...[
               const SizedBox(height: 12),
+
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
-                  onPressed: () => onOpenSettings(),
-                  icon: const Icon(Icons.settings_accessibility_rounded),
-                  label: const Text(
-                    'Open Accessibility Settings',
-                    style: TextStyle(fontWeight: FontWeight.w800),
+                  onPressed: isChecking ? null : () => onEnable(),
+                  icon: const Icon(Icons.settings_rounded),
+                  label: Text(
+                    buttonText,
+                    style: const TextStyle(fontWeight: FontWeight.w800),
                   ),
                 ),
               ),
@@ -895,12 +1974,72 @@ class UsageSyncCard extends StatelessWidget {
 
   final bool isSyncing;
   final String? lastSyncMessage;
-  final Future<void> Function()? onSync;
+
+  final Future<void> Function() onSync;
+
   final Future<void> Function() onOpenUsageAccess;
 
-  static const Color purple = Color(0xFF5B2BBF);
-  static const Color darkText = Color(0xFF111827);
-  static const Color grayText = Color(0xFF4B5563);
+  @override
+  Widget build(BuildContext context) {
+    return ServiceCard(
+      icon: Icons.cloud_upload_rounded,
+      title: 'Usage Report Sync',
+      description:
+          lastSyncMessage ??
+          'Send today\'s usage information to the parent account.',
+      isWorking: isSyncing,
+      buttonText: isSyncing ? 'Syncing...' : 'Sync Usage Report',
+      onPressed: isSyncing ? null : onSync,
+    );
+  }
+}
+
+class LocationSyncCard extends StatelessWidget {
+  const LocationSyncCard({
+    super.key,
+    required this.isSyncing,
+    required this.lastSyncMessage,
+    required this.onSync,
+  });
+
+  final bool isSyncing;
+  final String? lastSyncMessage;
+
+  final Future<void> Function() onSync;
+
+  @override
+  Widget build(BuildContext context) {
+    return ServiceCard(
+      icon: Icons.gps_fixed_rounded,
+      title: 'Location Sync',
+      description:
+          lastSyncMessage ??
+          'Send the latest GPS location to the parent account.',
+      isWorking: isSyncing,
+      buttonText: isSyncing ? 'Syncing...' : 'Sync Current Location',
+      onPressed: isSyncing ? null : onSync,
+    );
+  }
+}
+
+class ServiceCard extends StatelessWidget {
+  const ServiceCard({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.description,
+    required this.isWorking,
+    required this.buttonText,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String title;
+  final String description;
+  final bool isWorking;
+  final String buttonText;
+
+  final Future<void> Function()? onPressed;
 
   @override
   Widget build(BuildContext context) {
@@ -914,55 +2053,52 @@ class UsageSyncCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Row(
+            Row(
               children: [
-                Icon(Icons.cloud_upload_rounded, color: purple, size: 34),
-                SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'Usage Report Sync',
-                    style: TextStyle(
-                      color: darkText,
-                      fontWeight: FontWeight.w900,
-                      fontSize: 16,
-                    ),
+                Icon(icon, color: const Color(0xFF5B2BBF), size: 32),
+
+                const SizedBox(width: 12),
+
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: Color(0xFF111827),
+                    fontSize: 16,
+                    fontWeight: FontWeight.w900,
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 8),
+
+            const SizedBox(height: 10),
+
             Text(
-              lastSyncMessage ??
-                  'Sync todayâ€™s child-device usage report to the parent account.',
-              style: const TextStyle(color: grayText, height: 1.4),
+              description,
+              style: const TextStyle(color: Color(0xFF4B5563), height: 1.4),
             ),
+
             const SizedBox(height: 14),
+
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
-                onPressed: isSyncing || onSync == null ? null : () => onSync!(),
+                onPressed: onPressed == null ? null : () => onPressed!(),
                 style: FilledButton.styleFrom(
-                  backgroundColor: purple,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14),
-                  ),
+                  backgroundColor: const Color(0xFF5B2BBF),
                 ),
-                icon: const Icon(Icons.sync_rounded),
+                icon: isWorking
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.sync_rounded),
                 label: Text(
-                  isSyncing ? 'Syncing...' : 'Sync Usage Report',
+                  buttonText,
                   style: const TextStyle(fontWeight: FontWeight.w800),
-                ),
-              ),
-            ),
-            const SizedBox(height: 10),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: () => onOpenUsageAccess(),
-                icon: const Icon(Icons.settings_rounded),
-                label: const Text(
-                  'Open Usage Access Settings',
-                  style: TextStyle(fontWeight: FontWeight.w800),
                 ),
               ),
             ),
@@ -986,9 +2122,8 @@ class ParentRulesSection extends StatelessWidget {
       return const ChildStatusCard(
         icon: Icons.rule_rounded,
         iconColor: Colors.orange,
-        title: 'Parent rules unavailable',
-        subtitle:
-            'This device is paired, but the parent account reference is missing.',
+        title: 'Parent Rules Unavailable',
+        subtitle: 'The linked parent account could not be found.',
       );
     }
 
@@ -1002,8 +2137,8 @@ class ParentRulesSection extends StatelessWidget {
           return const ChildStatusCard(
             icon: Icons.hourglass_top_rounded,
             iconColor: purple,
-            title: 'Loading parent rules',
-            subtitle: 'Preparing saved restrictions from the parent account...',
+            title: 'Loading Parent Rules',
+            subtitle: 'Preparing restrictions from the parent account...',
           );
         }
 
@@ -1011,7 +2146,7 @@ class ParentRulesSection extends StatelessWidget {
           return ChildStatusCard(
             icon: Icons.error_outline_rounded,
             iconColor: Colors.red,
-            title: 'Unable to load parent rules',
+            title: 'Unable to Load Parent Rules',
             subtitle: snapshot.error.toString(),
           );
         }
@@ -1022,26 +2157,30 @@ class ParentRulesSection extends StatelessWidget {
           return const ChildStatusCard(
             icon: Icons.rule_rounded,
             iconColor: Colors.orange,
-            title: 'No rules saved yet',
+            title: 'No Rules Saved Yet',
             subtitle:
-                'Parent rules will appear here after the parent saves restriction settings.',
+                'Rules will appear after the parent saves restriction settings.',
           );
         }
 
-        final limitMinutesValue = data['limitMinutes'];
-        final limitMinutes = limitMinutesValue is num
-            ? limitMinutesValue.toInt()
-            : 120;
+        final limitValue = data['limitMinutes'];
+
+        final limitMinutes = limitValue is num ? limitValue.toInt() : 120;
 
         final appBlocking = _readBool(data, 'appBlocking', true);
+
         final focusMode = _readBool(data, 'focusMode', true);
+
         final cooldownTimer = _readBool(data, 'cooldownTimer', true);
+
         final scheduledLock = _readBool(data, 'scheduledLock', false);
+
         final categoryRestriction = _readBool(
           data,
           'categoryRestriction',
           true,
         );
+
         final emergencyAccess = _readBool(data, 'emergencyAccess', true);
 
         unawaited(
@@ -1061,60 +2200,63 @@ class ParentRulesSection extends StatelessWidget {
         return Column(
           children: [
             ChildStatusCard(
-              icon: Icons.flag_rounded,
+              icon: Icons.timer_outlined,
               iconColor: purple,
-              title: 'Screen Goals',
-              subtitle:
-                  'Daily screen-time limit: ${_formatMinutes(limitMinutes)}.',
+              title: 'Daily Screen-Time Limit',
+              subtitle: '${_formatMinutes(limitMinutes)} per day',
             ),
+
             ParentRuleCard(
               icon: Icons.block_rounded,
               title: 'App Blocking',
               isEnabled: appBlocking,
-              enabledMessage: 'Selected apps may be blocked after limits.',
-              disabledMessage: 'App blocking is currently disabled.',
+              enabledMessage:
+                  'Selected apps are blocked after limits are reached.',
+              disabledMessage: 'App blocking is disabled.',
             ),
+
             ParentRuleCard(
-              icon: Icons.school_rounded,
+              icon: Icons.center_focus_strong_rounded,
               title: 'Focus Mode',
               isEnabled: focusMode,
               enabledMessage:
-                  'Distracting apps may be limited during study or rest time.',
-              disabledMessage: 'Focus mode is currently disabled.',
+                  'Distracting apps are limited during study or rest time.',
+              disabledMessage: 'Focus Mode is disabled.',
             ),
+
             ParentRuleCard(
-              icon: Icons.notifications_active_rounded,
+              icon: Icons.hourglass_bottom_rounded,
               title: 'Cooldown Timer',
               isEnabled: cooldownTimer,
               enabledMessage:
-                  'Break reminders may appear after long continuous usage.',
-              disabledMessage: 'Cooldown reminders are currently disabled.',
+                  'Break reminders are enabled after long continuous usage.',
+              disabledMessage: 'Cooldown reminders are disabled.',
             ),
+
             ParentRuleCard(
               icon: Icons.lock_clock_rounded,
               title: 'Scheduled Lock Session',
               isEnabled: scheduledLock,
-              enabledMessage:
-                  'Restrictions may apply during selected scheduled sessions.',
-              disabledMessage:
-                  'Scheduled lock sessions are currently disabled.',
+              enabledMessage: 'Default lock time: 10:00 PM to 5:00 AM.',
+              disabledMessage: 'Scheduled lock sessions are disabled.',
             ),
+
             ParentRuleCard(
-              icon: Icons.category_rounded,
+              icon: Icons.shield_outlined,
               title: 'Harmful Category Restriction',
               isEnabled: categoryRestriction,
               enabledMessage:
-                  'Supported harmful or restricted category events may be limited.',
-              disabledMessage: 'Category restriction is currently disabled.',
+                  'Supported harmful website or category events are restricted.',
+              disabledMessage: 'Harmful category restriction is disabled.',
             ),
+
             ParentRuleCard(
               icon: Icons.emergency_rounded,
               title: 'Emergency Access',
               isEnabled: emergencyAccess,
               enabledMessage:
-                  'Essential functions are allowed during restrictions.',
-              disabledMessage:
-                  'Emergency access is currently disabled by the parent.',
+                  'Selected essential functions are allowed during restrictions.',
+              disabledMessage: 'Emergency access is disabled.',
             ),
           ],
         );
@@ -1125,20 +2267,18 @@ class ParentRulesSection extends StatelessWidget {
   bool _readBool(Map<String, dynamic> data, String key, bool defaultValue) {
     final value = data[key];
 
-    if (value is bool) {
-      return value;
-    }
-
-    return defaultValue;
+    return value is bool ? value : defaultValue;
   }
 
   String _formatMinutes(int minutes) {
     final duration = Duration(minutes: minutes);
+
     final hours = duration.inHours;
-    final remainingMinutes = duration.inMinutes.remainder(60);
+
+    final remaining = duration.inMinutes.remainder(60);
 
     if (hours > 0) {
-      return '${hours}h ${remainingMinutes}m';
+      return '${hours}h ${remaining}m';
     }
 
     return '${duration.inMinutes}m';
@@ -1161,250 +2301,41 @@ class ParentRuleCard extends StatelessWidget {
   final String enabledMessage;
   final String disabledMessage;
 
-  static const Color darkText = Color(0xFF111827);
-  static const Color grayText = Color(0xFF4B5563);
-  static const Color purple = Color(0xFF5B2BBF);
-
   @override
   Widget build(BuildContext context) {
     return Card(
-      elevation: 1.5,
+      elevation: 1,
       shadowColor: Colors.black12,
       margin: const EdgeInsets.only(bottom: 12),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       child: ListTile(
         contentPadding: const EdgeInsets.all(18),
-        leading: Icon(icon, color: isEnabled ? purple : Colors.grey, size: 34),
-        title: Text(
-          title,
-          style: const TextStyle(color: darkText, fontWeight: FontWeight.w900),
+        leading: Container(
+          width: 46,
+          height: 46,
+          decoration: BoxDecoration(
+            color: const Color(0xFFF4F0FF),
+            borderRadius: BorderRadius.circular(13),
+          ),
+          child: Icon(icon, color: const Color(0xFF5B2BBF)),
         ),
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
         subtitle: Padding(
-          padding: const EdgeInsets.only(top: 6),
-          child: Text(
-            isEnabled ? enabledMessage : disabledMessage,
-            style: const TextStyle(color: grayText, height: 1.4),
+          padding: const EdgeInsets.only(top: 5),
+          child: Text(isEnabled ? enabledMessage : disabledMessage),
+        ),
+        trailing: Text(
+          isEnabled ? 'ON' : 'OFF',
+          style: TextStyle(
+            color: isEnabled ? Colors.green : Colors.grey,
+            fontWeight: FontWeight.w900,
           ),
         ),
-        trailing: Icon(
-          isEnabled ? Icons.check_circle_rounded : Icons.cancel_rounded,
-          color: isEnabled ? Colors.green : Colors.grey,
-        ),
       ),
     );
   }
 }
 
-
-
-
-class LocationPermissionStatusCard extends StatelessWidget {
-  const LocationPermissionStatusCard({
-    super.key,
-    required this.status,
-    required this.isChecking,
-    required this.onRecheck,
-    required this.onRequestPermission,
-    required this.onOpenLocationSettings,
-  });
-
-  final LocationPermissionStatus? status;
-  final bool isChecking;
-  final Future<void> Function() onRecheck;
-  final Future<void> Function() onRequestPermission;
-  final Future<void> Function() onOpenLocationSettings;
-
-  static const Color purple = Color(0xFF5B2BBF);
-  static const Color darkText = Color(0xFF111827);
-  static const Color grayText = Color(0xFF4B5563);
-
-  @override
-  Widget build(BuildContext context) {
-    final isGranted = status == LocationPermissionStatus.granted;
-    final isServiceDisabled =
-        status == LocationPermissionStatus.serviceDisabled;
-    final isDeniedForever = status == LocationPermissionStatus.deniedForever;
-
-    final title = isChecking && status == null
-        ? 'Checking Location Permission'
-        : isGranted
-            ? 'Location Permission Granted'
-            : isServiceDisabled
-                ? 'Location Service Disabled'
-                : isDeniedForever
-                    ? 'Location Permission Denied Forever'
-                    : 'Location Permission Needed';
-
-    final subtitle = isGranted
-        ? 'WellScreen can capture this child device GPS location for parent monitoring and safety alerts.'
-        : isServiceDisabled
-            ? 'Turn on device Location services before syncing GPS updates.'
-            : isDeniedForever
-                ? 'Location permission was denied permanently. Open app settings and allow location permission for WellScreen.'
-                : 'Allow location permission so WellScreen can sync the child device location to the parent dashboard. WellScreen does not read files, messages, photos, or passwords.';
-
-    final color = isGranted ? Colors.green : Colors.orange;
-
-    return Card(
-      elevation: 2,
-      shadowColor: Colors.black12,
-      margin: const EdgeInsets.only(bottom: 12),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(Icons.location_on_rounded, color: color, size: 34),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title,
-                        style: const TextStyle(
-                          color: darkText,
-                          fontWeight: FontWeight.w900,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        subtitle,
-                        style: const TextStyle(color: grayText, height: 1.4),
-                      ),
-                    ],
-                  ),
-                ),
-                IconButton(
-                  tooltip: 'Recheck location permission',
-                  icon: isChecking
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.refresh_rounded),
-                  onPressed: isChecking ? null : () => onRecheck(),
-                ),
-              ],
-            ),
-            if (!isGranted) ...[
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                  onPressed: isChecking ? null : () => onRequestPermission(),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: purple,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                  ),
-                  icon: const Icon(Icons.my_location_rounded),
-                  label: const Text(
-                    'Allow Location Permission',
-                    style: TextStyle(fontWeight: FontWeight.w800),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: () => onOpenLocationSettings(),
-                  icon: const Icon(Icons.settings_rounded),
-                  label: const Text(
-                    'Open Location Settings',
-                    style: TextStyle(fontWeight: FontWeight.w800),
-                  ),
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class LocationSyncCard extends StatelessWidget {
-  const LocationSyncCard({
-    super.key,
-    required this.isSyncing,
-    required this.lastSyncMessage,
-    required this.onSync,
-  });
-
-  final bool isSyncing;
-  final String? lastSyncMessage;
-  final Future<void> Function()? onSync;
-
-  static const Color purple = Color(0xFF5B2BBF);
-  static const Color darkText = Color(0xFF111827);
-  static const Color grayText = Color(0xFF4B5563);
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      elevation: 1.5,
-      shadowColor: Colors.black12,
-      margin: const EdgeInsets.only(bottom: 12),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Row(
-              children: [
-                Icon(Icons.gps_fixed_rounded, color: purple, size: 34),
-                SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'GPS Location Sync',
-                    style: TextStyle(
-                      color: darkText,
-                      fontWeight: FontWeight.w900,
-                      fontSize: 16,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Text(
-              lastSyncMessage ??
-                  'Capture and sync the child device current GPS location to the parent dashboard.',
-              style: const TextStyle(color: grayText, height: 1.4),
-            ),
-            const SizedBox(height: 14),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                onPressed: isSyncing || onSync == null ? null : () => onSync!(),
-                style: FilledButton.styleFrom(
-                  backgroundColor: purple,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                ),
-                icon: const Icon(Icons.location_searching_rounded),
-                label: Text(
-                  isSyncing ? 'Syncing Location...' : 'Sync Current Location',
-                  style: const TextStyle(fontWeight: FontWeight.w800),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
 class SmsBackupPermissionSection extends StatefulWidget {
   const SmsBackupPermissionSection({super.key});
 
@@ -1418,10 +2349,6 @@ class _SmsBackupPermissionSectionState
   bool isChecking = true;
   bool isGranted = false;
 
-  static const Color purple = Color(0xFF5B2BBF);
-  static const Color darkText = Color(0xFF111827);
-  static const Color grayText = Color(0xFF4B5563);
-
   @override
   void initState() {
     super.initState();
@@ -1429,8 +2356,8 @@ class _SmsBackupPermissionSectionState
   }
 
   Future<void> checkPermission() async {
-    final granted =
-        await const NativeRestrictionRulesService().isSmsPermissionGranted();
+    final granted = await const NativeRestrictionRulesService()
+        .isSmsPermissionGranted();
 
     if (!mounted) return;
 
@@ -1441,9 +2368,12 @@ class _SmsBackupPermissionSectionState
   }
 
   Future<void> requestPermission() async {
-    setState(() => isChecking = true);
+    setState(() {
+      isChecking = true;
+    });
 
     await const NativeRestrictionRulesService().requestSmsPermission();
+
     await Future<void>.delayed(const Duration(milliseconds: 800));
 
     await checkPermission();
@@ -1451,80 +2381,20 @@ class _SmsBackupPermissionSectionState
 
   @override
   Widget build(BuildContext context) {
-    final title = isGranted
-        ? 'SMS Backup Alerts Ready'
-        : 'SMS Backup Permission Needed';
-
-    final subtitle = isGranted
-        ? 'The child device can send SMS backup alerts when critical restriction events occur.'
-        : 'Allow SMS permission on this child device so WellScreen can send backup alerts to the guardian phone number. WellScreen does not read SMS messages.';
-
-    return Card(
-      elevation: 1.5,
-      shadowColor: Colors.black12,
-      margin: const EdgeInsets.only(bottom: 12),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(
-              Icons.sms_rounded,
-              color: isGranted ? Colors.green : purple,
-              size: 34,
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      color: darkText,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    subtitle,
-                    style: const TextStyle(
-                      color: grayText,
-                      height: 1.4,
-                    ),
-                  ),
-                  if (!isGranted) ...[
-                    const SizedBox(height: 12),
-                    SizedBox(
-                      width: double.infinity,
-                      child: FilledButton.icon(
-                        onPressed: isChecking ? null : requestPermission,
-                        style: FilledButton.styleFrom(
-                          backgroundColor: purple,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                        ),
-                        icon: const Icon(Icons.sms_rounded),
-                        label: Text(
-                          isChecking ? 'Checking...' : 'Allow SMS Backup Alerts',
-                          style: const TextStyle(fontWeight: FontWeight.w800),
-                        ),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
+    return PermissionCard(
+      icon: Icons.sms_outlined,
+      title: 'SMS Backup Permission',
+      subtitle:
+          'Allow WellScreen to send critical backup alerts. WellScreen does not read SMS messages.',
+      granted: isGranted,
+      isChecking: isChecking,
+      onRecheck: checkPermission,
+      onEnable: requestPermission,
+      buttonText: 'Allow SMS Backup Alerts',
     );
   }
 }
+
 class EmergencyAccessRequestSection extends StatefulWidget {
   const EmergencyAccessRequestSection({
     super.key,
@@ -1549,8 +2419,6 @@ class _EmergencyAccessRequestSectionState
   bool isSubmitting = false;
 
   static const Color purple = Color(0xFF5B2BBF);
-  static const Color darkText = Color(0xFF111827);
-  static const Color grayText = Color(0xFF4B5563);
 
   @override
   void dispose() {
@@ -1562,87 +2430,108 @@ class _EmergencyAccessRequestSectionState
     final user = FirebaseAuth.instance.currentUser;
 
     if (user == null) {
-      showMessage('Please log in again before requesting emergency access.');
       return;
     }
 
     if (widget.parentId == null || widget.parentId!.isEmpty) {
-      showMessage('Parent account is missing. Pair the device again.');
+      _showMessage('Parent account is unavailable.');
       return;
     }
 
     final reason = reasonController.text.trim();
 
     if (reason.length < 5) {
-      showMessage('Please enter a short reason for emergency access.');
+      _showMessage('Please enter a short reason.');
       return;
     }
 
-    setState(() => isSubmitting = true);
+    setState(() {
+      isSubmitting = true;
+    });
 
     try {
       await FirebaseFirestore.instance
           .collection('emergency_access_requests')
           .doc(user.uid)
           .set({
-        'parentId': widget.parentId,
-        'childId': widget.childId,
-        'childUserId': user.uid,
-        'childEmail': widget.childEmail,
-        'reason': reason,
-        'status': 'pending',
-        'requestedAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
+            'parentId': widget.parentId,
+            'childId': widget.childId,
+            'childUserId': user.uid,
+            'childEmail': widget.childEmail,
+            'reason': reason,
+            'status': 'pending',
+            'requestedAt': FieldValue.serverTimestamp(),
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+
+      var parentAlertSent = true;
+
+      try {
+        await NotificationService.instance.createInAppAlert(
+          recipientUserId: widget.parentId!,
+          parentId: widget.parentId!,
+          childId: widget.childId,
+          title: 'Emergency Access Request',
+          message: reason,
+          triggerType: 'emergency_access_request',
+          priority: 'high',
+          extraData: {
+            'childUserId': user.uid,
+            'childEmail': widget.childEmail,
+          },
+        );
+      } catch (_) {
+        parentAlertSent = false;
+      }
 
       reasonController.clear();
-      showMessage('Emergency access request sent to parent.');
+
+      _showMessage(
+        parentAlertSent
+            ? 'Emergency access request sent.'
+            : 'Emergency access request sent, but the parent notification alert could not be created.',
+      );
     } catch (e) {
-      showMessage(e.toString().replaceFirst('Exception: ', ''));
+      _showMessage(e.toString());
     } finally {
       if (mounted) {
-        setState(() => isSubmitting = false);
+        setState(() {
+          isSubmitting = false;
+        });
       }
     }
   }
 
-  void syncEmergencyAccessToNative(Map<String, dynamic>? data) {
-    if (data == null) {
-      unawaited(
-        const NativeRestrictionRulesService().saveEmergencyAccessState(
-          isApproved: false,
-          approvedUntil: null,
-        ),
-      );
-      return;
-    }
+  void _syncToNative(Map<String, dynamic>? data) {
+    final status = data?['status'] as String? ?? 'none';
 
-    final status = data['status'] as String? ?? 'none';
-    final approvedUntilValue = data['approvedUntil'];
+    final approvedUntilValue = data?['approvedUntil'];
+
     final approvedUntil = approvedUntilValue is Timestamp
         ? approvedUntilValue.toDate()
         : null;
 
-    final isApproved = status == 'approved' &&
+    final approved =
+        status == 'approved' &&
         approvedUntil != null &&
         approvedUntil.isAfter(DateTime.now());
 
     unawaited(
       const NativeRestrictionRulesService()
           .saveEmergencyAccessState(
-            isApproved: isApproved,
+            isApproved: approved,
             approvedUntil: approvedUntil,
           )
           .catchError((Object _) {}),
     );
   }
 
-  void showMessage(String message) {
+  void _showMessage(String message) {
     if (!mounted) return;
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -1650,12 +2539,7 @@ class _EmergencyAccessRequestSectionState
     final user = FirebaseAuth.instance.currentUser;
 
     if (user == null) {
-      return const ChildStatusCard(
-        icon: Icons.emergency_rounded,
-        iconColor: Colors.orange,
-        title: 'Emergency Access Unavailable',
-        subtitle: 'Please log in again before requesting emergency access.',
-      );
+      return const SizedBox();
     }
 
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
@@ -1665,44 +2549,20 @@ class _EmergencyAccessRequestSectionState
           .snapshots(),
       builder: (context, snapshot) {
         final data = snapshot.data?.data();
-        syncEmergencyAccessToNative(data);
+
+        _syncToNative(data);
 
         final status = data?['status'] as String? ?? 'none';
-        final reason = data?['reason'] as String? ?? 'No request submitted yet.';
-        final approvedUntilValue = data?['approvedUntil'];
-        final approvedUntil = approvedUntilValue is Timestamp
-            ? approvedUntilValue.toDate()
-            : null;
 
-        final title = switch (status) {
-          'pending' => 'Emergency Request Pending',
-          'approved' => 'Emergency Access Approved',
-          'denied' => 'Emergency Access Denied',
-          _ => 'Emergency Access Request',
-        };
-
-        final subtitle = switch (status) {
-          'pending' =>
-            'Your request was sent to the parent account.\nReason: $reason',
-          'approved' =>
-            'Emergency access is temporarily approved until ${_formatDateTime(approvedUntil)}.\nReason: $reason',
-          'denied' =>
-            'The parent denied the request. You may send another request if needed.\nReason: $reason',
-          _ =>
-            'Send a request when you need temporary access for an urgent or essential reason.',
-        };
-
-        final iconColor = switch (status) {
-          'approved' => Colors.green,
-          'pending' => Colors.orange,
-          'denied' => Colors.red,
-          _ => purple,
+        final statusText = switch (status) {
+          'pending' => 'Request pending',
+          'approved' => 'Temporary access approved',
+          'denied' => 'Previous request denied',
+          _ => 'No active request',
         };
 
         return Card(
           elevation: 1.5,
-          shadowColor: Colors.black12,
-          margin: const EdgeInsets.only(bottom: 12),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(18),
           ),
@@ -1712,62 +2572,48 @@ class _EmergencyAccessRequestSectionState
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Icon(Icons.emergency_rounded, color: iconColor, size: 34),
-                    const SizedBox(width: 14),
+                    const Icon(
+                      Icons.emergency_rounded,
+                      color: purple,
+                      size: 30,
+                    ),
+
+                    const SizedBox(width: 12),
+
                     Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            title,
-                            style: const TextStyle(
-                              color: darkText,
-                              fontWeight: FontWeight.w900,
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            subtitle,
-                            style: const TextStyle(
-                              color: grayText,
-                              height: 1.4,
-                            ),
-                          ),
-                        ],
+                      child: Text(
+                        statusText,
+                        style: const TextStyle(fontWeight: FontWeight.w900),
                       ),
                     ),
                   ],
                 ),
+
                 const SizedBox(height: 14),
+
                 TextField(
                   controller: reasonController,
-                  minLines: 1,
                   maxLines: 2,
                   decoration: InputDecoration(
-                    labelText: 'Reason for emergency access',
-                    hintText: 'Example: I need to contact my guardian.',
+                    labelText: 'Reason',
+                    hintText: 'Example: I need to call my guardian.',
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(14),
                     ),
                   ),
                 ),
+
                 const SizedBox(height: 12),
+
                 SizedBox(
                   width: double.infinity,
                   child: FilledButton.icon(
                     onPressed: isSubmitting ? null : submitEmergencyRequest,
-                    style: FilledButton.styleFrom(
-                      backgroundColor: purple,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                    ),
+                    style: FilledButton.styleFrom(backgroundColor: purple),
                     icon: const Icon(Icons.send_rounded),
                     label: Text(
                       isSubmitting ? 'Sending...' : 'Request Emergency Access',
-                      style: const TextStyle(fontWeight: FontWeight.w800),
                     ),
                   ),
                 ),
@@ -1778,23 +2624,8 @@ class _EmergencyAccessRequestSectionState
       },
     );
   }
-
-  String _formatDateTime(DateTime? value) {
-    if (value == null) {
-      return 'the approved time';
-    }
-
-    final hour = value.hour > 12
-        ? value.hour - 12
-        : value.hour == 0
-            ? 12
-            : value.hour;
-    final minute = value.minute.toString().padLeft(2, '0');
-    final period = value.hour >= 12 ? 'PM' : 'AM';
-
-    return '$hour:$minute $period';
-  }
 }
+
 class ChildStatusCard extends StatelessWidget {
   const ChildStatusCard({
     super.key,
@@ -1809,9 +2640,6 @@ class ChildStatusCard extends StatelessWidget {
   final String title;
   final String subtitle;
 
-  static const Color darkText = Color(0xFF111827);
-  static const Color grayText = Color(0xFF4B5563);
-
   @override
   Widget build(BuildContext context) {
     return Card(
@@ -1821,16 +2649,19 @@ class ChildStatusCard extends StatelessWidget {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       child: ListTile(
         contentPadding: const EdgeInsets.all(18),
-        leading: Icon(icon, color: iconColor, size: 34),
+        leading: Icon(icon, color: iconColor, size: 32),
         title: Text(
           title,
-          style: const TextStyle(color: darkText, fontWeight: FontWeight.w900),
+          style: const TextStyle(
+            color: Color(0xFF111827),
+            fontWeight: FontWeight.w900,
+          ),
         ),
         subtitle: Padding(
           padding: const EdgeInsets.only(top: 6),
           child: Text(
             subtitle,
-            style: const TextStyle(color: grayText, height: 1.4),
+            style: const TextStyle(color: Color(0xFF4B5563), height: 1.4),
           ),
         ),
       ),
@@ -1838,14 +2669,73 @@ class ChildStatusCard extends StatelessWidget {
   }
 }
 
+class UnreadNotificationBadgeButton extends StatelessWidget {
+  const UnreadNotificationBadgeButton({
+    super.key,
+    required this.userId,
+    required this.onPressed,
+    required this.tooltip,
+  });
 
+  final String userId;
+  final VoidCallback onPressed;
+  final String tooltip;
 
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('in_app_alerts')
+          .where('recipientUserId', isEqualTo: userId)
+          .snapshots(),
+      builder: (context, snapshot) {
+        final unreadCount = snapshot.data?.docs.where((doc) {
+              return doc.data()['isRead'] != true;
+            }).length ??
+            0;
 
-
-
-
-
-
-
-
+        return IconButton(
+          tooltip: tooltip,
+          onPressed: onPressed,
+          icon: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              const Icon(Icons.notifications_none_rounded),
+              if (unreadCount > 0)
+                Positioned(
+                  top: -8,
+                  right: -9,
+                  child: Container(
+                    constraints: const BoxConstraints(
+                      minWidth: 19,
+                      minHeight: 19,
+                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: Colors.red,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: Colors.white,
+                        width: 1.5,
+                      ),
+                    ),
+                    child: Text(
+                      unreadCount > 99 ? '99+' : '$unreadCount',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w900,
+                        height: 1,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
 
