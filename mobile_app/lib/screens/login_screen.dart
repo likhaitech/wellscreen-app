@@ -16,7 +16,6 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   static const Color purple = Color(0xFF5B2BBF);
-  static const Color darkText = Color(0xFF111827);
   static const Color grayText = Color(0xFF4B5563);
 
   final emailController = TextEditingController();
@@ -71,9 +70,7 @@ class _LoginScreenState extends State<LoginScreen> {
       if (isAdmin) {
         Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(
-            builder: (_) => const AdminSettingsScreen(),
-          ),
+          MaterialPageRoute(builder: (_) => const AdminSettingsScreen()),
           (route) => false,
         );
 
@@ -137,17 +134,13 @@ class _LoginScreenState extends State<LoginScreen> {
       if (storedRole == 'child') {
         Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(
-            builder: (_) => const ChildHomeScreen(),
-          ),
+          MaterialPageRoute(builder: (_) => const ChildHomeScreen()),
           (route) => false,
         );
       } else {
         Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(
-            builder: (_) => const ParentDashboardScreen(),
-          ),
+          MaterialPageRoute(builder: (_) => const ParentDashboardScreen()),
           (route) => false,
         );
       }
@@ -167,11 +160,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(
-      SnackBar(
-        content: Text(message),
-      ),
-    );
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -210,11 +199,7 @@ class _LoginScreenState extends State<LoginScreen> {
             const Text(
               'Digital wellness monitoring for parents and children',
               textAlign: TextAlign.center,
-              style: TextStyle(
-                color: grayText,
-                fontSize: 15,
-                height: 1.4,
-              ),
+              style: TextStyle(color: grayText, fontSize: 15, height: 1.4),
             ),
 
             const SizedBox(height: 36),
@@ -275,10 +260,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   value: 'parent',
                   child: Text('Parent / Guardian'),
                 ),
-                DropdownMenuItem(
-                  value: 'child',
-                  child: Text('Child'),
-                ),
+                DropdownMenuItem(value: 'child', child: Text('Child')),
               ],
               onChanged: isLoading
                   ? null
@@ -328,38 +310,12 @@ class _LoginScreenState extends State<LoginScreen> {
               onPressed: () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(
-                    builder: (_) => const RegisterScreen(),
-                  ),
+                  MaterialPageRoute(builder: (_) => const RegisterScreen()),
                 );
               },
               child: const Text(
                 'Create Account',
-                style: TextStyle(
-                  color: purple,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 20),
-
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF4F0FF),
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: const Text(
-                'Parent accounts manage child profiles and pairing. '
-                'Child accounts connect their Android device using the '
-                'pairing code provided by the parent.',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: darkText,
-                  height: 1.4,
-                  fontWeight: FontWeight.w600,
-                ),
+                style: TextStyle(color: purple, fontWeight: FontWeight.w800),
               ),
             ),
           ],

@@ -13,8 +13,13 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     private val accessibilityChannelName =
         "com.wellscreen.app/accessibility_service"
+
     private val restrictionRulesChannelName =
         "com.wellscreen.app/restriction_rules"
+
+    private val appInfoChannelName =
+        "com.wellscreen.app/app_info"
+
     private val restrictionRulesPreferencesName =
         "wellscreen_restriction_rules"
 
@@ -29,10 +34,15 @@ class MainActivity : FlutterActivity() {
                 "isAccessibilityServiceEnabled" -> {
                     result.success(isAccessibilityServiceEnabled())
                 }
+
                 "openAccessibilitySettings" -> {
-                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    startActivity(
+                        Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                    )
+
                     result.success(null)
                 }
+
                 else -> result.notImplemented()
             }
         }
@@ -49,11 +59,13 @@ class MainActivity : FlutterActivity() {
                     } catch (exception: Exception) {
                         result.error(
                             "RULE_SAVE_ERROR",
-                            exception.message ?: "Unable to save restriction rules.",
+                            exception.message
+                                ?: "Unable to save restriction rules.",
                             null
                         )
                     }
                 }
+
                 "saveEmergencyAccessState" -> {
                     try {
                         saveEmergencyAccessState(call.arguments)
@@ -61,194 +73,382 @@ class MainActivity : FlutterActivity() {
                     } catch (exception: Exception) {
                         result.error(
                             "EMERGENCY_ACCESS_SAVE_ERROR",
-                            exception.message ?: "Unable to save emergency access state.",
+                            exception.message
+                                ?: "Unable to save emergency access state.",
                             null
                         )
                     }
                 }
+
                 "saveSmsBackupAlertSettings" -> {
                     try {
-                        saveSmsBackupAlertSettings(call.arguments)
+                        saveSmsBackupAlertSettings(
+                            call.arguments
+                        )
+
                         result.success(true)
                     } catch (exception: Exception) {
                         result.error(
                             "SMS_BACKUP_SAVE_ERROR",
-                            exception.message ?: "Unable to save SMS backup alert settings.",
+                            exception.message
+                                ?: "Unable to save SMS backup alert settings.",
                             null
                         )
                     }
                 }
+
                 "isSmsPermissionGranted" -> {
-                    result.success(isSmsPermissionGranted())
+                    result.success(
+                        isSmsPermissionGranted()
+                    )
                 }
+
                 "requestSmsPermission" -> {
                     requestSmsPermission()
                     result.success(true)
                 }
+
+                else -> result.notImplemented()
+            }
+        }
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            appInfoChannelName
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getApplicationLabel" -> {
+                    val targetPackageName =
+                        call.argument<String>(
+                            "packageName"
+                        )
+
+                    if (targetPackageName.isNullOrBlank()) {
+                        result.error(
+                            "INVALID_PACKAGE",
+                            "Package name is missing.",
+                            null
+                        )
+
+                        return@setMethodCallHandler
+                    }
+
+                    try {
+                        @Suppress("DEPRECATION")
+                        val applicationInfo =
+                            packageManager.getApplicationInfo(
+                                targetPackageName,
+                                0
+                            )
+
+                        val label =
+                            packageManager
+                                .getApplicationLabel(
+                                    applicationInfo
+                                )
+                                .toString()
+                                .trim()
+
+                        result.success(
+                            label.ifEmpty {
+                                targetPackageName
+                            }
+                        )
+                    } catch (
+                        exception:
+                        PackageManager.NameNotFoundException
+                    ) {
+                        result.success(null)
+                    } catch (exception: Exception) {
+                        result.success(null)
+                    }
+                }
+
                 else -> result.notImplemented()
             }
         }
     }
 
-    private fun saveRestrictionRules(arguments: Any?) {
+    private fun saveRestrictionRules(
+        arguments: Any?
+    ) {
         val rules = arguments as? Map<*, *>
-            ?: throw IllegalArgumentException("Restriction rule data is missing.")
+            ?: throw IllegalArgumentException(
+                "Restriction rule data is missing."
+            )
 
-        val preferences = getSharedPreferences(
-            restrictionRulesPreferencesName,
-            MODE_PRIVATE
-        )
+        val preferences =
+            getSharedPreferences(
+                restrictionRulesPreferencesName,
+                MODE_PRIVATE
+            )
 
         preferences.edit()
-            .putInt("limitMinutes", readInt(rules["limitMinutes"], 120))
+            .putInt(
+                "limitMinutes",
+                readInt(
+                    rules["limitMinutes"],
+                    120
+                )
+            )
             .putBoolean(
                 "appBlockingEnabled",
-                readBoolean(rules["appBlocking"], true)
+                readBoolean(
+                    rules["appBlocking"],
+                    true
+                )
             )
             .putBoolean(
                 "focusModeEnabled",
-                readBoolean(rules["focusMode"], false)
+                readBoolean(
+                    rules["focusMode"],
+                    false
+                )
             )
             .putBoolean(
                 "cooldownTimerEnabled",
-                readBoolean(rules["cooldownTimer"], true)
+                readBoolean(
+                    rules["cooldownTimer"],
+                    true
+                )
             )
             .putBoolean(
                 "scheduledLockEnabled",
-                readBoolean(rules["scheduledLock"], false)
+                readBoolean(
+                    rules["scheduledLock"],
+                    false
+                )
             )
             .putBoolean(
                 "categoryRestrictionEnabled",
-                readBoolean(rules["categoryRestriction"], true)
+                readBoolean(
+                    rules["categoryRestriction"],
+                    true
+                )
             )
             .putBoolean(
                 "emergencyAccessEnabled",
-                readBoolean(rules["emergencyAccess"], true)
+                readBoolean(
+                    rules["emergencyAccess"],
+                    true
+                )
             )
             .putBoolean(
                 "smsBackupAlertsEnabled",
-                readBoolean(rules["smsBackupAlerts"], false)
+                readBoolean(
+                    rules["smsBackupAlerts"],
+                    false
+                )
             )
             .putString(
                 "guardianPhoneNumber",
-                readString(rules["guardianPhoneNumber"], "")
+                readString(
+                    rules["guardianPhoneNumber"],
+                    ""
+                )
             )
-            .putLong("updatedAtMillis", System.currentTimeMillis())
+            .putLong(
+                "updatedAtMillis",
+                System.currentTimeMillis()
+            )
             .apply()
     }
 
-    private fun saveEmergencyAccessState(arguments: Any?) {
+    private fun saveEmergencyAccessState(
+        arguments: Any?
+    ) {
         val accessData = arguments as? Map<*, *>
-            ?: throw IllegalArgumentException("Emergency access data is missing.")
+            ?: throw IllegalArgumentException(
+                "Emergency access data is missing."
+            )
 
-        val preferences = getSharedPreferences(
-            restrictionRulesPreferencesName,
-            MODE_PRIVATE
-        )
+        val preferences =
+            getSharedPreferences(
+                restrictionRulesPreferencesName,
+                MODE_PRIVATE
+            )
 
         preferences.edit()
             .putBoolean(
                 "emergencyAccessApproved",
-                readBoolean(accessData["emergencyAccessApproved"], false)
+                readBoolean(
+                    accessData[
+                        "emergencyAccessApproved"
+                    ],
+                    false
+                )
             )
             .putLong(
                 "emergencyAccessApprovedUntilMillis",
-                readLong(accessData["emergencyAccessApprovedUntilMillis"], 0L)
+                readLong(
+                    accessData[
+                        "emergencyAccessApprovedUntilMillis"
+                    ],
+                    0L
+                )
             )
-            .putLong("emergencyAccessUpdatedAtMillis", System.currentTimeMillis())
+            .putLong(
+                "emergencyAccessUpdatedAtMillis",
+                System.currentTimeMillis()
+            )
             .apply()
     }
 
-    private fun saveSmsBackupAlertSettings(arguments: Any?) {
+    private fun saveSmsBackupAlertSettings(
+        arguments: Any?
+    ) {
         val smsData = arguments as? Map<*, *>
-            ?: throw IllegalArgumentException("SMS backup alert data is missing.")
+            ?: throw IllegalArgumentException(
+                "SMS backup alert data is missing."
+            )
 
-        val preferences = getSharedPreferences(
-            restrictionRulesPreferencesName,
-            MODE_PRIVATE
-        )
+        val preferences =
+            getSharedPreferences(
+                restrictionRulesPreferencesName,
+                MODE_PRIVATE
+            )
 
         preferences.edit()
             .putBoolean(
                 "smsBackupAlertsEnabled",
-                readBoolean(smsData["smsBackupAlertsEnabled"], false)
+                readBoolean(
+                    smsData["smsBackupAlertsEnabled"],
+                    false
+                )
             )
             .putString(
                 "guardianPhoneNumber",
-                readString(smsData["guardianPhoneNumber"], "")
+                readString(
+                    smsData["guardianPhoneNumber"],
+                    ""
+                )
             )
-            .putLong("smsBackupSettingsUpdatedAtMillis", System.currentTimeMillis())
+            .putLong(
+                "smsBackupSettingsUpdatedAtMillis",
+                System.currentTimeMillis()
+            )
             .apply()
     }
 
     private fun requestSmsPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+        if (
+            Build.VERSION.SDK_INT >=
+            Build.VERSION_CODES.M &&
             !isSmsPermissionGranted()
         ) {
             requestPermissions(
-                arrayOf(Manifest.permission.SEND_SMS),
+                arrayOf(
+                    Manifest.permission.SEND_SMS
+                ),
                 SMS_PERMISSION_REQUEST_CODE
             )
         }
     }
 
     private fun isSmsPermissionGranted(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            checkSelfPermission(Manifest.permission.SEND_SMS) ==
+        return if (
+            Build.VERSION.SDK_INT >=
+            Build.VERSION_CODES.M
+        ) {
+            checkSelfPermission(
+                Manifest.permission.SEND_SMS
+            ) ==
                 PackageManager.PERMISSION_GRANTED
         } else {
             true
         }
     }
 
-    private fun readBoolean(value: Any?, defaultValue: Boolean): Boolean {
+    private fun readBoolean(
+        value: Any?,
+        defaultValue: Boolean
+    ): Boolean {
         return when (value) {
             is Boolean -> value
-            is String -> value.equals("true", ignoreCase = true)
+
+            is String -> value.equals(
+                "true",
+                ignoreCase = true
+            )
+
             else -> defaultValue
         }
     }
 
-    private fun readInt(value: Any?, defaultValue: Int): Int {
+    private fun readInt(
+        value: Any?,
+        defaultValue: Int
+    ): Int {
         return when (value) {
             is Int -> value
+
             is Number -> value.toInt()
-            is String -> value.toIntOrNull() ?: defaultValue
+
+            is String ->
+                value.toIntOrNull()
+                    ?: defaultValue
+
             else -> defaultValue
         }
     }
 
-    private fun readLong(value: Any?, defaultValue: Long): Long {
+    private fun readLong(
+        value: Any?,
+        defaultValue: Long
+    ): Long {
         return when (value) {
             is Long -> value
+
             is Int -> value.toLong()
+
             is Number -> value.toLong()
-            is String -> value.toLongOrNull() ?: defaultValue
+
+            is String ->
+                value.toLongOrNull()
+                    ?: defaultValue
+
             else -> defaultValue
         }
     }
 
-    private fun readString(value: Any?, defaultValue: String): String {
+    private fun readString(
+        value: Any?,
+        defaultValue: String
+    ): String {
         return when (value) {
             is String -> value
             else -> defaultValue
         }
     }
 
-    private fun isAccessibilityServiceEnabled(): Boolean {
+    private fun isAccessibilityServiceEnabled():
+        Boolean {
         val expectedComponentName =
-            "$packageName/${WellScreenAccessibilityService::class.java.name}"
+            "$packageName/" +
+                WellScreenAccessibilityService::
+                class.java.name
 
-        val enabledServicesSetting = Settings.Secure.getString(
-            contentResolver,
-            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-        ) ?: return false
+        val enabledServicesSetting =
+            Settings.Secure.getString(
+                contentResolver,
+                Settings.Secure
+                    .ENABLED_ACCESSIBILITY_SERVICES
+            ) ?: return false
 
-        val colonSplitter = TextUtils.SimpleStringSplitter(':')
-        colonSplitter.setString(enabledServicesSetting)
+        val colonSplitter =
+            TextUtils.SimpleStringSplitter(':')
+
+        colonSplitter.setString(
+            enabledServicesSetting
+        )
 
         while (colonSplitter.hasNext()) {
-            if (colonSplitter.next().equals(expectedComponentName, ignoreCase = true)) {
+            if (
+                colonSplitter.next().equals(
+                    expectedComponentName,
+                    ignoreCase = true
+                )
+            ) {
                 return true
             }
         }
@@ -257,6 +457,7 @@ class MainActivity : FlutterActivity() {
     }
 
     companion object {
-        private const val SMS_PERMISSION_REQUEST_CODE = 9004
+        private const val
+        SMS_PERMISSION_REQUEST_CODE = 9004
     }
 }

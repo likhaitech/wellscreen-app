@@ -1,6 +1,7 @@
 ﻿import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -40,10 +41,17 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   final LocationTrackingService _locationTrackingService =
       LocationTrackingService();
 
+  final Connectivity _connectivity = Connectivity();
+
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+  bool? _lastKnownNetworkAvailable;
+
   bool isPairing = false;
 
   bool isSyncingUsageReport = false;
   String? lastSyncStatusMessage;
+
+  bool _isAutomaticUsageCatchUpRunning = false;
 
   bool? hasUsageAccess;
   bool isCheckingUsageAccess = false;
@@ -70,6 +78,12 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     _checkAccessibilityPermission();
     _checkLocationPermission();
 
+    unawaited(_startConnectivityMonitoring());
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_attemptAutomaticUsageCatchUp());
+    });
+
     unawaited(
       NotificationService.instance.initializeForCurrentUser(
         contextLabel: 'child_home',
@@ -80,6 +94,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _connectivitySubscription?.cancel();
     pairingCodeController.dispose();
     super.dispose();
   }
@@ -90,7 +105,39 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       _checkUsagePermission();
       _checkAccessibilityPermission();
       _checkLocationPermission();
+
+      unawaited(_attemptAutomaticUsageCatchUp());
     }
+  }
+
+  Future<void> _startConnectivityMonitoring() async {
+    _connectivitySubscription = _connectivity.onConnectivityChanged.listen(
+      _handleConnectivityChanged,
+    );
+
+    try {
+      final initialResults = await _connectivity.checkConnectivity();
+      _lastKnownNetworkAvailable = _hasNetworkConnection(initialResults);
+    } catch (_) {
+      // Connectivity monitoring is only a retry trigger.
+      // Startup/resume catch-up still works if this check fails.
+    }
+  }
+
+  void _handleConnectivityChanged(List<ConnectivityResult> results) {
+    final networkAvailable = _hasNetworkConnection(results);
+    final wasNetworkAvailable = _lastKnownNetworkAvailable;
+
+    _lastKnownNetworkAvailable = networkAvailable;
+
+    if (wasNetworkAvailable == false && networkAvailable) {
+      unawaited(_attemptAutomaticUsageCatchUp());
+    }
+  }
+
+  bool _hasNetworkConnection(List<ConnectivityResult> results) {
+    return results.isNotEmpty &&
+        results.any((result) => result != ConnectivityResult.none);
   }
 
   Future<void> _refreshEverything() async {
@@ -373,6 +420,57 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
           isPairing = false;
         });
       }
+    }
+  }
+
+  Future<void> _attemptAutomaticUsageCatchUp() async {
+    if (_isAutomaticUsageCatchUpRunning) {
+      return;
+    }
+
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      return;
+    }
+
+    _isAutomaticUsageCatchUpRunning = true;
+
+    try {
+      final result = await _usageReportSyncService
+          .syncPendingAndCatchUpUsageReports();
+
+      if (!mounted) {
+        return;
+      }
+
+      if (result.syncedCount > 0) {
+        final latestReport = result.syncedReports.last;
+
+        setState(() {
+          lastSyncStatusMessage =
+              'Automatic usage sync completed.\n'
+              '${result.syncedCount} report'
+              '${result.syncedCount == 1 ? '' : 's'} updated.\n'
+              'Latest: ${latestReport.reportDate} - '
+              '${latestReport.report.totalUsageLabel}';
+        });
+      }
+
+      if (result.hasPendingDates) {
+        setState(() {
+          lastSyncStatusMessage =
+              '${lastSyncStatusMessage ?? 'Automatic usage sync attempted.'}\n'
+              '${result.pendingDates.length} report'
+              '${result.pendingDates.length == 1 ? '' : 's'} '
+              'still waiting to sync.';
+        });
+      }
+    } catch (_) {
+      // Being offline is expected. UsageStats keeps recording locally, and
+      // WellScreen will retry when the app starts, resumes, or reconnects.
+    } finally {
+      _isAutomaticUsageCatchUpRunning = false;
     }
   }
 
@@ -2417,8 +2515,20 @@ class _EmergencyAccessRequestSectionState
   final TextEditingController reasonController = TextEditingController();
 
   bool isSubmitting = false;
+  int requestedDurationMinutes = 30;
 
   static const Color purple = Color(0xFF5B2BBF);
+
+  static const List<int> requestDurationOptions = [15, 30, 60];
+
+  String _formatDurationMinutes(int minutes) {
+    if (minutes >= 60 && minutes % 60 == 0) {
+      final hours = minutes ~/ 60;
+      return hours == 1 ? '1 hour' : '$hours hours';
+    }
+
+    return '$minutes minutes';
+  }
 
   @override
   void dispose() {
@@ -2459,6 +2569,7 @@ class _EmergencyAccessRequestSectionState
             'childUserId': user.uid,
             'childEmail': widget.childEmail,
             'reason': reason,
+            'requestedDurationMinutes': requestedDurationMinutes,
             'status': 'pending',
             'requestedAt': FieldValue.serverTimestamp(),
             'updatedAt': FieldValue.serverTimestamp(),
@@ -2472,12 +2583,15 @@ class _EmergencyAccessRequestSectionState
           parentId: widget.parentId!,
           childId: widget.childId,
           title: 'Emergency Access Request',
-          message: reason,
+          message:
+              '$reason\nRequested duration: '
+              '${_formatDurationMinutes(requestedDurationMinutes)}',
           triggerType: 'emergency_access_request',
           priority: 'high',
           extraData: {
             'childUserId': user.uid,
             'childEmail': widget.childEmail,
+            'requestedDurationMinutes': requestedDurationMinutes,
           },
         );
       } catch (_) {
@@ -2561,6 +2675,10 @@ class _EmergencyAccessRequestSectionState
           _ => 'No active request',
         };
 
+        final savedRequestedDuration = data?['requestedDurationMinutes'] is num
+            ? (data!['requestedDurationMinutes'] as num).toInt()
+            : null;
+
         return Card(
           elevation: 1.5,
           shape: RoundedRectangleBorder(
@@ -2591,6 +2709,46 @@ class _EmergencyAccessRequestSectionState
                 ),
 
                 const SizedBox(height: 14),
+
+                DropdownButtonFormField<int>(
+                  initialValue: requestedDurationMinutes,
+                  decoration: InputDecoration(
+                    labelText: 'Requested Duration',
+                    prefixIcon: const Icon(Icons.timer_outlined),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                  items: requestDurationOptions.map((minutes) {
+                    return DropdownMenuItem<int>(
+                      value: minutes,
+                      child: Text(_formatDurationMinutes(minutes)),
+                    );
+                  }).toList(),
+                  onChanged: isSubmitting
+                      ? null
+                      : (value) {
+                          if (value == null) return;
+
+                          setState(() {
+                            requestedDurationMinutes = value;
+                          });
+                        },
+                ),
+
+                if (savedRequestedDuration != null && status == 'pending') ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    'Current request: '
+                    '${_formatDurationMinutes(savedRequestedDuration)}',
+                    style: const TextStyle(
+                      color: Color(0xFF4B5563),
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+
+                const SizedBox(height: 12),
 
                 TextField(
                   controller: reasonController,
@@ -2689,7 +2847,8 @@ class UnreadNotificationBadgeButton extends StatelessWidget {
           .where('recipientUserId', isEqualTo: userId)
           .snapshots(),
       builder: (context, snapshot) {
-        final unreadCount = snapshot.data?.docs.where((doc) {
+        final unreadCount =
+            snapshot.data?.docs.where((doc) {
               return doc.data()['isRead'] != true;
             }).length ??
             0;
@@ -2715,10 +2874,7 @@ class UnreadNotificationBadgeButton extends StatelessWidget {
                     decoration: BoxDecoration(
                       color: Colors.red,
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: Colors.white,
-                        width: 1.5,
-                      ),
+                      border: Border.all(color: Colors.white, width: 1.5),
                     ),
                     child: Text(
                       unreadCount > 99 ? '99+' : '$unreadCount',
@@ -2738,4 +2894,3 @@ class UnreadNotificationBadgeButton extends StatelessWidget {
     );
   }
 }
-

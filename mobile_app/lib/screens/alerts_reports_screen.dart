@@ -1734,12 +1734,127 @@ Future<void> _sendMessageToChild(
   }
 }
 
+String _formatEmergencyDuration(int minutes) {
+  if (minutes >= 60 && minutes % 60 == 0) {
+    final hours = minutes ~/ 60;
+    return hours == 1 ? '1 hour' : '$hours hours';
+  }
+
+  return '$minutes minutes';
+}
+
+Future<int?> _chooseEmergencyApprovalDuration(
+  BuildContext context, {
+  required int requestedMinutes,
+}) async {
+  int selectedMinutes = requestedMinutes.clamp(1, 180);
+
+  return showDialog<int>(
+    context: context,
+    builder: (dialogContext) {
+      return StatefulBuilder(
+        builder: (context, setDialogState) {
+          const options = [5, 10, 15, 30, 60];
+
+          return AlertDialog(
+            title: const Text(
+              'Approve Emergency Access',
+              style: TextStyle(fontWeight: FontWeight.w900),
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Child requested '
+                    '${_formatEmergencyDuration(requestedMinutes)}.',
+                    style: const TextStyle(
+                      color: AlertsReportsScreen.grayText,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  const Text(
+                    'Choose the amount of time to approve:',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: options.map((minutes) {
+                      return ChoiceChip(
+                        label: Text(_formatEmergencyDuration(minutes)),
+                        selected: selectedMinutes == minutes,
+                        onSelected: (_) {
+                          setDialogState(() {
+                            selectedMinutes = minutes;
+                          });
+                        },
+                      );
+                    }).toList(),
+                  ),
+                  const SizedBox(height: 16),
+                  TextFormField(
+                    initialValue: '$selectedMinutes',
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Custom minutes',
+                      helperText: '1 to 180 minutes',
+                      border: OutlineInputBorder(),
+                    ),
+                    onChanged: (value) {
+                      final parsed = int.tryParse(value);
+
+                      if (parsed != null && parsed >= 1 && parsed <= 180) {
+                        setDialogState(() {
+                          selectedMinutes = parsed;
+                        });
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    'Will approve: '
+                    '${_formatEmergencyDuration(selectedMinutes)}',
+                    style: const TextStyle(
+                      color: AlertsReportsScreen.purple,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  Navigator.of(dialogContext).pop(selectedMinutes);
+                },
+                style: FilledButton.styleFrom(
+                  backgroundColor: AlertsReportsScreen.purple,
+                ),
+                child: const Text('Approve'),
+              ),
+            ],
+          );
+        },
+      );
+    },
+  );
+}
+
 Future<void> _sendEmergencyDecisionNotification(
   BuildContext context, {
   required String parentId,
   required String childUserId,
   required String? childId,
   required bool approved,
+  int? approvedDurationMinutes,
 }) async {
   try {
     await NotificationService.instance.createInAppAlert(
@@ -1748,13 +1863,17 @@ Future<void> _sendEmergencyDecisionNotification(
       childId: childId,
       title: approved ? 'Emergency Access Approved' : 'Emergency Access Denied',
       message: approved
-          ? 'Your emergency access request was approved for 15 minutes.'
+          ? 'Your emergency access request was approved for '
+                '${_formatEmergencyDuration(approvedDurationMinutes ?? 15)}.'
           : 'Your emergency access request was denied. Contact your parent if you still need help.',
       triggerType: approved
           ? 'emergency_access_approved'
           : 'emergency_access_denied',
       priority: approved ? 'high' : 'medium',
-      extraData: {'decision': approved ? 'approved' : 'denied'},
+      extraData: {
+        'decision': approved ? 'approved' : 'denied',
+        'approvedDurationMinutes': ?approvedDurationMinutes,
+      },
     );
   } catch (e) {
     if (!context.mounted) {
@@ -2024,6 +2143,17 @@ class EmergencyRequestsReportSection extends StatelessWidget {
                       ? requestedAtValue.toDate()
                       : null;
 
+                  final requestedDurationValue =
+                      data['requestedDurationMinutes'];
+                  final requestedDurationMinutes = requestedDurationValue is num
+                      ? requestedDurationValue.toInt()
+                      : 15;
+
+                  final approvedDurationValue = data['approvedDurationMinutes'];
+                  final approvedDurationMinutes = approvedDurationValue is num
+                      ? approvedDurationValue.toInt()
+                      : null;
+
                   final statusColor = switch (status) {
                     'pending' => Colors.orange,
                     'approved' => Colors.green,
@@ -2088,6 +2218,32 @@ class EmergencyRequestsReportSection extends StatelessWidget {
                         const SizedBox(height: 5),
 
                         Text(
+                          'Requested duration: '
+                          '${_formatEmergencyDuration(requestedDurationMinutes)}',
+                          style: const TextStyle(
+                            color: AlertsReportsScreen.purple,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 12,
+                          ),
+                        ),
+
+                        if (status == 'approved' &&
+                            approvedDurationMinutes != null) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            'Approved duration: '
+                            '${_formatEmergencyDuration(approvedDurationMinutes)}',
+                            style: const TextStyle(
+                              color: Colors.green,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+
+                        const SizedBox(height: 5),
+
+                        Text(
                           requestedAt == null
                               ? 'Request time unavailable'
                               : _formatParentAlertTime(requestedAt),
@@ -2108,6 +2264,8 @@ class EmergencyRequestsReportSection extends StatelessWidget {
                                     await doc.reference.set({
                                       'status': 'denied',
                                       'approvedUntil': FieldValue.delete(),
+                                      'approvedDurationMinutes':
+                                          FieldValue.delete(),
                                       'respondedAt':
                                           FieldValue.serverTimestamp(),
                                       'updatedAt': FieldValue.serverTimestamp(),
@@ -2134,12 +2292,27 @@ class EmergencyRequestsReportSection extends StatelessWidget {
                               Expanded(
                                 child: FilledButton(
                                   onPressed: () async {
+                                    final approvedMinutes =
+                                        await _chooseEmergencyApprovalDuration(
+                                          context,
+                                          requestedMinutes:
+                                              requestedDurationMinutes,
+                                        );
+
+                                    if (approvedMinutes == null) {
+                                      return;
+                                    }
+
                                     final approvedUntil = DateTime.now().add(
-                                      const Duration(minutes: 15),
+                                      Duration(minutes: approvedMinutes),
                                     );
 
                                     await doc.reference.set({
                                       'status': 'approved',
+                                      'approvedDurationMinutes':
+                                          approvedMinutes,
+                                      'approvedAt':
+                                          FieldValue.serverTimestamp(),
                                       'approvedUntil': Timestamp.fromDate(
                                         approvedUntil,
                                       ),
@@ -2158,12 +2331,13 @@ class EmergencyRequestsReportSection extends StatelessWidget {
                                       childUserId: childUserId,
                                       childId: childId,
                                       approved: true,
+                                      approvedDurationMinutes: approvedMinutes,
                                     );
                                   },
                                   style: FilledButton.styleFrom(
                                     backgroundColor: AlertsReportsScreen.purple,
                                   ),
-                                  child: const Text('Approve 15 min'),
+                                  child: const Text('Review & Approve'),
                                 ),
                               ),
                             ],

@@ -15,6 +15,7 @@ import '../services/usage_dashboard_view_model_service.dart';
 import 'alerts_reports_screen.dart';
 import 'device_pairing_screen.dart';
 import 'login_screen.dart';
+import 'parent_location_screen.dart';
 import 'rule_settings_screen.dart';
 import 'usage_summary_screen.dart';
 
@@ -125,7 +126,7 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
   void _openLocation() {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const AlertsReportsScreen()),
+      MaterialPageRoute(builder: (_) => const ParentLocationScreen()),
     );
   }
 
@@ -501,7 +502,6 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                     ),
                   ],
                 ),
-
               ],
             );
           },
@@ -607,10 +607,7 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
 }
 
 class ParentMessageDialog extends StatefulWidget {
-  const ParentMessageDialog({
-    super.key,
-    required this.childName,
-  });
+  const ParentMessageDialog({super.key, required this.childName});
 
   final String childName;
 
@@ -721,6 +718,105 @@ class ParentEmergencyRequestsSection extends StatelessWidget {
 
   final ValueChanged<Map<String, dynamic>> onMessageChild;
 
+  String _formatDurationMinutes(int minutes) {
+    if (minutes >= 60 && minutes % 60 == 0) {
+      final hours = minutes ~/ 60;
+      return hours == 1 ? '1 hour' : '$hours hours';
+    }
+
+    return '$minutes minutes';
+  }
+
+  Future<int?> _chooseApprovalDuration(
+    BuildContext context, {
+    required int requestedMinutes,
+  }) async {
+    int selectedMinutes = requestedMinutes.clamp(1, 180);
+
+    return showDialog<int>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            const options = [5, 10, 15, 30, 60];
+
+            return AlertDialog(
+              title: const Text(
+                'Approve Emergency Access',
+                style: TextStyle(fontWeight: FontWeight.w900),
+              ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Child requested ${_formatDurationMinutes(requestedMinutes)}.',
+                      style: const TextStyle(
+                        color: _grayText,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    const Text(
+                      'Choose how much time you want to approve:',
+                      style: TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: options.map((minutes) {
+                        return ChoiceChip(
+                          label: Text(_formatDurationMinutes(minutes)),
+                          selected: selectedMinutes == minutes,
+                          onSelected: (_) {
+                            setDialogState(() {
+                              selectedMinutes = minutes;
+                            });
+                          },
+                        );
+                      }).toList(),
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      initialValue: '$selectedMinutes',
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'Custom minutes',
+                        helperText: '1 to 180 minutes',
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: (value) {
+                        final parsed = int.tryParse(value);
+                        if (parsed != null && parsed >= 1 && parsed <= 180) {
+                          selectedMinutes = parsed;
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    Navigator.of(dialogContext).pop(selectedMinutes);
+                  },
+                  style: FilledButton.styleFrom(backgroundColor: Colors.green),
+                  child: const Text('Approve'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   Future<void> _respondToRequest({
     required BuildContext context,
     required DocumentSnapshot<Map<String, dynamic>> document,
@@ -747,19 +843,31 @@ class ParentEmergencyRequestsSection extends StatelessWidget {
 
     try {
       if (approve) {
-        final approvedUntil = DateTime.now().add(
-          const Duration(minutes: 15),
+        final requestedMinutesValue = data['requestedDurationMinutes'];
+        final requestedMinutes = requestedMinutesValue is num
+            ? requestedMinutesValue.toInt()
+            : 15;
+
+        final approvedMinutes = await _chooseApprovalDuration(
+          context,
+          requestedMinutes: requestedMinutes,
         );
 
-        await document.reference.set(
-          {
-            'status': 'approved',
-            'approvedAt': FieldValue.serverTimestamp(),
-            'approvedUntil': Timestamp.fromDate(approvedUntil),
-            'updatedAt': FieldValue.serverTimestamp(),
-          },
-          SetOptions(merge: true),
+        if (approvedMinutes == null) {
+          return;
+        }
+
+        final approvedUntil = DateTime.now().add(
+          Duration(minutes: approvedMinutes),
         );
+
+        await document.reference.set({
+          'status': 'approved',
+          'approvedDurationMinutes': approvedMinutes,
+          'approvedAt': FieldValue.serverTimestamp(),
+          'approvedUntil': Timestamp.fromDate(approvedUntil),
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
 
         await NotificationService.instance.createInAppAlert(
           recipientUserId: childUserId,
@@ -767,23 +875,22 @@ class ParentEmergencyRequestsSection extends StatelessWidget {
           childId: childId,
           title: 'Emergency Access Approved',
           message:
-              'Your parent approved temporary emergency access for 15 minutes.',
+              'Your parent approved temporary emergency access for '
+              '${_formatDurationMinutes(approvedMinutes)}.',
           triggerType: 'emergency_access_approved',
           priority: 'high',
           extraData: {
             'childUserId': childUserId,
+            'approvedDurationMinutes': approvedMinutes,
             'approvedUntil': Timestamp.fromDate(approvedUntil),
           },
         );
       } else {
-        await document.reference.set(
-          {
-            'status': 'denied',
-            'deniedAt': FieldValue.serverTimestamp(),
-            'updatedAt': FieldValue.serverTimestamp(),
-          },
-          SetOptions(merge: true),
-        );
+        await document.reference.set({
+          'status': 'denied',
+          'deniedAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
 
         await NotificationService.instance.createInAppAlert(
           recipientUserId: childUserId,
@@ -793,9 +900,7 @@ class ParentEmergencyRequestsSection extends StatelessWidget {
           message: 'Your parent did not approve the emergency access request.',
           triggerType: 'emergency_access_denied',
           priority: 'high',
-          extraData: {
-            'childUserId': childUserId,
-          },
+          extraData: {'childUserId': childUserId},
         );
       }
 
@@ -929,8 +1034,13 @@ class ParentEmergencyRequestsSection extends StatelessWidget {
               final data = doc.data();
               final childLabel =
                   data['childEmail'] as String? ?? 'Child device';
-              final reason =
-                  data['reason'] as String? ?? 'No reason provided.';
+              final reason = data['reason'] as String? ?? 'No reason provided.';
+
+              final requestedDurationValue = data['requestedDurationMinutes'];
+
+              final requestedDurationMinutes = requestedDurationValue is num
+                  ? requestedDurationValue.toInt()
+                  : 15;
 
               return Card(
                 elevation: 1.5,
@@ -938,9 +1048,7 @@ class ParentEmergencyRequestsSection extends StatelessWidget {
                 margin: const EdgeInsets.only(bottom: 12),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(18),
-                  side: BorderSide(
-                    color: Colors.orange.withAlpha(89),
-                  ),
+                  side: BorderSide(color: Colors.orange.withAlpha(89)),
                 ),
                 child: Padding(
                   padding: const EdgeInsets.all(16),
@@ -1002,6 +1110,17 @@ class ParentEmergencyRequestsSection extends StatelessWidget {
                         ),
                       ),
 
+                      const SizedBox(height: 8),
+
+                      Text(
+                        'Requested duration: '
+                        '${_formatDurationMinutes(requestedDurationMinutes)}',
+                        style: const TextStyle(
+                          color: _purple,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+
                       const SizedBox(height: 14),
 
                       Row(
@@ -1017,7 +1136,7 @@ class ParentEmergencyRequestsSection extends StatelessWidget {
                                 backgroundColor: Colors.green,
                               ),
                               icon: const Icon(Icons.check_rounded),
-                              label: const Text('Approve 15 min'),
+                              label: const Text('Review & Approve'),
                             ),
                           ),
                           const SizedBox(width: 8),
@@ -1061,10 +1180,7 @@ class ParentEmergencyRequestsSection extends StatelessWidget {
 }
 
 class _StatusPill extends StatelessWidget {
-  const _StatusPill({
-    required this.label,
-    required this.color,
-  });
+  const _StatusPill({required this.label, required this.color});
 
   final String label;
   final Color color;
@@ -1234,10 +1350,7 @@ class ParentChildDeviceOverview extends StatelessWidget {
                 onPressed: onManageDevices,
                 child: const Text(
                   'Manage',
-                  style: TextStyle(
-                    color: _purple,
-                    fontWeight: FontWeight.w800,
-                  ),
+                  style: TextStyle(color: _purple, fontWeight: FontWeight.w800),
                 ),
               ),
             ),
@@ -1302,9 +1415,7 @@ class ChildDeviceOverviewCard extends StatelessWidget {
       elevation: 1.5,
       shadowColor: Colors.black12,
       margin: const EdgeInsets.only(bottom: 12),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(20),
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -1370,10 +1481,7 @@ class ChildDeviceOverviewCard extends StatelessWidget {
                 IconButton(
                   tooltip: 'Device Details',
                   onPressed: onManageDevices,
-                  icon: const Icon(
-                    Icons.chevron_right_rounded,
-                    color: _purple,
-                  ),
+                  icon: const Icon(Icons.chevron_right_rounded, color: _purple),
                 ),
               ],
             ),
@@ -2314,7 +2422,8 @@ class UnreadNotificationBadgeButton extends StatelessWidget {
           .where('recipientUserId', isEqualTo: userId)
           .snapshots(),
       builder: (context, snapshot) {
-        final unreadCount = snapshot.data?.docs.where((doc) {
+        final unreadCount =
+            snapshot.data?.docs.where((doc) {
               return doc.data()['isRead'] != true;
             }).length ??
             0;
@@ -2340,10 +2449,7 @@ class UnreadNotificationBadgeButton extends StatelessWidget {
                     decoration: BoxDecoration(
                       color: Colors.red,
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: Colors.white,
-                        width: 1.5,
-                      ),
+                      border: Border.all(color: Colors.white, width: 1.5),
                     ),
                     child: Text(
                       unreadCount > 99 ? '99+' : '$unreadCount',
@@ -2363,4 +2469,3 @@ class UnreadNotificationBadgeButton extends StatelessWidget {
     );
   }
 }
-
