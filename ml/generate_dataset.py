@@ -39,7 +39,24 @@ import random
 
 random.seed(42)  # reproducible dataset - re-running this script yields the same data
 
-N_RECORDS = 6000
+# 60,000, not 6,000: raised after diagnosing why High Risk recall was only
+# ~70% on the original 6,000-record dataset. High Risk records are
+# naturally rare (their point rule requires several indicators to fire at
+# once - see score_record() below), so at 6,000 records there were only
+# ~199 High Risk examples total, ~140 of them in the 70% training split -
+# not enough for the forest to learn the pattern reliably. Verified via
+# 5-fold cross-validation (not a single lucky train/test split) before
+# committing to this: the SAME sampling distributions and the SAME Table
+# 6/7 scoring rubric, just generating more records, raised High Risk
+# recall from ~71% (6,000 records, ~199 High Risk) to ~84% (60,000
+# records, ~2,029 High Risk) - and returns had already flattened out by
+# 100,000 records (~84%), so 60,000 was chosen as the point of diminishing
+# returns rather than inflating the dataset further for no real gain. No
+# change to the labeling rule, the feature distributions, or the label
+# noise rate - see ml/README.md's "Model selection" section for the full
+# comparison, including hyperparameter and class-weight variants that were
+# also tried and did NOT beat plain more-data at this label imbalance.
+N_RECORDS = 60000
 
 # Daily limits a parent might realistically configure (minutes). Mirrors
 # Table 5's age-based defaults (60 / 120 / 180 min) plus the app's own

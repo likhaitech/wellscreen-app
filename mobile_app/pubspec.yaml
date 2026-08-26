@@ -52,6 +52,7 @@ flutter:
     - assets/icons/wellscreen_icon.png
     - assets/ml/forest_rules.json
     - assets/site_categories/cleaned_site_categories.csv
+    - assets/site_categories/category_classifier_weights.json
 
 flutter_launcher_icons:
   android: true

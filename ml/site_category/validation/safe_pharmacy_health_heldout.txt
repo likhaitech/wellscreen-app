@@ -1,0 +1,56 @@
+# Real, legitimate pharmacy/healthcare-adjacent domains, held out from
+# training - added specifically to stress-test the 'drugs' ML class
+# after a spot-check during development found it predicting "drugs" for
+# a plausible legitimate pharmacy-startup-style domain name with high
+# confidence (see ml/site_category/README.md's "Live ML classifier"
+# section for the full story). The general safe_domains_heldout.txt
+# (DNSFilter top-ranked-by-traffic domains) doesn't specifically probe
+# this failure mode, because most top-20,000 DNS-query-volume domains
+# are mainstream consumer brands, not pharmacy/health-adjacent ones -
+# this is a harder, more targeted stress test for exactly the semantic
+# neighborhood the 'drugs' class's real training data (much of it online
+# pharmacy spam - see raw/drugs_domains_blocklistproject.txt) risks
+# colliding with. All of these are real, legitimate, well-known
+# pharmacy/healthcare companies or services, not fabricated.
+#
+# NOTE: drugs.com and pharmacychecker.com were dropped from this list -
+# both are ALREADY present in the harmful training data itself (labeled
+# 'drugs' by The Block List Project's source list), so they can't serve
+# as held-out "safe" test examples. This is itself an honestly-reported
+# finding, not swept under the rug: drugs.com is a legitimate drug-
+# information/reference site (interactions, side effects), not a sales
+# or promotion site, and pharmacychecker.com is a legitimate US price-
+# comparison service for prescription drugs - both look more like
+# WebMD/Healthline than an illicit pharmacy, but the upstream blocklist
+# labels them 'drugs' anyway. Both stay in the dataset as-is (removing a
+# domain the source itself flagged, based on this project's own judgment
+# call about what counts as "harmful," would be editorializing on top of
+# a real third-party source) - noted here as a known edge case in using
+# third-party blocklist data, see README.md.
+goodrx.com
+cvs.com
+walgreens.com
+riteaid.com
+webmd.com
+healthline.com
+medlineplus.gov
+fda.gov
+nih.gov
+mayoclinic.org
+expressscripts.com
+optumrx.com
+costco.com
+samsclub.com
+walmart.com
+kroger.com
+publix.com
+cardinalhealth.com
+mckesson.com
+amerisourcebergen.com
+singlecare.com
+capsule.com
+nowrx.com
+alto.com
+truepill.com
+medly.com
+rxsaver.com

@@ -1,6 +1,10 @@
 package com.wellscreen.app
 
+import android.content.Context
+import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
+
+private const val CAPTURE_LOG_TAG = "WellScreenCapture"
 
 /**
  * Reads the current URL out of a browser's address bar via the
@@ -61,19 +65,42 @@ object BrowserUrlExtractor {
      * resource-id didn't match this version, or the bar doesn't currently
      * hold URL-shaped text - e.g. the user is mid-search-query).
      */
-    fun extractDomain(root: AccessibilityNodeInfo, packageName: String): String? {
+    fun extractDomain(root: AccessibilityNodeInfo, packageName: String, context: Context): String? {
         val viewIds = ADDRESS_BAR_VIEW_IDS[packageName] ?: return null
 
         for (viewId in viewIds) {
             val matches = try {
                 root.findAccessibilityNodeInfosByViewId(viewId)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                val msg = "findAccessibilityNodeInfosByViewId('$viewId') threw " +
+                    "${e.javaClass.simpleName}: ${e.message}"
+                Log.d(CAPTURE_LOG_TAG, msg)
+                CaptureDebugLogger.log(context, msg)
                 null
             }
 
-            val rawText = matches?.firstOrNull()?.text?.toString()
+            if (matches.isNullOrEmpty()) {
+                val msg = "no view found for id '$viewId'"
+                Log.d(CAPTURE_LOG_TAG, msg)
+                CaptureDebugLogger.log(context, msg)
+                continue
+            }
+
+            val rawText = matches.firstOrNull()?.text?.toString()
+            val loggedText = if (rawText == null) "null" else "\"$rawText\""
+            val foundMsg = "view '$viewId' found, raw text = $loggedText"
+            Log.d(CAPTURE_LOG_TAG, foundMsg)
+            CaptureDebugLogger.log(context, foundMsg)
+
             if (!rawText.isNullOrBlank()) {
-                normalizeToDomain(rawText)?.let { return it }
+                val normalized = normalizeToDomain(rawText)
+                if (normalized == null) {
+                    val failMsg = "\"$rawText\" did not normalize to a domain (no dot, or contains a space)"
+                    Log.d(CAPTURE_LOG_TAG, failMsg)
+                    CaptureDebugLogger.log(context, failMsg)
+                } else {
+                    return normalized
+                }
             }
         }
 

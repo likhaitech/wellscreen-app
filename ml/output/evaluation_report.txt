@@ -1,7 +1,7 @@
 WellScreen Proposed ML Extension - Random Forest Evaluation
 ============================================================
-Dataset: 6000 simulated records (see generate_dataset.py)
-Split: 70% train (4200) / 30% test (1800), stratified
+Dataset: 60000 simulated records (see generate_dataset.py)
+Split: 70% train (42000) / 30% test (18000), stratified
 Model: RandomForestClassifier, n_estimators=60, max_depth=7, class_weight=balanced, random_state=42
 
 Overall accuracy on held-out test set: 0.928
@@ -9,26 +9,26 @@ Overall accuracy on held-out test set: 0.928
 Classification report (precision / recall / F1 per class):
                precision    recall  f1-score   support
 
-     Low Risk      0.983     0.933     0.958      1209
-Moderate Risk      0.835     0.944     0.886       531
-    High Risk      0.792     0.700     0.743        60
+     Low Risk      0.979     0.939     0.959     12416
+Moderate Risk      0.842     0.910     0.875      4975
+    High Risk      0.717     0.836     0.772       609
 
-     accuracy                          0.928      1800
-    macro avg      0.870     0.859     0.862      1800
- weighted avg      0.933     0.928     0.929      1800
+     accuracy                          0.928     18000
+    macro avg      0.846     0.895     0.868     18000
+ weighted avg      0.932     0.928     0.929     18000
 
 Confusion matrix (rows = actual, columns = predicted):
                 Low Risk  Moderate Risk      High Risk
-  Low Risk          1128             81              0
-Moderate Risk            19            501             11
- High Risk             0             18             42
+  Low Risk         11661            748              7
+Moderate Risk           252           4529            194
+ High Risk             0            100            509
 
 High Risk recall is the metric to watch first - it's the proportion of actually-High-Risk test records the model correctly flagged. Missing a High Risk case is worse than a false alert (manuscript Ch. 3, Evaluation Metrics).
 
 Feature importances (higher = more influence on the model's decisions):
-  late_night_minutes               0.2663
-  rule_violations_7d               0.2083
-  restricted_app_attempts_today    0.1724
-  longest_session_minutes          0.1559
-  total_screen_time_minutes        0.1404
-  daily_limit_minutes              0.0567
+  late_night_minutes               0.2704
+  rule_violations_7d               0.2557
+  restricted_app_attempts_today    0.1840
+  longest_session_minutes          0.1236
+  total_screen_time_minutes        0.1179
+  daily_limit_minutes              0.0484

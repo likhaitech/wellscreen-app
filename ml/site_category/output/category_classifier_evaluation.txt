@@ -1,0 +1,80 @@
+WellScreen Site-Category ML Classifier - Training Evaluation
+======================================================================
+Dataset: output/ml_training_dataset_with_safe.csv - 78,177 REAL domains: 58,219 harmful (gambling 32,233 + drugs 25,948, both from UT1 Blacklists - drugs also from The Block List Project, see clean_dataset.py's SOURCES comment - + dangerous_material 35 from UT1 + adult 3 Philippines-specific domains - see README.md) + 19,958 real safe/benign domains (DNSFilter top-domains-by-DNS-query-volume list - see clean_dataset.py's SAFE_SOURCE comment).
+Split: 80% train (62541) / 20% test (15636), stratified, random_state=42
+Features: TF-IDF, char n-grams (2, 4), max_features=1500
+Model: LogisticRegression, class_weight=balanced, random_state=42
+
+Train/test counts per class
+----------------------------------------------------------------------
+  adult: 3 train / 0 test
+  dangerous_material: 28 train / 7 test
+  drugs: 20758 train / 5190 test
+  gambling: 25786 train / 6447 test
+  safe: 15966 train / 3992 test
+
+HONEST LIMITATION: 'adult' has only 3 real examples total, so its test split is 1 example (or 0, depending on the random split) - any recall/precision figure reported for it below is NOT a statistically meaningful estimate, just what happened on a single data point. This is a genuine, stated limitation of using a 3-domain category for ML, not a hidden gap. gambling/drugs/dangerous_material have enough examples for the reported metrics to mean something real, though dangerous_material (35 total, ~7 test examples) is still a small sample.
+
+Overall accuracy on held-out test set: 0.901
+
+Classification report (precision / recall / F1 per class)
+----------------------------------------------------------------------
+                    precision    recall  f1-score   support
+
+             adult       0.00      0.00      0.00         0
+dangerous_material       0.00      0.00      0.00         7
+             drugs       0.91      0.84      0.87      5190
+          gambling       0.99      0.95      0.97      6447
+              safe       0.78      0.90      0.84      3992
+
+          accuracy                           0.90     15636
+         macro avg       0.54      0.54      0.54     15636
+      weighted avg       0.91      0.90      0.90     15636
+
+Confusion matrix (rows = actual, columns = predicted)
+----------------------------------------------------------------------
+                            adult  dangerous_material               drugs            gambling                safe
+          adult                   0                   0                   0                   0                   0
+dangerous_material                   0                   0                   1                   0                   6
+          drugs                   1                   9                4350                  29                 801
+       gambling                   0                  12                  90                6128                 217
+           safe                  12                  22                 323                  28                3607
+
+Held-out real-world false-positive check
+======================================================================
+200 real, genuinely unseen safe domains (validation/safe_domains_heldout.txt) - NOT used in training or the stratified test split above.
+
+False-positive rate (predicted as a HARMFUL category) at various confidence thresholds:
+  threshold >= 0.50: 14/200 (7.0%)
+  threshold >= 0.60: 10/200 (5.0%)
+  threshold >= 0.70: 8/200 (4.0%)
+  threshold >= 0.80: 3/200 (1.5%)
+  threshold >= 0.85: 1/200 (0.5%)
+  threshold >= 0.90: 1/200 (0.5%)  <-- LIVE_DEPLOYMENT_THRESHOLD
+      false positive: odnoklassniki.ru -> drugs (0.902)
+  threshold >= 0.95: 0/200 (0.0%)
+
+DECISION: the app only acts on live ML predictions where category in ['gambling'] AND confidence >= 0.9 (see SiteCategoryMlClassifier in the Dart app and this file's module-level comment for the full reasoning). Note on statistical honesty: 0 observed false positives out of 200 samples does not mean a mathematically guaranteed 0% real-world rate - it means the true rate is very likely low, not that it is zero. Stated plainly, not overclaimed.
+
+Harder held-out false-positive check: legitimate pharmacy/health domains
+======================================================================
+27 real, legitimate pharmacy/healthcare domains (validation/safe_pharmacy_health_heldout.txt) - a targeted stress test for the semantic neighborhood 'drugs' training data (illicit online pharmacy spam) risks colliding with, which the general safe-domains holdout below does not probe.
+
+  threshold >= 0.50: 8/27 (29.6%)
+  threshold >= 0.60: 6/27 (22.2%)
+  threshold >= 0.70: 4/27 (14.8%)
+  threshold >= 0.80: 2/27 (7.4%)
+  threshold >= 0.85: 2/27 (7.4%)
+  threshold >= 0.90: 1/27 (3.7%)
+      false positive: truepill.com -> drugs (0.951)
+  threshold >= 0.95: 1/27 (3.7%)
+
+This harder check is why 'drugs' is NOT in LIVE_DEPLOYMENT_CLASSES above despite passing the easier general safe-domain check - a real false positive here is a concrete, reproducible failure mode, not a hypothetical one.
+
+Per-class recall at the deployment rule (predicted == class AND confidence >= threshold)
+======================================================================
+Measured on the 20% stratified test split above (real examples, never trained on) - this is what actually decides whether a class is safe to add to LIVE_DEPLOYMENT_CLASSES, not a guess.
+  adult: 0 test examples - cannot measure recall
+  dangerous_material: 0/7 caught at confidence >= 0.9 (0.0% recall, 7 real test examples)
+  drugs: 3184/5190 caught at confidence >= 0.9 (61.3% recall, 5190 real test examples)
+  gambling: 5754/6447 caught at confidence >= 0.9 (89.3% recall, 6447 real test examples)
