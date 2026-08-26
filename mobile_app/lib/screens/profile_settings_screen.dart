@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../theme/app_theme.dart';
 import 'login_screen.dart';
 
 class ProfileSettingsScreen extends StatefulWidget {
@@ -12,17 +13,17 @@ class ProfileSettingsScreen extends StatefulWidget {
 }
 
 class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
-  static const Color purple = Color(0xFF5B2BBF);
-  static const Color deepPurple = Color(0xFF3F1E8A);
-  static const Color teal = Color(0xFF57C49B);
-  static const Color darkText = Color(0xFF111827);
-  static const Color grayText = Color(0xFF4B5563);
-  static const Color pageBg = Color(0xFFF3F4F6);
-  static const Color softPurple = Color(0xFFF4F0FF);
-  static const Color softGreen = Color(0xFFEAFBF0);
-  static const Color softOrange = Color(0xFFFFF4E5);
+  static const Color purple = AppColors.primary;
+  static const Color deepPurple = AppColors.primaryDark;
+  static const Color teal = AppColors.accent;
+  static const Color darkText = AppColors.textPrimary;
+  static const Color grayText = AppColors.textSecondary;
+  static const Color pageBg = AppColors.background;
+  static const Color softPurple = AppColors.primaryLight;
+  static const Color softGreen = AppColors.successBg;
+  static const Color softOrange = AppColors.warningBg;
   static const Color softRed = Color(0xFFFFEFEF);
-  static const Color softBlue = Color(0xFFEFF6FF);
+  static const Color softBlue = AppColors.infoBg;
 
   final fullNameController = TextEditingController();
   final profilePhotoUrlController = TextEditingController();
@@ -326,7 +327,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
               : (data['relationship'] ?? 'Not added').toString();
 
           final roleLabel = role == 'parent'
-              ? 'Parent / Guardian'
+              ? 'Guardian'
               : role == 'child'
               ? 'Student Account'
               : 'User Account';
@@ -440,7 +441,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
         borderRadius: BorderRadius.circular(28),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x225B2BBF),
+            color: Color(0x222557A7),
             blurRadius: 16,
             offset: Offset(0, 8),
           ),
@@ -489,7 +490,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
             email,
             textAlign: TextAlign.center,
             style: const TextStyle(
-              color: Color(0xFFE9DDFF),
+              color: AppColors.primaryLight,
               fontWeight: FontWeight.w800,
             ),
           ),

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../theme/app_theme.dart';
+
 class WellScreenNavItem {
   const WellScreenNavItem({required this.icon, required this.label});
 
@@ -19,8 +21,6 @@ class WellScreenBottomNav extends StatelessWidget {
   final List<WellScreenNavItem> items;
   final ValueChanged<int> onTap;
 
-  static const Color purple = Color(0xFF5B2BBF);
-  static const Color darkText = Color(0xFF111827);
   static const Color navBackground = Color(0xFFD1D5DB);
 
   @override
@@ -65,7 +65,9 @@ class WellScreenBottomNav extends StatelessWidget {
                       children: [
                         Icon(
                           item.icon,
-                          color: selected ? purple : darkText,
+                          color: selected
+                              ? AppColors.primary
+                              : AppColors.textPrimary,
                           size: 27,
                         ),
                         const SizedBox(height: 2),
@@ -74,7 +76,9 @@ class WellScreenBottomNav extends StatelessWidget {
                           child: Text(
                             item.label,
                             style: TextStyle(
-                              color: selected ? purple : darkText,
+                              color: selected
+                              ? AppColors.primary
+                              : AppColors.textPrimary,
                               fontSize: 12,
                               fontWeight: FontWeight.w900,
                             ),

@@ -4,6 +4,7 @@ import '../../models/app_rule.dart';
 import '../../models/installed_app_info.dart';
 import '../../services/android_app_service.dart';
 import '../../services/app_rules_service.dart';
+import '../../theme/app_theme.dart';
 
 class RulesScreen extends StatefulWidget {
   const RulesScreen({super.key});
@@ -149,11 +150,11 @@ class _RulesScreenState extends State<RulesScreen> {
     }).toList();
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF8F4FB),
+      backgroundColor: AppColors.background,
       appBar: AppBar(
         title: const Text('Rules'),
-        backgroundColor: const Color(0xFFF8F4FB),
-        surfaceTintColor: const Color(0xFFF8F4FB),
+        backgroundColor: AppColors.background,
+        surfaceTintColor: AppColors.background,
         actions: [
           IconButton(
             tooltip: 'Refresh',
@@ -206,7 +207,7 @@ class _RulesScreenState extends State<RulesScreen> {
                 enabledBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(14),
                   borderSide: const BorderSide(
-                    color: Color(0xFF9CA3AF),
+                    color: AppColors.textSecondary,
                   ),
                 ),
               ),
@@ -269,7 +270,7 @@ class _PermissionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Card(
-      color: const Color(0xFFF6EFFA),
+      color: AppColors.primaryLight,
       margin: const EdgeInsets.fromLTRB(14, 14, 14, 10),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(18),
@@ -284,7 +285,7 @@ class _PermissionCard extends StatelessWidget {
               style: TextStyle(
                 fontWeight: FontWeight.w900,
                 fontSize: 18,
-                color: Color(0xFF1F2937),
+                color: AppColors.textPrimary,
               ),
             ),
             const SizedBox(height: 8),
@@ -295,7 +296,7 @@ class _PermissionCard extends StatelessWidget {
                     label: 'Monitored',
                     count: monitoredCount,
                     icon: Icons.visibility_rounded,
-                    color: Color(0xFF2563EB),
+                    color: AppColors.info,
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -304,7 +305,7 @@ class _PermissionCard extends StatelessWidget {
                     label: 'Restricted',
                     count: restrictedCount,
                     icon: Icons.block_rounded,
-                    color: Color(0xFFDC2626),
+                    color: AppColors.danger,
                   ),
                 ),
               ],
@@ -315,7 +316,7 @@ class _PermissionCard extends StatelessWidget {
               style: TextStyle(
                 fontSize: 14,
                 height: 1.35,
-                color: Color(0xFF1F2937),
+                color: AppColors.textPrimary,
               ),
             ),
             const SizedBox(height: 16),
@@ -429,20 +430,20 @@ class _ActiveRulesCard extends StatelessWidget {
         childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         leading: const Icon(
           Icons.rule_folder_rounded,
-          color: Color(0xFF5B2BBF),
+          color: AppColors.primary,
         ),
         title: const Text(
           'Active App Rules',
           style: TextStyle(
             fontWeight: FontWeight.w900,
-            color: Color(0xFF111827),
+            color: AppColors.textPrimary,
           ),
         ),
         subtitle: Text(
           hasRules
               ? 'View monitored and restricted apps'
               : 'No apps selected yet',
-          style: const TextStyle(color: Color(0xFF4B5563)),
+          style: const TextStyle(color: AppColors.textSecondary),
         ),
         children: [
           if (!hasRules)
@@ -450,14 +451,14 @@ class _ActiveRulesCard extends StatelessWidget {
               alignment: Alignment.centerLeft,
               child: Text(
                 'Turn on Monitor or Restrict below to add app rules.',
-                style: TextStyle(color: Color(0xFF4B5563)),
+                style: TextStyle(color: AppColors.textSecondary),
               ),
             ),
           if (monitoredRules.isNotEmpty) ...[
             _RuleGroup(
               title: 'Monitored Apps',
               icon: Icons.visibility_rounded,
-              color: Color(0xFF2563EB),
+              color: AppColors.info,
               rules: monitoredRules,
             ),
             const SizedBox(height: 12),
@@ -466,7 +467,7 @@ class _ActiveRulesCard extends StatelessWidget {
             _RuleGroup(
               title: 'Restricted Apps',
               icon: Icons.block_rounded,
-              color: Color(0xFFDC2626),
+              color: AppColors.danger,
               rules: restrictedRules,
             ),
         ],
@@ -563,11 +564,11 @@ class _AppRuleRow extends StatelessWidget {
         children: [
           CircleAvatar(
             radius: 24,
-            backgroundColor: const Color(0xFFE9D5FF),
+            backgroundColor: AppColors.primaryLight,
             child: Text(
               app.appName.isNotEmpty ? app.appName[0].toUpperCase() : '?',
               style: const TextStyle(
-                color: Color(0xFF5B2BBF),
+                color: AppColors.primary,
                 fontWeight: FontWeight.w900,
               ),
             ),
@@ -584,7 +585,7 @@ class _AppRuleRow extends StatelessWidget {
                   style: const TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.w800,
-                    color: Color(0xFF111827),
+                    color: AppColors.textPrimary,
                   ),
                 ),
                 const SizedBox(height: 4),
@@ -594,7 +595,7 @@ class _AppRuleRow extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     fontSize: 14,
-                    color: Color(0xFF4B5563),
+                    color: AppColors.textSecondary,
                   ),
                 ),
               ],
@@ -642,7 +643,7 @@ class _CompactRuleSwitch extends StatelessWidget {
             style: const TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w700,
-              color: Color(0xFF374151),
+              color: AppColors.textSecondary,
             ),
           ),
           const SizedBox(height: 2),

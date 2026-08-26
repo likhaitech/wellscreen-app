@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../theme/app_theme.dart';
+
 class GpsMapScreen extends StatelessWidget {
   const GpsMapScreen({
     super.key,
@@ -11,12 +13,12 @@ class GpsMapScreen extends StatelessWidget {
     required this.updatedAt,
   });
 
-  static const Color purple = Color(0xFF5B2BBF);
-  static const Color deepPurple = Color(0xFF3F1E8A);
-  static const Color teal = Color(0xFF57C49B);
-  static const Color darkText = Color(0xFF111827);
-  static const Color grayText = Color(0xFF4B5563);
-  static const Color pageBg = Color(0xFFF3F4F6);
+  static const Color purple = AppColors.primary;
+  static const Color deepPurple = AppColors.primaryDark;
+  static const Color teal = AppColors.accent;
+  static const Color darkText = AppColors.textPrimary;
+  static const Color grayText = AppColors.textSecondary;
+  static const Color pageBg = AppColors.background;
 
   final double latitude;
   final double longitude;
@@ -181,7 +183,7 @@ class GpsMapScreen extends StatelessWidget {
         children: [
           CircleAvatar(
             radius: 26,
-            backgroundColor: const Color(0xFFF4F0FF),
+            backgroundColor: AppColors.primaryLight,
             child: Icon(icon, color: iconColor, size: 30),
           ),
           const SizedBox(width: 14),
@@ -223,7 +225,7 @@ class GpsMapPreview extends StatelessWidget {
     required this.hasLocation,
   });
 
-  static const Color purple = Color(0xFF5B2BBF);
+  static const Color purple = AppColors.primary;
 
   final double latitude;
   final double longitude;

@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../theme/app_theme.dart';
 import 'admin_settings_screen.dart';
 import 'child_home_screen.dart';
 import 'parent_dashboard_screen.dart';
@@ -15,10 +16,10 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  static const Color purple = Color(0xFF5B2BBF);
-  static const Color darkText = Color(0xFF111827);
-  static const Color grayText = Color(0xFF4B5563);
-  static const Color pageBg = Color(0xFFF3F4F6);
+  static const Color purple = AppColors.primary;
+  static const Color darkText = AppColors.textPrimary;
+  static const Color grayText = AppColors.textSecondary;
+  static const Color pageBg = AppColors.background;
 
   final emailController = TextEditingController();
   final passwordController = TextEditingController();

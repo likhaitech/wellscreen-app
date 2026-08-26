@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'firebase_options.dart';
 import 'screens/splash_screen.dart';
 import 'services/push_notification_service.dart';
+import 'theme/app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -29,13 +30,7 @@ class WellScreenApp extends StatelessWidget {
     return MaterialApp(
       title: 'WellScreen',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF5B2BBF),
-        ),
-        scaffoldBackgroundColor: Colors.white,
-        useMaterial3: true,
-      ),
+      theme: AppTheme.light(),
       home: const SplashScreen(),
     );
   }

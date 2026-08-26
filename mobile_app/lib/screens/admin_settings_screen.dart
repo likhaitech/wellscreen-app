@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../services/admin_settings_api_service.dart';
+import '../theme/app_theme.dart';
 import 'admin_logs_screen.dart';
 import 'login_screen.dart';
 
@@ -13,10 +14,10 @@ class AdminSettingsScreen extends StatefulWidget {
 }
 
 class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
-  static const Color purple = Color(0xFF5B2BBF);
-  static const Color darkText = Color(0xFF111827);
-  static const Color grayText = Color(0xFF4B5563);
-  static const Color pageBg = Color(0xFFF3F4F6);
+  static const Color purple = AppColors.primary;
+  static const Color darkText = AppColors.textPrimary;
+  static const Color grayText = AppColors.textSecondary;
+  static const Color pageBg = AppColors.background;
 
   final AdminSettingsApiService _apiService = AdminSettingsApiService();
   final TextEditingController limitController = TextEditingController();
@@ -285,7 +286,7 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
                       Text(
                         'Manage global WellScreen defaults and system features.',
                         style: TextStyle(
-                          color: Color(0xFFE9DDFF),
+                          color: AppColors.primaryLight,
                           height: 1.4,
                           fontWeight: FontWeight.w600,
                         ),
@@ -308,7 +309,7 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
                     child: const Row(
                       children: [
                         CircleAvatar(
-                          backgroundColor: Color(0xFFEDE9FE),
+                          backgroundColor: AppColors.primaryLight,
                           child: Icon(
                             Icons.receipt_long_rounded,
                             color: purple,

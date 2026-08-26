@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../theme/app_theme.dart';
 import 'login_screen.dart';
 
 class DevicePairingScreen extends StatefulWidget {
@@ -15,15 +16,15 @@ class DevicePairingScreen extends StatefulWidget {
 }
 
 class _DevicePairingScreenState extends State<DevicePairingScreen> {
-  static const Color purple = Color(0xFF5B2BBF);
-  static const Color deepPurple = Color(0xFF3F1E8A);
-  static const Color teal = Color(0xFF57C49B);
-  static const Color darkText = Color(0xFF111827);
-  static const Color grayText = Color(0xFF4B5563);
-  static const Color pageBg = Color(0xFFF3F4F6);
-  static const Color softPurple = Color(0xFFF4F0FF);
-  static const Color softGreen = Color(0xFFEAFBF0);
-  static const Color softOrange = Color(0xFFFFF4E5);
+  static const Color purple = AppColors.primary;
+  static const Color deepPurple = AppColors.primaryDark;
+  static const Color teal = AppColors.accent;
+  static const Color darkText = AppColors.textPrimary;
+  static const Color grayText = AppColors.textSecondary;
+  static const Color pageBg = AppColors.background;
+  static const Color softPurple = AppColors.primaryLight;
+  static const Color softGreen = AppColors.successBg;
+  static const Color softOrange = AppColors.warningBg;
 
   final childNameController = TextEditingController();
 
@@ -374,7 +375,7 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
       decoration: BoxDecoration(
         color: softPurple,
         borderRadius: BorderRadius.circular(28),
-        border: Border.all(color: const Color(0x225B2BBF)),
+        border: Border.all(color: const Color(0x222557A7)),
       ),
       child: Column(
         children: [

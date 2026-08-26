@@ -19,9 +19,24 @@ import '../services/site_category_service.dart';
 import '../services/sync_status_service.dart';
 import '../services/usage_dashboard_controller_service.dart';
 import '../services/usage_tracking_service.dart';
+import '../theme/app_theme.dart';
 import '../widgets/wellscreen_bottom_nav.dart';
+import 'capture_debug_screen.dart';
 import 'login_screen.dart';
 import 'profile_settings_screen.dart';
+
+/// Thrown by [_ChildHomeScreenState._getCurrentPositionOrThrow] specifically
+/// when Android's device-wide location services (GPS) are off - as opposed
+/// to a permission problem, which is a separate, differently-handled case.
+/// Its own type (rather than a generic Exception matched by string) lets
+/// both the manual share flow and the periodic auto-share flow react to
+/// this one case distinctly: the manual flow prompts to open Settings, the
+/// silent auto flow only raises the passive banner in _gpsCard() instead of
+/// interrupting whatever the user is doing.
+class LocationServicesDisabledException implements Exception {
+  @override
+  String toString() => 'Location services are turned off on this device.';
+}
 
 class ChildHomeScreen extends StatefulWidget {
   const ChildHomeScreen({super.key});
@@ -32,15 +47,32 @@ class ChildHomeScreen extends StatefulWidget {
 
 class _ChildHomeScreenState extends State<ChildHomeScreen>
     with WidgetsBindingObserver {
-  static const Color purple = Color(0xFF5B2BBF);
-  static const Color deepPurple = Color(0xFF3F1E8A);
-  static const Color teal = Color(0xFF57C49B);
-  static const Color darkText = Color(0xFF111827);
-  static const Color grayText = Color(0xFF4B5563);
-  static const Color pageBg = Color(0xFFF3F4F6);
-  static const Color softGreen = Color(0xFFEAFBF0);
-  static const Color softBlue = Color(0xFFEFF6FF);
+  // Aliased onto the shared AppColors palette (theme/app_theme.dart) - see
+  // the matching comment in parent_dashboard_screen.dart. softRed has no
+  // AppColors equivalent for "red but softer than dangerBg", so it stays a
+  // local literal for now (used in exactly one place - the SMS failure
+  // banner below).
+  static const Color purple = AppColors.primary;
+  static const Color deepPurple = AppColors.primaryDark;
+  static const Color teal = AppColors.accent;
+  static const Color darkText = AppColors.textPrimary;
+  static const Color grayText = AppColors.textSecondary;
+  static const Color pageBg = AppColors.background;
+  static const Color softGreen = AppColors.successBg;
+  static const Color softBlue = AppColors.infoBg;
   static const Color softRed = Color(0xFFFFEFEF);
+
+  // Used by handleBottomNavTap to scroll to real, already-rendered sections
+  // of this same page instead of the two "Pairing"/"Reports" tabs
+  // previously just showing a dead-end SnackBar. There's no separate
+  // pairing or reports screen on the child side (by design - a child
+  // shouldn't see the parent-facing alert/detection log about their own
+  // browsing), so scrolling to the relevant section already on this page
+  // is the honest fix rather than inventing new screens with nothing real
+  // to show.
+  final ScrollController _scrollController = ScrollController();
+  final GlobalKey _pairingSectionKey = GlobalKey();
+  final GlobalKey _reportsSectionKey = GlobalKey();
 
   final AppRulesService _rulesService = AppRulesService();
   final UsageTrackingService _usageTrackingService = UsageTrackingService();
@@ -90,6 +122,33 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   bool _isOnline = true;
   List<Map<String, dynamic>> _syncLog = [];
 
+  // Automatic periodic GPS sharing (as opposed to the manual "Share GPS"
+  // button, which still exists and still works the same way). This is a
+  // plain Dart Timer.periodic, NOT a native Android background service /
+  // WorkManager job - it only runs while this app's process is alive
+  // (foreground, or backgrounded-but-not-killed by the OS). If Android
+  // kills the process (common on stricter OEM battery managers), periodic
+  // sharing stops until the app is reopened, same as every other in-app
+  // timer this codebase uses. A true kill-proof background tracker would
+  // need a native foreground service with its own persistent notification
+  // - bigger scope, not built here, flagged as real follow-up work rather
+  // than silently pretending this covers the "even when closed" case.
+  static const Duration _locationAutoShareInterval = Duration(minutes: 15);
+  Timer? _locationAutoShareTimer;
+
+  // Latest snapshot of the child's own users/{uid} doc, cached from the
+  // StreamBuilder in build() below so _autoShareLocation() has
+  // pairedParentId/pairedChildProfileId to work with even though a
+  // Timer callback has no BuildContext of its own.
+  Map<String, dynamic>? _cachedUserData;
+
+  // True once an automatic (or manual) GPS attempt has detected that
+  // Android's location services (GPS) are turned off device-wide. Drives
+  // the warning banner in _gpsCard() so this is surfaced passively next
+  // time the user actually looks at the app, instead of a periodic
+  // background timer popping an interruptive dialog with no warning.
+  bool _locationServicesDisabled = false;
+
   @override
   void initState() {
     super.initState();
@@ -99,6 +158,14 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     _refreshSyncStatus();
     _connectivitySubscription =
         _syncStatusService.onlineStatusChanges.listen(_handleConnectivityChange);
+    _locationAutoShareTimer = Timer.periodic(
+      _locationAutoShareInterval,
+      (_) => _autoShareLocation(),
+    );
+    _usageAutoSyncTimer = Timer.periodic(
+      _usageAutoSyncInterval,
+      (_) => _autoSyncUsage(),
+    );
   }
 
   @override
@@ -106,6 +173,9 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     WidgetsBinding.instance.removeObserver(this);
     pairingCodeController.dispose();
     _connectivitySubscription?.cancel();
+    _locationAutoShareTimer?.cancel();
+    _usageAutoSyncTimer?.cancel();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -549,39 +619,15 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     try {
       final position = await _getCurrentPositionOrThrow();
 
-      final firestore = FirebaseFirestore.instance;
-      final userRef = firestore.collection('users').doc(user.uid);
-      final childProfileRef = firestore
-          .collection('child_profiles')
-          .doc(childProfileId);
+      if (mounted && _locationServicesDisabled) {
+        setState(() => _locationServicesDisabled = false);
+      }
 
-      final sharedLocation = {
-        'latitude': position.latitude,
-        'longitude': position.longitude,
-        'accuracyMeters': position.accuracy,
-        'capturedAt': position.timestamp.toIso8601String(),
-      };
-
-      // Location isn't queued/auto-retried like usage data (see
-      // _attemptFirestoreSync) - a stale GPS fix replayed automatically
-      // after reconnecting would show the parent an outdated position
-      // without saying so, which is worse than just failing visibly. It
-      // still gets a timeout instead of hanging forever, though - same
-      // underlying cloud_firestore bug (set()/runTransaction() never
-      // complete offline: firebase/flutterfire#17643) applies here too.
-      await firestore
-          .runTransaction((transaction) async {
-            transaction.set(userRef, {
-              'latestLocation': sharedLocation,
-              'locationUpdatedAt': FieldValue.serverTimestamp(),
-            }, SetOptions(merge: true));
-
-            transaction.set(childProfileRef, {
-              'latestLocation': sharedLocation,
-              'locationUpdatedAt': FieldValue.serverTimestamp(),
-            }, SetOptions(merge: true));
-          })
-          .timeout(const Duration(seconds: 10));
+      await _writeSharedLocation(
+        userUid: user.uid,
+        childProfileId: childProfileId,
+        position: position,
+      );
 
       if (!mounted) return;
 
@@ -597,6 +643,10 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
           childProfileId: childProfileId,
         ),
       );
+    } on LocationServicesDisabledException {
+      if (!mounted) return;
+      setState(() => _locationServicesDisabled = true);
+      _showEnableLocationServicesDialog();
     } on TimeoutException {
       if (!mounted) return;
       showMessage(
@@ -611,6 +661,152 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         setState(() => isSharingLocation = false);
       }
     }
+  }
+
+  /// Silent, periodic counterpart to [shareCurrentLocation], fired every
+  /// [_locationAutoShareInterval] by the Timer.periodic started in
+  /// initState(). Deliberately does NOT show any snackbar on success (would
+  /// be noisy every 15 minutes) and does NOT send the paired parent a
+  /// "New location shared" push notification on every automatic cycle
+  /// (would spam the parent's phone all day) - that notification stays
+  /// exclusive to the manual "Share GPS" button, an explicit user action
+  /// worth telling the parent about. It also never pops a dialog: a
+  /// background timer interrupting whatever screen the user is currently
+  /// on would be bad UX, so on a services-disabled failure it only raises
+  /// the passive _locationServicesDisabled banner (see _gpsCard()) for the
+  /// user to notice and act on next time they open the app. Any other
+  /// failure (no permission, paired but offline, no fix within the
+  /// timeout, not paired yet) is swallowed silently and simply retried on
+  /// the next tick - there is no user-facing error path for a background
+  /// process the user didn't directly trigger.
+  Future<void> _autoShareLocation() async {
+    if (!mounted) return;
+
+    final user = FirebaseAuth.instance.currentUser;
+    final data = _cachedUserData;
+
+    if (user == null || data == null) return;
+
+    final childProfileId = (data['pairedChildProfileId'] ?? '').toString();
+
+    if (childProfileId.isEmpty) return;
+
+    try {
+      final position = await _getCurrentPositionOrThrow();
+
+      if (mounted && _locationServicesDisabled) {
+        setState(() => _locationServicesDisabled = false);
+      }
+
+      await _writeSharedLocation(
+        userUid: user.uid,
+        childProfileId: childProfileId,
+        position: position,
+      );
+    } on LocationServicesDisabledException {
+      if (!mounted) return;
+      setState(() => _locationServicesDisabled = true);
+    } catch (_) {
+      // Silent by design - see doc comment above.
+    }
+  }
+
+  /// Shared Firestore write used by both the manual button
+  /// (shareCurrentLocation) and the periodic background timer
+  /// (_autoShareLocation), so the mergeFields fix (see the comment inside)
+  /// only has to be correct in one place.
+  Future<void> _writeSharedLocation({
+    required String userUid,
+    required String childProfileId,
+    required Position position,
+  }) async {
+    final firestore = FirebaseFirestore.instance;
+    final userRef = firestore.collection('users').doc(userUid);
+    final childProfileRef = firestore
+        .collection('child_profiles')
+        .doc(childProfileId);
+
+    final sharedLocation = {
+      'latitude': position.latitude,
+      'longitude': position.longitude,
+      'accuracyMeters': position.accuracy,
+      'capturedAt': position.timestamp.toIso8601String(),
+    };
+
+    // Location isn't queued/auto-retried like usage data (see
+    // _attemptFirestoreSync) - a stale GPS fix replayed automatically
+    // after reconnecting would show the parent an outdated position
+    // without saying so, which is worse than just failing visibly. It
+    // still gets a timeout instead of hanging forever, though - same
+    // underlying cloud_firestore bug (set()/runTransaction() never
+    // complete offline: firebase/flutterfire#17643) applies here too.
+    // Deliberately NOT SetOptions(merge: true) here. Firestore's plain
+    // merge:true does a RECURSIVE merge on nested map fields - it only
+    // overwrites the keys actually sent (latitude/longitude/etc.) and
+    // silently keeps any other existing keys already inside
+    // latestLocation untouched. That's exactly why a leftover 'label'
+    // field from the old, removed shareDemoLocation() function
+    // ("Mandaue City, Cebu demo location") kept winning over real GPS
+    // coordinates forever, even after a real share succeeded -
+    // locationText() prefers 'label' when present. mergeFields tells
+    // Firestore to fully REPLACE the latestLocation/locationUpdatedAt
+    // fields wholesale (while leaving every other field on the document
+    // alone), so a real share now actually clears any stale label.
+    await firestore
+        .runTransaction((transaction) async {
+          transaction.set(
+            userRef,
+            {
+              'latestLocation': sharedLocation,
+              'locationUpdatedAt': FieldValue.serverTimestamp(),
+            },
+            SetOptions(mergeFields: ['latestLocation', 'locationUpdatedAt']),
+          );
+
+          transaction.set(
+            childProfileRef,
+            {
+              'latestLocation': sharedLocation,
+              'locationUpdatedAt': FieldValue.serverTimestamp(),
+            },
+            SetOptions(mergeFields: ['latestLocation', 'locationUpdatedAt']),
+          );
+        })
+        .timeout(const Duration(seconds: 10));
+  }
+
+  /// Shown only from the manual "Share GPS" flow (the periodic auto-share
+  /// never interrupts the user - see _autoShareLocation's doc comment).
+  /// Offers a direct path into Android's location-services settings via
+  /// Geolocator.openLocationSettings() instead of just telling the user to
+  /// go find the toggle themselves.
+  void _showEnableLocationServicesDialog() {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Turn on location services'),
+          content: const Text(
+            'Location services (GPS) are turned off on this device. '
+            'WellScreen needs them on to share your location with your '
+            'parent.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                Navigator.pop(dialogContext);
+                await Geolocator.openLocationSettings();
+              },
+              child: const Text('Open Settings'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   /// Walks the full geolocator permission/service flow and returns a real
@@ -628,9 +824,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
 
     if (!serviceEnabled) {
-      throw Exception(
-        'Location services are turned off on this device. Enable GPS/location and try again.',
-      );
+      throw LocationServicesDisabledException();
     }
 
     var permission = await Geolocator.checkPermission();
@@ -739,18 +933,36 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   /// dialog). If it isn't granted yet, this opens that settings screen and
   /// asks the user to come back and tap again - didChangeAppLifecycleState
   /// above will also silently refresh the local dashboard when they return.
-  Future<void> syncUsageReport(Map<String, dynamic> data) async {
+  ///
+  /// [silent] is set by [_autoSyncUsage]'s periodic timer below - a
+  /// background sync should never interrupt the user with a SnackBar, and
+  /// absolutely must never spontaneously open the Usage Access settings
+  /// screen out from under them (that's only acceptable as a direct
+  /// response to a manual tap). The guard/error-log/success-message
+  /// behavior for the manual "Sync Usage" button tap is unchanged.
+  Future<void> syncUsageReport(
+    Map<String, dynamic> data, {
+    bool silent = false,
+  }) async {
+    // Guards against the periodic auto-sync timer firing on top of an
+    // already-in-progress sync (manual or auto) - without this, a slow
+    // sync plus a short auto-sync interval could stack overlapping
+    // Firestore writes.
+    if (isSyncingUsage) return;
+
     final user = FirebaseAuth.instance.currentUser;
 
     if (user == null) {
-      showMessage('Please log in again.');
+      if (!silent) showMessage('Please log in again.');
       return;
     }
 
     final childProfileId = (data['pairedChildProfileId'] ?? '').toString();
 
     if (childProfileId.isEmpty) {
-      showMessage('Pair this device first before syncing usage data.');
+      if (!silent) {
+        showMessage('Pair this device first before syncing usage data.');
+      }
       return;
     }
 
@@ -760,6 +972,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       final hasPermission = await _usageTrackingService.hasUsagePermission();
 
       if (!hasPermission) {
+        if (silent) return;
         await _usageTrackingService.openUsageAccessSettings();
         if (!mounted) return;
         showMessage(
@@ -837,20 +1050,38 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       for (final entry in browsingLog) {
         final domain = (entry['domain'] ?? '').toString();
         final timestampMs = entry['timestampMs'];
-        String? category;
+        SiteCategoryMatch? match;
         if (domain.isNotEmpty) {
           try {
-            category = await _siteCategoryService.classify(domain);
+            match = await _siteCategoryService.classify(domain);
           } catch (_) {
             // Best-effort - a classification failure just leaves this one
             // entry uncategorized, it never blocks the real sync.
           }
         }
-        categorizedBrowsingLog.add({...entry, 'category': ?category});
-        if (category != null &&
+        // 'detectionSource' ('lookup' vs 'keyword' vs 'ml') and
+        // 'mlConfidence' let the parent-facing UI show which mechanism
+        // actually caught this one - see alerts_reports_screen.dart's
+        // browsing activity list. A 'lookup' match is exact (the domain is
+        // literally in the real dataset); a 'keyword' match is
+        // AdultKeywordDetector catching a pornography-related substring
+        // (the technique our manuscript describes for that category, see
+        // that class's doc comment); an 'ml' match is the live classifier
+        // generalizing to a domain the dataset has never seen, already
+        // filtered to only the 'gambling' predictions it's actually
+        // reliable at (see SiteCategoryMlClassifier's doc comment for
+        // the measured reasoning behind that restriction, including why
+        // 'drugs' was tested and deliberately held back).
+        categorizedBrowsingLog.add({
+          ...entry,
+          'category': ?match?.category,
+          'detectionSource': ?match?.source,
+          'mlConfidence': ?match?.confidence,
+        });
+        if (match != null &&
             timestampMs is num &&
             timestampMs > lastAlertedMs) {
-          mostRecentHarmfulCategory = category;
+          mostRecentHarmfulCategory = match.category;
           mostRecentHarmfulDomain = domain;
           if (timestampMs > newestAlertedMs) {
             newestAlertedMs = timestampMs.toInt();
@@ -911,7 +1142,9 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       if (!mounted) return;
 
       if (synced) {
-        showMessage('Today\'s usage report synced to the parent dashboard.');
+        if (!silent) {
+          showMessage('Today\'s usage report synced to the parent dashboard.');
+        }
         await _loadUsageDashboard();
         await _refreshSmsAlertStatus();
       }
@@ -957,12 +1190,35 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       }
     } catch (e) {
       if (!mounted) return;
-      showMessage(e.toString().replaceFirst('Exception: ', ''));
+      if (!silent) showMessage(e.toString().replaceFirst('Exception: ', ''));
     } finally {
       if (mounted) {
         setState(() => isSyncingUsage = false);
       }
     }
+  }
+
+  /// Periodic automatic sync - the "why do I have to press Sync Usage
+  /// every time" fix. Same Timer.periodic pattern and same honest
+  /// limitation as [_autoShareLocation]/[_locationAutoShareTimer]: this
+  /// only runs while the app's process is alive (foreground, or
+  /// backgrounded-but-not-yet-killed by the OS), not a true kill-proof
+  /// background service. Deliberately calls the same [syncUsageReport]
+  /// the manual button uses (not a separate code path) so both stay in
+  /// sync with each other by construction - just with [silent] set so it
+  /// never pops a SnackBar or a Settings screen on its own.
+  ///
+  /// 5 minutes, not 15 like location - browsing/category detection is a
+  /// safety-relevant alert, not a passive status update, so a parent
+  /// finding out sooner rather than later matters more here than it does
+  /// for "where is my kid right now."
+  static const Duration _usageAutoSyncInterval = Duration(minutes: 5);
+  Timer? _usageAutoSyncTimer;
+
+  Future<void> _autoSyncUsage() async {
+    final data = _cachedUserData;
+    if (data == null) return;
+    await syncUsageReport(data, silent: true);
   }
 
   Future<void> logout() async {
@@ -984,9 +1240,17 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     }
 
     if (index == 1) {
-      showMessage('Pairing is available on the student dashboard.');
+      final data = _cachedUserData;
+      if (data != null && isConnected(data)) {
+        // Already paired - there's no separate "pairing" destination once
+        // connected, so surface the same connection-status dialog shown
+        // right after pairing succeeds rather than a dead-end message.
+        showConnectedSuccessDialog();
+      } else {
+        _scrollToSection(_pairingSectionKey);
+      }
     } else if (index == 2) {
-      showMessage('Student usage reports will sync here.');
+      _scrollToSection(_reportsSectionKey);
     } else if (index == 3) {
       Navigator.push(
         context,
@@ -1055,6 +1319,18 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  void _scrollToSection(GlobalKey key) {
+    final sectionContext = key.currentContext;
+    if (sectionContext == null) return;
+
+    Scrollable.ensureVisible(
+      sectionContext,
+      duration: const Duration(milliseconds: 400),
+      curve: Curves.easeInOut,
+      alignment: 0.05,
+    );
   }
 
   String formatDate(dynamic value) {
@@ -1198,18 +1474,27 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
             final data = snapshot.data?.data() ?? <String, dynamic>{};
             final connected = isConnected(data);
 
+            // Cached outside of build so _autoShareLocation() (fired by a
+            // Timer.periodic with no widget context of its own) always has
+            // the latest pairedParentId/pairedChildProfileId without
+            // depending on this StreamBuilder being on-screen at the exact
+            // moment the timer fires.
+            _cachedUserData = data;
+
             if (connected) {
               _maybeSyncParentPhoneNumber(data);
             }
 
             return ListView(
+              controller: _scrollController,
               padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
               children: [
                 _topBar(),
                 const SizedBox(height: 18),
                 _studentProfileCard(data, connected),
                 const SizedBox(height: 22),
-                if (!connected) _pairingCard(),
+                if (!connected)
+                  KeyedSubtree(key: _pairingSectionKey, child: _pairingCard()),
                 if (!connected) const SizedBox(height: 22),
                 _screenTimeAndRiskSection(),
                 const SizedBox(height: 18),
@@ -1219,7 +1504,10 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
                 if (connected) const SizedBox(height: 22),
                 if (connected) _activeRulesCard(data),
                 const SizedBox(height: 22),
-                _topAppsSection(),
+                KeyedSubtree(
+                  key: _reportsSectionKey,
+                  child: _topAppsSection(),
+                ),
                 const SizedBox(height: 22),
                 _weeklyTrendSection(),
               ],
@@ -1261,7 +1549,26 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       ),
       child: Row(
         children: [
-          _logoBox(),
+          // Long-press (not a visible button) opens the raw capture debug
+          // log - this screen is rendered on the CHILD's device, and that
+          // log is the child's own monitored browsing/usage data, so it
+          // must not be one visible tap away from the child themselves.
+          // Kept reachable at all (rather than deleted outright) only
+          // because a researcher/parent doing hands-on troubleshooting may
+          // still need it; a plain button here previously made it visible
+          // to the monitored child during ordinary use, which defeats the
+          // point of parental monitoring.
+          GestureDetector(
+            onLongPress: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const CaptureDebugScreen(),
+                ),
+              );
+            },
+            child: _logoBox(),
+          ),
           const SizedBox(width: 14),
           const Expanded(
             child: Text(
@@ -1721,11 +2028,11 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
 
     switch (status) {
       case 'Unhealthy':
-        statusColor = const Color(0xFFDC2626);
+        statusColor = AppColors.danger;
         statusIcon = Icons.warning_rounded;
         break;
       case 'Warning':
-        statusColor = const Color(0xFFD97706);
+        statusColor = AppColors.warning;
         statusIcon = Icons.shield_moon_rounded;
         break;
       default:
@@ -1784,70 +2091,116 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     final updated = locationUpdatedText(data);
 
     return _whiteCard(
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 58,
-            height: 58,
-            decoration: BoxDecoration(
-              color: connected ? softGreen : softRed,
-              borderRadius: BorderRadius.circular(18),
-            ),
-            child: Icon(
-              connected
-                  ? Icons.location_on_rounded
-                  : Icons.location_off_rounded,
-              color: connected ? teal : Colors.redAccent,
-              size: 34,
-            ),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'GPS Location',
-                  style: TextStyle(
-                    color: darkText,
-                    fontWeight: FontWeight.w900,
-                    fontSize: 18,
-                  ),
+          Row(
+            children: [
+              Container(
+                width: 58,
+                height: 58,
+                decoration: BoxDecoration(
+                  color: connected ? softGreen : softRed,
+                  borderRadius: BorderRadius.circular(18),
                 ),
-                const SizedBox(height: 5),
-                Text(
-                  connected ? location : 'Pair device first',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: grayText,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 3),
-                Text(
+                child: Icon(
                   connected
-                      ? 'Updated: $updated'
-                      : 'Location sharing becomes available after pairing.',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: grayText, fontSize: 12),
+                      ? Icons.location_on_rounded
+                      : Icons.location_off_rounded,
+                  color: connected ? teal : Colors.redAccent,
+                  size: 34,
                 ),
-              ],
-            ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'GPS Location',
+                      style: TextStyle(
+                        color: darkText,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 18,
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      connected ? location : 'Pair device first',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: grayText,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      connected
+                          ? 'Updated: $updated'
+                          : 'Location sharing becomes available after pairing.',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: grayText, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                onPressed: connected && !isSharingLocation
+                    ? () => shareCurrentLocation(data)
+                    : null,
+                icon: Icon(
+                  isSharingLocation
+                      ? Icons.sync_rounded
+                      : Icons.my_location_rounded,
+                  color: connected ? purple : grayText,
+                  size: 30,
+                ),
+              ),
+            ],
           ),
-          IconButton(
-            onPressed: connected && !isSharingLocation
-                ? () => shareCurrentLocation(data)
-                : null,
-            icon: Icon(
-              isSharingLocation
-                  ? Icons.sync_rounded
-                  : Icons.my_location_rounded,
-              color: connected ? purple : grayText,
-              size: 30,
+          // Passive nudge set by either the manual "Share GPS" button or
+          // the periodic background auto-share timer detecting Android's
+          // location services are off device-wide - see
+          // _autoShareLocation()'s doc comment for why the background path
+          // never pops an interruptive dialog on its own and relies on this
+          // banner being visible whenever the user next opens the app.
+          if (connected && _locationServicesDisabled) ...[
+            const SizedBox(height: 12),
+            InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: _showEnableLocationServicesDialog,
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppColors.warningBg,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.warning_amber_rounded,
+                      color: AppColors.warning,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text(
+                        'Location services are off - tap to enable GPS.',
+                        style: TextStyle(
+                          color: darkText,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
-          ),
+          ],
         ],
       ),
     );
@@ -1856,8 +2209,8 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   /// Compact real online/offline + last-sync-outcome line shown right under
   /// the Sync Usage button, sourced from SyncStatusService (_isOnline) and
   /// _recordSyncOutcome's local log (_syncLog) - not a decorative always-on
-  /// indicator. Full history with response/recovery times lives in
-  /// AlertsReportsScreen's Synchronization Status card.
+  /// indicator. Full history with response/recovery times lives on
+  /// ReportsScreen's Alerts tab (Synchronization Status card).
   Widget _syncStatusIndicator() {
     final lastOutcome =
         _syncLog.isNotEmpty ? _syncLog.last['outcome']?.toString() : null;
@@ -1867,14 +2220,16 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       label = 'Offline - usage data will sync automatically once '
           'reconnected.';
     } else if (lastOutcome == 'synced') {
-      label = 'Online - last sync succeeded.';
+      label = 'Online - last sync succeeded. Also auto-syncs every '
+          '${_usageAutoSyncInterval.inMinutes} min.';
     } else if (lastOutcome == 'queued_offline' ||
         lastOutcome == 'failed_timeout') {
       label = 'Online - retrying a queued sync from earlier...';
     } else if (lastOutcome != null) {
       label = 'Online - last sync failed. Tap Sync Usage to retry.';
     } else {
-      label = 'Online';
+      label = 'Online - auto-syncs every '
+          '${_usageAutoSyncInterval.inMinutes} min, or tap Sync Usage now.';
     }
 
     return Padding(
@@ -2115,7 +2470,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
                       label: 'Monitored',
                       count: monitoredCount,
                       icon: Icons.visibility_rounded,
-                      color: const Color(0xFF2563EB),
+                      color: AppColors.info,
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -2124,7 +2479,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
                       label: 'Restricted',
                       count: restrictedCount,
                       icon: Icons.block_rounded,
-                      color: const Color(0xFFDC2626),
+                      color: AppColors.danger,
                     ),
                   ),
                 ],
@@ -2134,7 +2489,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
                 _appRuleGroup(
                   title: 'Restricted Apps',
                   rules: restrictedRules,
-                  color: const Color(0xFFDC2626),
+                  color: AppColors.danger,
                   icon: Icons.block_rounded,
                 ),
               if (monitoredOnlyRules.isNotEmpty) const SizedBox(height: 18),
@@ -2142,7 +2497,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
                 _appRuleGroup(
                   title: 'Monitored Apps',
                   rules: monitoredOnlyRules,
-                  color: const Color(0xFF2563EB),
+                  color: AppColors.info,
                   icon: Icons.visibility_rounded,
                 ),
             ],
@@ -2261,9 +2616,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   Widget _appRuleRow(AppRule rule) {
     final name = appTitle(rule);
     final restricted = rule.restrictEnabled;
-    final color = restricted
-        ? const Color(0xFFDC2626)
-        : const Color(0xFF2563EB);
+    final color = restricted ? AppColors.danger : AppColors.info;
 
     final status = restricted
         ? rule.monitorEnabled

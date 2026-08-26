@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../theme/app_theme.dart';
 import 'child_home_screen.dart';
 import 'parent_dashboard_screen.dart';
 
@@ -13,9 +14,9 @@ class RegisterScreen extends StatefulWidget {
 }
 
 class _RegisterScreenState extends State<RegisterScreen> {
-  static const Color purple = Color(0xFF5B2BBF);
-  static const Color darkText = Color(0xFF111827);
-  static const Color grayText = Color(0xFF4B5563);
+  static const Color purple = AppColors.primary;
+  static const Color darkText = AppColors.textPrimary;
+  static const Color grayText = AppColors.textSecondary;
 
   final nameController = TextEditingController();
   final emailController = TextEditingController();
@@ -152,7 +153,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         children: [
           Text(
             isParent
-                ? 'Create Parent / Guardian Account'
+                ? 'Create Guardian Account'
                 : 'Create Child Account',
             style: const TextStyle(
               fontSize: 26,
@@ -223,7 +224,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
             items: const [
               DropdownMenuItem(
                 value: 'parent',
-                child: Text('Parent / Guardian'),
+                child: Text('Guardian'),
               ),
               DropdownMenuItem(value: 'child', child: Text('Child')),
             ],
@@ -238,7 +239,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: const Color(0xFFF4F0FF),
+              color: AppColors.primaryLight,
               borderRadius: BorderRadius.circular(16),
             ),
             child: Text(

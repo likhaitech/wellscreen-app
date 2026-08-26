@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
+import '../theme/app_theme.dart';
 import 'child_home_screen.dart';
 import 'login_screen.dart';
 import 'parent_dashboard_screen.dart';
@@ -15,9 +16,9 @@ class SplashScreen extends StatefulWidget {
 }
 
 class _SplashScreenState extends State<SplashScreen> {
-  static const Color purple = Color(0xFF5B2BBF);
-  static const Color teal = Color(0xFF57C49B);
-  static const Color darkText = Color(0xFF111827);
+  static const Color purple = AppColors.primary;
+  static const Color teal = AppColors.accent;
+  static const Color darkText = AppColors.textPrimary;
 
   @override
   void initState() {

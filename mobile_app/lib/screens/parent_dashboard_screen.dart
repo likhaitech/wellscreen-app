@@ -4,14 +4,14 @@ import 'package:flutter/material.dart';
 
 import '../services/pattern_detection_service.dart';
 import '../services/push_notification_service.dart';
+import '../theme/app_theme.dart';
 import '../widgets/wellscreen_bottom_nav.dart';
-import 'alerts_reports_screen.dart';
 import 'device_pairing_screen.dart';
 import 'gps_map_screen.dart';
 import 'login_screen.dart';
 import 'profile_settings_screen.dart';
+import 'reports_screen.dart';
 import 'rules/rules_screen.dart';
-import 'usage_summary_screen.dart';
 
 class ParentDashboardScreen extends StatefulWidget {
   const ParentDashboardScreen({super.key});
@@ -21,14 +21,18 @@ class ParentDashboardScreen extends StatefulWidget {
 }
 
 class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
-  static const Color purple = Color(0xFF5B2BBF);
-  static const Color deepPurple = Color(0xFF3F1E8A);
-  static const Color teal = Color(0xFF57C49B);
-  static const Color darkText = Color(0xFF111827);
-  static const Color grayText = Color(0xFF4B5563);
-  static const Color pageBg = Color(0xFFF3F4F6);
-  static const Color softGreen = Color(0xFFEAFBF0);
-  static const Color softBlue = Color(0xFFEFF6FF);
+  // Aliased onto the shared AppColors palette (theme/app_theme.dart) rather
+  // than the ad hoc literals this screen used to declare on its own - same
+  // names so the body below didn't need a line-by-line rewrite, but now
+  // every value traces back to the one shared source of truth.
+  static const Color purple = AppColors.primary;
+  static const Color deepPurple = AppColors.primaryDark;
+  static const Color teal = AppColors.accent;
+  static const Color darkText = AppColors.textPrimary;
+  static const Color grayText = AppColors.textSecondary;
+  static const Color pageBg = AppColors.background;
+  static const Color softGreen = AppColors.successBg;
+  static const Color softBlue = AppColors.infoBg;
 
   static const double cebuLatitude = 10.31570;
   static const double cebuLongitude = 123.88540;
@@ -287,10 +291,15 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
         MaterialPageRoute(builder: (_) => const DevicePairingScreen()),
       );
     } else if (index == 2) {
+      // Was UsageSummaryScreen - a screen that showed usage data but not
+      // the browsing-activity/category-detection data a parent actually
+      // needs to review, which lived on a completely different screen
+      // reachable only through the bell icon. ReportsScreen merges both
+      // into the one screen this tab's label ("Reports") actually implies.
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => UsageSummaryScreen(
+          builder: (_) => ReportsScreen(
             childProfileId: _primaryChildId ?? '',
           ),
         ),
@@ -420,11 +429,16 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
           IconButton(
             tooltip: 'Alerts',
             onPressed: () {
+              // Bell is a shortcut into ReportsScreen's Alerts tab now,
+              // not a separate screen - everything report-like (usage,
+              // browsing, location, alerts) lives in one place with a
+              // visible tab selector, reached from either entry point.
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => AlertsReportsScreen(
+                  builder: (_) => ReportsScreen(
                     childProfileId: _primaryChildId ?? '',
+                    initialTab: 3,
                   ),
                 ),
               );
@@ -768,11 +782,11 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
       statusLabel = 'No Data';
       statusIcon = Icons.hourglass_empty_rounded;
     } else if (statusRaw == 'unhealthy') {
-      statusColor = const Color(0xFFDC2626);
+      statusColor = AppColors.danger;
       statusLabel = 'Unhealthy';
       statusIcon = Icons.warning_rounded;
     } else if (statusRaw == 'warning') {
-      statusColor = const Color(0xFFD97706);
+      statusColor = AppColors.warning;
       statusLabel = 'Warning';
       statusIcon = Icons.shield_moon_rounded;
     } else {
@@ -934,7 +948,7 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (_) => UsageSummaryScreen(
+                      builder: (_) => ReportsScreen(
                         childProfileId: _primaryChildId ?? '',
                       ),
                     ),
@@ -1113,24 +1127,15 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     );
   }
 
+  // Delegates to the shared AppCard (theme/app_theme.dart) instead of a
+  // screen-local Container+BoxDecoration - this was the one competing card
+  // style AppCard's doc comment calls out by name. Kept as a thin wrapper
+  // (same name/signature) so none of the ~15 call sites above needed to
+  // change.
   Widget _whiteCard({
     required Widget child,
     EdgeInsets padding = const EdgeInsets.all(18),
   }) {
-    return Container(
-      padding: padding,
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(26),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x10000000),
-            blurRadius: 12,
-            offset: Offset(0, 5),
-          ),
-        ],
-      ),
-      child: child,
-    );
+    return AppCard(padding: padding, child: child);
   }
 }
