@@ -15,9 +15,16 @@ subfolder's note below for the exact path.
 
 ### `site_categories/`
 
-- `cleaned_site_categories.csv` - 32,704 domains labeled by category
-  (gambling, drugs, dangerous_material), cleaned from real UT1 Blacklists
-  data (Universite Toulouse Capitole, CC BY-SA 4.0).
+- `cleaned_site_categories.csv` - 58,219 domains labeled by category
+  (gambling, drugs, dangerous_material, adult), cleaned from real source
+  data. gambling/dangerous_material come from UT1 Blacklists (Universite
+  Toulouse Capitole, CC BY-SA 4.0); drugs combines UT1's list with a
+  second real source, The Block List Project (MIT licensed), added since
+  UT1's own drugs list alone was too small to train a reliable ML
+  classifier; adult is a separate, much smaller (3-domain)
+  Philippines-specific set sourced from real news coverage of the NTC's
+  2017 R.A. 9775 blocking order - see `ml/site_category/README.md` for
+  full sourcing and why each category is the size it is.
 - `cleaning_report.txt` - exact before/after counts: what was removed at
   each cleaning step (IP addresses mixed into the domain list, malformed
   entries, duplicates) and why.
@@ -25,6 +32,6 @@ subfolder's note below for the exact path.
 Produced by `ml/site_category/clean_dataset.py`, run against the raw
 files in `ml/site_category/raw/`. Full methodology, source attribution,
 and honest limitations (imbalanced categories, no self-harm category,
-`adult` category excluded, live URL capture not yet built) are documented
-in `ml/site_category/README.md` - read that before citing this dataset
-anywhere in the manuscript.
+UT1's own 4.6M-domain `adult` category excluded, live URL capture) are
+documented in `ml/site_category/README.md` - read that before citing this
+dataset anywhere in the manuscript.

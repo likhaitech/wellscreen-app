@@ -1,0 +1,20 @@
+# Philippines-specific, NOT from UT1 Blacklists (unlike the other raw/
+# files in this directory). Sourced from real news reporting on the actual
+# NTC-ordered blocking of pornography sites in the Philippines, January
+# 2017, under Republic Act 9775 (Anti-Child Pornography Act).
+#
+# IMPORTANT, stated honestly: this is NOT a comprehensive list. Multiple
+# independent sources explicitly confirm no official, complete list of
+# blocked domains was ever published by the NTC - only these specific
+# domains were individually named in press coverage of the order. Treat
+# this as 3 real, sourced, Philippines-relevant examples, not as a stand-in
+# for UT1's full "adult" category (4.6 million domains, still deliberately
+# excluded from this project - see clean_dataset.py's docstring).
+#
+# Sources (fetched/verified August 2026):
+#   https://www.rappler.com/technology/158369-porn-websites-blocked-philippines/
+#   https://www.esquiremag.ph/life/sex-and-relationships/philippine-porn-ban-a1707-20170118-lfrm
+#   https://filipinotimes.net/news/2017/01/15/ph-blocks-popular-indecent-websites/
+pornhub.com
+xvideos.com
+redtube.com

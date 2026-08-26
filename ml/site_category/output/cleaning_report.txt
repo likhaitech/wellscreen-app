@@ -1,27 +1,39 @@
 WellScreen Site-Category Dataset - Cleaning Report
-Source: UT1 Blacklists (Universite Toulouse Capitole), CC BY-SA 4.0
-Mirror: github.com/olbat/ut1-blacklists, fetched from raw files in raw/
+Sources: UT1 Blacklists (Universite Toulouse Capitole, CC BY-SA 4.0,
+  mirror github.com/olbat/ut1-blacklists) for gambling/drugs/
+  dangerous_material; The Block List Project (github.com/
+  blocklistproject/Lists, MIT) as a second real source for drugs;
+  see README.md and each raw/*.txt file's header for full per-
+  category sourcing.
 
 Per-category cleaning steps and counts
 ============================================================
 
 [gambling]
-  raw lines read:                32247
-  blank/comment lines removed:   0
+  raw lines read:                32310 (combined from 2 sources)
+    - gambling_domains.txt: 32247
+    - gambling_domains_ph_researched.txt: 63
+  blank/comment lines removed:   34
   IP-address entries removed:    14
     example(s): 159.153.253.16, 193.172.39.6, 205.134.167.8
   malformed entries removed:     0
   in-category duplicates removed:0
-  clean, category-unique count:  32233
+  clean, category-unique count:  32262
 
 [drugs]
-  raw lines read:                603
-  blank/comment lines removed:   0
+  raw lines read:                26667 (combined from 2 sources)
+    - drugs_domains.txt: 603
+    - drugs_domains_blocklistproject.txt: 26064
+  blank/comment lines removed:   35
   IP-address entries removed:    167
     example(s): 128.121.123.198, 128.242.103.21, 128.242.103.22
-  malformed entries removed:     0
-  in-category duplicates removed:0
-  clean, category-unique count:  436
+  malformed entries removed:     280
+    example(s): 248047-deutschland-verbraucher-angabe-konto_identity.vorkehrung.tk, 771969-deu-nutzung-sicher-konto_identity.sicherheitsabwehr-pro.cf, 814988-deutschland-verbraucher-sicher-konto_identity.sicherheitsabwehr-pro.cf
+  in-category duplicates removed:230
+  known-legitimate domains removed: 7
+    cesar.umd.edu, chemweb.calpoly.edu, drugs.com, goaskalice.columbia.edu, pharmacychecker.com, prohibition.history.ohio-state.edu, rxlist.com
+    (verified individually against real, named legitimate organizations - see KNOWN_MISLABELED_LEGITIMATE_DOMAINS in this script for the full verification method)
+  clean, category-unique count:  25948
 
 [dangerous_material]
   raw lines read:                35
@@ -31,15 +43,24 @@ Per-category cleaning steps and counts
   in-category duplicates removed:0
   clean, category-unique count:  35
 
+[adult]
+  raw lines read:                20
+  blank/comment lines removed:   17
+  IP-address entries removed:    0
+  malformed entries removed:     0
+  in-category duplicates removed:0
+  clean, category-unique count:  3
+
 Cross-category resolution
 ============================================================
   domains appearing in >1 category file: 0
 
 Final dataset
 ============================================================
-  gambling: 32233 domains
-  drugs: 436 domains
+  gambling: 32262 domains
+  drugs: 25948 domains
   dangerous_material: 35 domains
-  TOTAL raw lines across sources:  32885
-  TOTAL cleaned, deduplicated rows: 32704
-  Rows removed by cleaning: 181 (0.6% of raw input)
+  adult: 3 domains
+  TOTAL raw lines across sources:  59032
+  TOTAL cleaned, deduplicated rows: 58248
+  Rows removed by cleaning: 784 (1.3% of raw input)
