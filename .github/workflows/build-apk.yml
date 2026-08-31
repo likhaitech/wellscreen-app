@@ -1,0 +1,54 @@
+﻿name: Build APK
+
+# Runs flutter analyze and flutter test on every push and pull request
+# against main, so unit test results and static analysis reflect the
+# actual state of the source code at submission time - not a single
+# manual run on one machine. Referenced by the manuscript's Unit Testing
+# section (Chapter III, Testing/Quality Assurance Phase).
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  analyze-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile_app
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Static analysis
+        run: flutter analyze
+
+      - name: Run unit tests
+        run: flutter test
+
+      - name: Build release APK
+        # Signs with the debug key unless android/key.properties is present
+        # (see android/app/build.gradle.kts) - CI has no release keystore,
+        # so this always produces a debug-signed build. That's fine here:
+        # this job verifies the app *builds* and passes tests, it does not
+        # publish a signed release artifact.
+        run: flutter build apk --release
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wellscreen-debug-signed-apk
+          path: mobile_app/build/app/outputs/flutter-apk/*.apk
+          retention-days: 14
