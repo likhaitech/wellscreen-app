@@ -18,16 +18,62 @@ import '../config/app_config.dart';
 /// SmsAlertSender.kt uses for SMS - so this has an honest, measured delivery
 /// success rate instead of a fire-and-forget guess.
 class AlertNotificationClient {
-  AlertNotificationClient()
-    : _dio = Dio(
-        BaseOptions(
-          baseUrl: AppConfig.backendBaseUrl,
-          connectTimeout: const Duration(seconds: 8),
-          receiveTimeout: const Duration(seconds: 8),
-        ),
-      );
+  // All three are injectable so tests can exercise the real
+  // outcome-classification and best-effort-logging logic below without a
+  // real backend, real FirebaseAuth, or real Firestore - each is
+  // optional and defaults to the exact real behavior this class had
+  // before, so the app's real callers are unaffected.
+  //
+  // getIdToken collapses "no authenticated user" and "get the real ID
+  // token" into one seam: returning null means bail out early (matching
+  // the original `user == null` check), matching a real token string
+  // means proceed - callers of notifyParent() can't tell the difference
+  // between "no user" and "user with a token" from the outside anyway,
+  // since both just mean "here is (or isn't) something to send".
+  AlertNotificationClient({
+    Dio? dio,
+    Future<String?> Function()? getIdToken,
+    Future<void> Function(String childProfileId, Map<String, dynamic> logEntry)?
+    logPushAttempt,
+  }) : _dio =
+           dio ??
+           Dio(
+             BaseOptions(
+               baseUrl: AppConfig.backendBaseUrl,
+               connectTimeout: const Duration(seconds: 8),
+               receiveTimeout: const Duration(seconds: 8),
+             ),
+           ),
+       _getIdToken = getIdToken ?? _realGetIdToken,
+       _logPushAttempt = logPushAttempt ?? _realLogPushAttempt;
 
   final Dio _dio;
+  final Future<String?> Function() _getIdToken;
+  final Future<void> Function(String childProfileId, Map<String, dynamic> logEntry)
+  _logPushAttempt;
+
+  static Future<String?> _realGetIdToken() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return null;
+    return user.getIdToken();
+  }
+
+  static Future<void> _realLogPushAttempt(
+    String childProfileId,
+    Map<String, dynamic> logEntry,
+  ) async {
+    await FirebaseFirestore.instance
+        .collection('child_profiles')
+        .doc(childProfileId)
+        .set({
+          'pushAlertLog': FieldValue.arrayUnion([logEntry]),
+        }, SetOptions(merge: true))
+        // cloud_firestore's set() hangs forever offline instead of
+        // throwing (firebase/flutterfire#17643) - this is best-effort
+        // logging, so a timeout here should just be swallowed like any
+        // other failure, not hang the caller.
+        .timeout(const Duration(seconds: 10));
+  }
 
   Future<void> notifyParent({
     required String parentUid,
@@ -37,16 +83,15 @@ class AlertNotificationClient {
     String? childProfileId,
     Map<String, dynamic>? data,
   }) async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null || parentUid.isEmpty) return;
+    if (parentUid.isEmpty) return;
+    final idToken = await _getIdToken();
+    if (idToken == null) return;
 
     final stopwatch = Stopwatch()..start();
     String outcome;
     String? error;
 
     try {
-      final idToken = await user.getIdToken();
-
       final response = await _dio.post(
         '/alerts/notify',
         data: {
@@ -89,25 +134,13 @@ class AlertNotificationClient {
     // they'll still see it next time they open the app.
     if (childProfileId != null && childProfileId.isNotEmpty) {
       try {
-        await FirebaseFirestore.instance
-            .collection('child_profiles')
-            .doc(childProfileId)
-            .set({
-              'pushAlertLog': FieldValue.arrayUnion([
-                {
-                  'alertType': alertType,
-                  'outcome': outcome,
-                  'responseTimeMs': stopwatch.elapsedMilliseconds,
-                  'timestampMs': DateTime.now().millisecondsSinceEpoch,
-                  'error': ?error,
-                },
-              ]),
-            }, SetOptions(merge: true))
-            // cloud_firestore's set() hangs forever offline instead of
-            // throwing (firebase/flutterfire#17643) - this is best-effort
-            // logging, so a timeout here should just be swallowed like any
-            // other failure, not hang the caller.
-            .timeout(const Duration(seconds: 10));
+        await _logPushAttempt(childProfileId, {
+          'alertType': alertType,
+          'outcome': outcome,
+          'responseTimeMs': stopwatch.elapsedMilliseconds,
+          'timestampMs': DateTime.now().millisecondsSinceEpoch,
+          'error': ?error,
+        });
       } catch (_) {
         // Logging failure doesn't matter beyond the push attempt above.
       }

@@ -229,6 +229,25 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
         stream: childProfilesStream(parentUser.uid),
         builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(AppSpacing.lg),
+                child: AppErrorState(
+                  title: 'Could Not Load Devices',
+                  message: 'Something went wrong loading paired '
+                      'devices.\n\n${snapshot.error}',
+                ),
+              ),
+            );
+          }
+
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(
+              child: CircularProgressIndicator(color: AppColors.primary),
+            );
+          }
+
           final childDocs = snapshot.data?.docs ?? [];
 
           return ListView(

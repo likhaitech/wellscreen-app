@@ -4,23 +4,37 @@ import 'package:firebase_auth/firebase_auth.dart';
 import '../config/app_config.dart';
 
 class AdminSettingsApiService {
-  AdminSettingsApiService()
-    : _dio = Dio(
-        BaseOptions(
-          // Was hardcoded to the Android-emulator-only address
-          // 'http://10.0.2.2:8000' - moved to AppConfig.backendBaseUrl so
-          // this and the new push-notification client (see
-          // alert_notification_client.dart) share one place to update once
-          // the backend is actually deployed, instead of two.
-          baseUrl: AppConfig.backendBaseUrl,
-          connectTimeout: const Duration(seconds: 10),
-          receiveTimeout: const Duration(seconds: 10),
-        ),
-      );
+  // Both params are injectable so tests can supply a Dio wired to a fake
+  // interceptor (no real network call) and a canned token function
+  // (no real Firebase Auth / platform channels), without changing
+  // behavior for the app's real callers, who get exactly the same Dio
+  // config and the same real-FirebaseAuth token flow as before - both
+  // params are optional and default to that real behavior.
+  AdminSettingsApiService({Dio? dio, Future<String> Function()? getAdminToken})
+    : _dio =
+          dio ??
+          Dio(
+            BaseOptions(
+              // Was hardcoded to the Android-emulator-only address
+              // 'http://10.0.2.2:8000' - moved to AppConfig.backendBaseUrl so
+              // this and the new push-notification client (see
+              // alert_notification_client.dart) share one place to update once
+              // the backend is actually deployed, instead of two.
+              baseUrl: AppConfig.backendBaseUrl,
+              connectTimeout: const Duration(seconds: 10),
+              receiveTimeout: const Duration(seconds: 10),
+            ),
+          ),
+      _getAdminTokenOverride = getAdminToken;
 
   final Dio _dio;
+  final Future<String> Function()? _getAdminTokenOverride;
 
   Future<String> _getAdminToken() async {
+    if (_getAdminTokenOverride != null) {
+      return _getAdminTokenOverride();
+    }
+
     final user = FirebaseAuth.instance.currentUser;
 
     if (user == null) {

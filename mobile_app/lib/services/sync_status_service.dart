@@ -14,10 +14,29 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 /// offline; a sync attempted while offline would spin the loading indicator
 /// forever with no error and no automatic retry once connectivity returned.
 class SyncStatusService {
-  final Connectivity _connectivity = Connectivity();
+  // Injectable so tests can supply canned connectivity results/events
+  // without touching the real platform connectivity plugin (which talks
+  // to real OS APIs and has no in-memory fake) - same
+  // optional-constructor-param pattern already used elsewhere in this
+  // codebase (see UsageReportService). Both params default to wrapping a
+  // real Connectivity() for every actual caller in the app, so this is
+  // purely additive: no existing call site needs to change. Injecting the
+  // two plain function/stream seams the class actually needs, rather than
+  // a Connectivity instance itself, avoids depending on whether that
+  // plugin class happens to be subclassable/mockable.
+  SyncStatusService({
+    Future<List<ConnectivityResult>> Function()? checkConnectivity,
+    Stream<List<ConnectivityResult>>? connectivityChanges,
+  }) : _checkConnectivity =
+           checkConnectivity ?? (() => Connectivity().checkConnectivity()),
+       _connectivityChanges =
+           connectivityChanges ?? Connectivity().onConnectivityChanged;
+
+  final Future<List<ConnectivityResult>> Function() _checkConnectivity;
+  final Stream<List<ConnectivityResult>> _connectivityChanges;
 
   Future<bool> isOnline() async {
-    final results = await _connectivity.checkConnectivity();
+    final results = await _checkConnectivity();
     return _hasRealConnection(results);
   }
 
@@ -28,9 +47,7 @@ class SyncStatusService {
   Stream<bool> get onlineStatusChanges {
     bool? lastStatus;
 
-    return _connectivity.onConnectivityChanged
-        .map(_hasRealConnection)
-        .where((isOnline) {
+    return _connectivityChanges.map(_hasRealConnection).where((isOnline) {
       if (isOnline == lastStatus) return false;
       lastStatus = isOnline;
       return true;
