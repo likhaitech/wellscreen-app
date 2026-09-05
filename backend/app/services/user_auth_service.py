@@ -28,7 +28,19 @@ def require_user(
     initialize_firebase()
 
     try:
-        return auth.verify_id_token(credentials.credentials)
+        # check_revoked=True: matches require_admin in admin_auth_service.py
+        # - see that file's comment. Needed here too since /alerts/notify is
+        # reachable by any signed-in parent/child account, including ones an
+        # admin just disabled.
+        return auth.verify_id_token(
+            credentials.credentials,
+            check_revoked=True,
+        )
+    except auth.RevokedIdTokenError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This session has been revoked. Please sign in again.",
+        )
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

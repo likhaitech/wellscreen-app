@@ -18,15 +18,9 @@ dependencies:
   cloud_firestore: ^6.6.0
   firebase_messaging: ^16.4.1
 
-  flutter_bloc: ^9.1.1
-  fl_chart: ^1.2.0
-
   app_usage: ^4.1.0
   usage_stats: ^2.0.1
   flutter_local_notifications: ^22.0.1
-
-  hive: ^2.2.3
-  hive_flutter: ^1.1.0
 
   get_it: ^9.2.1
   dio: ^5.9.2

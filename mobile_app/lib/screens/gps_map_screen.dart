@@ -2,9 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../services/location_geocoding_service.dart';
 import '../theme/app_theme.dart';
 
-class GpsMapScreen extends StatelessWidget {
+class GpsMapScreen extends StatefulWidget {
   const GpsMapScreen({
     super.key,
     required this.latitude,
@@ -13,6 +14,16 @@ class GpsMapScreen extends StatelessWidget {
     required this.updatedAt,
   });
 
+  final double latitude;
+  final double longitude;
+  final String label;
+  final String updatedAt;
+
+  @override
+  State<GpsMapScreen> createState() => _GpsMapScreenState();
+}
+
+class _GpsMapScreenState extends State<GpsMapScreen> {
   static const Color purple = AppColors.primary;
   static const Color deepPurple = AppColors.primaryDark;
   static const Color teal = AppColors.accent;
@@ -20,14 +31,62 @@ class GpsMapScreen extends StatelessWidget {
   static const Color grayText = AppColors.textSecondary;
   static const Color pageBg = AppColors.background;
 
-  final double latitude;
-  final double longitude;
-  final String label;
-  final String updatedAt;
+  final LocationGeocodingService _geocodingService = LocationGeocodingService();
+
+  bool _isResolvingAddress = true;
+  String? _resolvedPlaceName;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolveAddress();
+  }
+
+  @override
+  void didUpdateWidget(covariant GpsMapScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Re-resolve if the parent re-pushes this screen for an updated GPS fix
+    // (e.g. after a fresh "Share GPS" sync) rather than showing a stale
+    // address for the new coordinates.
+    if (oldWidget.latitude != widget.latitude ||
+        oldWidget.longitude != widget.longitude) {
+      _resolveAddress();
+    }
+  }
+
+  Future<void> _resolveAddress() async {
+    setState(() {
+      _isResolvingAddress = true;
+      _resolvedPlaceName = null;
+    });
+
+    final placeName = await _geocodingService.reverseGeocode(
+      latitude: widget.latitude,
+      longitude: widget.longitude,
+    );
+
+    if (!mounted) return;
+
+    setState(() {
+      _resolvedPlaceName = placeName;
+      _isResolvingAddress = false;
+    });
+  }
+
+  /// The best available text for "where this pin actually is" - a real
+  /// resolved street/area/city when the reverse-geocode lookup succeeds,
+  /// falling back to whatever label the caller passed in (parent_dashboard_
+  /// screen.dart's openGpsMap() - either the last-known raw coordinate text
+  /// or the "Cebu City, Philippines preview" placeholder) if the lookup
+  /// fails or is still in flight.
+  String get _placeNameText {
+    if (_isResolvingAddress) return 'Locating address...';
+    return _resolvedPlaceName ?? widget.label;
+  }
 
   @override
   Widget build(BuildContext context) {
-    final locationPoint = LatLng(latitude, longitude);
+    final locationPoint = LatLng(widget.latitude, widget.longitude);
 
     return Scaffold(
       backgroundColor: pageBg,
@@ -102,32 +161,93 @@ class GpsMapScreen extends StatelessWidget {
             ),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(28),
-              child: FlutterMap(
-                options: MapOptions(
-                  initialCenter: locationPoint,
-                  initialZoom: 15.5,
-                  minZoom: 5,
-                  maxZoom: 18,
-                ),
+              child: Stack(
                 children: [
-                  TileLayer(
-                    urlTemplate:
-                        'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                    userAgentPackageName: 'com.wellscreen.app',
-                  ),
-                  MarkerLayer(
-                    markers: [
-                      Marker(
-                        point: locationPoint,
-                        width: 72,
-                        height: 72,
-                        child: const Icon(
-                          Icons.location_pin,
-                          color: Colors.redAccent,
-                          size: 60,
-                        ),
+                  FlutterMap(
+                    options: MapOptions(
+                      initialCenter: locationPoint,
+                      initialZoom: 15.5,
+                      minZoom: 5,
+                      maxZoom: 18,
+                    ),
+                    children: [
+                      TileLayer(
+                        urlTemplate:
+                            'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                        userAgentPackageName: 'com.wellscreen.app',
+                      ),
+                      MarkerLayer(
+                        markers: [
+                          Marker(
+                            point: locationPoint,
+                            width: 72,
+                            height: 72,
+                            child: const Icon(
+                              Icons.location_pin,
+                              color: Colors.redAccent,
+                              size: 60,
+                            ),
+                          ),
+                        ],
                       ),
                     ],
+                  ),
+                  // Floating place-name caption over the map itself, so the
+                  // resolved address is visible at a glance without having
+                  // to scroll down to the info cards below.
+                  Positioned(
+                    left: 14,
+                    right: 14,
+                    bottom: 14,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(20),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x22000000),
+                            blurRadius: 10,
+                            offset: Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        children: [
+                          if (_isResolvingAddress)
+                            const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.4,
+                                color: purple,
+                              ),
+                            )
+                          else
+                            const Icon(
+                              Icons.place_rounded,
+                              color: purple,
+                              size: 18,
+                            ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              _placeNameText,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: darkText,
+                                fontWeight: FontWeight.w800,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ],
               ),
@@ -137,22 +257,22 @@ class GpsMapScreen extends StatelessWidget {
           _infoCard(
             icon: Icons.place_rounded,
             iconColor: purple,
-            title: 'Location Label',
-            subtitle: label,
+            title: 'Place Name',
+            subtitle: _placeNameText,
           ),
           _infoCard(
             icon: Icons.my_location_rounded,
             iconColor: teal,
             title: 'Coordinates',
             subtitle:
-                '${latitude.toStringAsFixed(5)}, '
-                '${longitude.toStringAsFixed(5)}',
+                '${widget.latitude.toStringAsFixed(5)}, '
+                '${widget.longitude.toStringAsFixed(5)}',
           ),
           _infoCard(
             icon: Icons.access_time_rounded,
             iconColor: Colors.orange,
             title: 'Last Updated',
-            subtitle: updatedAt,
+            subtitle: widget.updatedAt,
           ),
         ],
       ),

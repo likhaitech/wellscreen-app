@@ -1471,6 +1471,27 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
               .doc(user.uid)
               .snapshots(),
           builder: (context, snapshot) {
+            // Deliberately does NOT block on ConnectionState.waiting the
+            // way reports_screen.dart/parent_dashboard_screen.dart do -
+            // this screen's ongoing background work (auto-location-share
+            // timer, parent-phone-number sync below) depends on
+            // _cachedUserData being kept current every time this builder
+            // runs, so gating the whole subtree on "waiting" would delay
+            // that. A genuine read failure is still surfaced rather than
+            // silently rendering as an empty/unpaired profile.
+            if (snapshot.hasError) {
+              return Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(AppSpacing.lg),
+                  child: AppErrorState(
+                    title: 'Could Not Load Profile',
+                    message: 'Something went wrong loading your '
+                        'profile.\n\n${snapshot.error}',
+                  ),
+                ),
+              );
+            }
+
             final data = snapshot.data?.data() ?? <String, dynamic>{};
             final connected = isConnected(data);
 
@@ -2011,7 +2032,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
                 value: progress,
                 minHeight: 7,
                 color: purple,
-                backgroundColor: const Color(0xFFD1D5DB),
+                backgroundColor: AppColors.track,
               ),
             ),
           ],
@@ -2807,7 +2828,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
                     value: value,
                     minHeight: 5,
                     color: purple,
-                    backgroundColor: const Color(0xFFD1D5DB),
+                    backgroundColor: AppColors.track,
                   ),
                 ),
               ],

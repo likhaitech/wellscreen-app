@@ -155,7 +155,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                       width: 48,
                       height: 5,
                       decoration: BoxDecoration(
-                        color: const Color(0xFFD1D5DB),
+                        color: AppColors.track,
                         borderRadius: BorderRadius.circular(20),
                       ),
                     ),
@@ -307,6 +307,26 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
             .doc(user.uid)
             .snapshots(),
         builder: (context, snapshot) {
+          // Deliberately does NOT block on ConnectionState.waiting the way
+          // other screens' StreamBuilders do below - FirebaseAuth's `user`
+          // already has a real displayName/email/photoURL to show
+          // immediately, so a loading spinner here would just be a flash
+          // before the same content re-renders. A genuine read failure is
+          // still surfaced explicitly rather than silently falling back to
+          // "look like an empty profile."
+          if (snapshot.hasError) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(AppSpacing.lg),
+                child: AppErrorState(
+                  title: 'Could Not Load Profile',
+                  message: 'Something went wrong loading your profile '
+                      'details.\n\n${snapshot.error}',
+                ),
+              ),
+            );
+          }
+
           final data = snapshot.data?.data() ?? <String, dynamic>{};
 
           final fullName =

@@ -21,7 +21,7 @@ class WellScreenBottomNav extends StatelessWidget {
   final List<WellScreenNavItem> items;
   final ValueChanged<int> onTap;
 
-  static const Color navBackground = Color(0xFFD1D5DB);
+  static const Color navBackground = AppColors.track;
 
   @override
   Widget build(BuildContext context) {

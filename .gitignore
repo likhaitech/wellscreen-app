@@ -23,3 +23,7 @@ mobile_app/android/app/google-services.json
 Thumbs.db
 .vscode/
 .idea/
+
+# Local tooling and Claude deliverables - not part of the app
+_rules_verification/
+Claude outputs/
