@@ -19,7 +19,7 @@ import 'package:app/services/sync_status_service.dart';
 /// set()/update() hangs forever offline instead of throwing
 /// (flutterfire#17643), so the app needs its own honest online/offline
 /// signal. These tests cover the two behaviors that actually matter for
-/// that: correctly collapsing a List<ConnectivityResult> (a device can
+/// that: correctly collapsing a `List<ConnectivityResult>` (a device can
 /// have more than one active connection type) down to a single bool, and
 /// the transition-only dedup logic in onlineStatusChanges.
 void main() {

@@ -51,7 +51,7 @@ class UsageTrackingService {
 
   /// The pure part of getTodayUsage(): turns raw per-package foreground
   /// milliseconds into the sorted, capped, human-readable summary list the
-  /// UI actually shows. Deliberately takes a plain Map<String, int> rather
+  /// UI actually shows. Deliberately takes a plain `Map<String, int>` rather
   /// than the native plugin's UsageInfo type, so this can be tested
   /// directly with plain Dart values instead of needing a fake for a
   /// third-party plugin class.

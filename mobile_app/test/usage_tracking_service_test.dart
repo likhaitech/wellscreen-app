@@ -9,7 +9,7 @@ import 'package:app/services/usage_tracking_service.dart';
 /// APIs. Fixed by extracting the actual transformation logic (readable
 /// app-name conversion, dropping zero-usage entries, sorting by usage
 /// descending, capping to the top 10) into summarizeUsage(), which takes
-/// a plain Map<String, int> of package name -> foreground milliseconds -
+/// a plain `Map<String, int>` of package name -> foreground milliseconds -
 /// exactly what's left after getTodayUsage() parses UsageInfo's
 /// totalTimeInForeground string, but with no dependency on the plugin
 /// type itself. getTodayUsage() (the native-plugin-touching part) is
