@@ -38,6 +38,31 @@ jobs:
       - name: Run unit tests
         run: flutter test
 
+      - name: Write Firebase config
+        # google-services.json is gitignored (it's real Firebase project
+        # config, incl. an API key - see .gitignore's "Secrets" section)
+        # and was never committed, so CI has no way to see it on its own.
+        # Without this step, `flutter build apk --release` below fails at
+        # Gradle's :app:processReleaseGoogleServices task with "File
+        # google-services.json is missing" (confirmed - see Build Android
+        # APK run #26). This decodes it from a repo secret instead of
+        # hardcoding it here: add GOOGLE_SERVICES_JSON_BASE64 under
+        # Settings > Secrets and variables > Actions, set to
+        # `base64 -w0 google-services.json` (or `base64 -i
+        # google-services.json` on macOS) run on your real file. Base64,
+        # not the raw JSON, so multiline/quoting in the JSON can't break
+        # the workflow YAML - a GitHub Actions secret value doesn't need
+        # to be a real secret's *format*, just its *content*.
+        # If the secret isn't set yet, this warns and continues rather
+        # than failing here, so analyze/test results above still land -
+        # the release-build step will fail same as before until it's set.
+        run: |
+          if [ -n "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" ]; then
+            echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 -d > android/app/google-services.json
+          else
+            echo "::warning::GOOGLE_SERVICES_JSON_BASE64 secret is not set - the release APK build below will fail at :app:processReleaseGoogleServices. Add it under Settings > Secrets and variables > Actions."
+          fi
+
       - name: Build release APK
         # Signs with the debug key unless android/key.properties is present
         # (see android/app/build.gradle.kts) - CI has no release keystore,
