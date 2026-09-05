@@ -1,0 +1,57 @@
+name: Firestore Rules Tests
+
+# Runs the real Firestore Security Rules tests (firestore_rules_tests/)
+# against a real Firestore emulator on every push/PR touching the rules or
+# their tests, so firestore.rules is verified by actual execution instead
+# of manual read-through. See firestore_rules_tests/README.md for what
+# this covers and why it exists.
+#
+# Why this needs to run here rather than locally in every environment: the
+# Firestore emulator binary is fetched on first run from
+# storage.googleapis.com, which some sandboxed/restricted-network dev
+# environments block outright. GitHub-hosted runners have unrestricted
+# egress, so this workflow is the actual place these tests run for real.
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'firestore.rules'
+      - 'firestore_rules_tests/**'
+      - '.github/workflows/firestore-rules-test.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'firestore.rules'
+      - 'firestore_rules_tests/**'
+      - '.github/workflows/firestore-rules-test.yml'
+  workflow_dispatch: {}
+
+jobs:
+  rules-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firestore_rules_tests
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: firestore_rules_tests/package-lock.json
+
+      - name: Set up JDK (required by the Firestore emulator)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run rules tests against a real Firestore emulator
+        run: npm test
