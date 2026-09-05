@@ -52,7 +52,24 @@
 /// statistical rigor for keyword matching that SiteCategoryMlClassifier's
 /// evaluation provides for gambling.
 class AdultKeywordDetector {
-  static const List<String> _keywords = ['porn', 'xxx', 'sex', 'tube'];
+  // FIX: this list previously had no keyword that actually matches
+  // "xvideos.com" - one of the exact compound-name examples this class's
+  // own doc comment above cites as the reason substring matching was
+  // chosen over word-boundary matching. Caught by
+  // adult_keyword_detector_test.dart's compound-domain test failing in
+  // real CI (Build Android APK #25), not by inspection - the substring
+  // families ('porn', 'xxx', 'sex', 'tube') just didn't happen to cover
+  // this specific, very-high-traffic real site. Adding the site name
+  // itself as its own keyword, same as the others: a specific enough
+  // string that it is not expected to collide with unrelated domains the
+  // way a shorter generic fragment might.
+  static const List<String> _keywords = [
+    'porn',
+    'xxx',
+    'sex',
+    'tube',
+    'xvideos',
+  ];
 
   static const Set<String> _knownSafeDomains = {
     'youtube.com',
