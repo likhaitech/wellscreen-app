@@ -17,7 +17,23 @@ import 'package:app/services/usage_tracking_service.dart';
 /// real device/emulator, and pub.dev is unreachable from this dev
 /// environment's network policy to even confirm UsageInfo's exact
 /// constructor shape, so no test pretends to cover that part.
+///
+/// summarizeUsage() now also calls _getApplicationLabel(), which goes
+/// through a MethodChannel (com.wellscreen.app/app_info) to ask the native
+/// side for the real installed-app label. Reading a MethodChannel requires
+/// Flutter's ServicesBinding to be initialized first (normally done by
+/// runApp() in the real app) - without TestWidgetsFlutterBinding
+/// .ensureInitialized() below, invokeMethod() throws a raw "Binding has
+/// not yet been initialized" error instead of the MissingPluginException
+/// that _getApplicationLabel's catch clause is written to expect, so the
+/// fallback to _makeReadableAppName() never gets a chance to run. Once the
+/// binding is initialized, there's still no mock handler registered for
+/// this channel, so invokeMethod() correctly throws MissingPluginException
+/// and _getApplicationLabel falls back exactly as intended - which is what
+/// these tests below are actually verifying.
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('UsageTrackingService.summarizeUsage', () {
     final service = UsageTrackingService();
 
