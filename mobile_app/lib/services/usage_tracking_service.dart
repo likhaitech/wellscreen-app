@@ -100,9 +100,9 @@ class UsageTrackingService {
   /// than the native plugin's UsageInfo type, so this can be tested
   /// directly with plain Dart values instead of needing a fake for a
   /// third-party plugin class.
-  List<AppUsageSummary> summarizeUsage(
+  Future<List<AppUsageSummary>> summarizeUsage(
     Map<String, int> usageMillisecondsByPackage,
-  ) {
+  ) async {
     final summaries = <AppUsageSummary>[];
 
     for (final entry in usageMillisecondsByPackage.entries) {

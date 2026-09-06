@@ -21,8 +21,8 @@ void main() {
   group('UsageTrackingService.summarizeUsage', () {
     final service = UsageTrackingService();
 
-    test('drops packages with zero or negative usage', () {
-      final result = service.summarizeUsage({
+    test('drops packages with zero or negative usage', () async {
+      final result = await service.summarizeUsage({
         'com.example.zero': 0,
         'com.example.real': 60000,
       });
@@ -31,8 +31,8 @@ void main() {
       expect(result.single.packageName, 'com.example.real');
     });
 
-    test('sorts by usage duration descending', () {
-      final result = service.summarizeUsage({
+    test('sorts by usage duration descending', () async {
+      final result = await service.summarizeUsage({
         'com.example.small': 1000,
         'com.example.big': 500000,
         'com.example.medium': 60000,
@@ -44,12 +44,12 @@ void main() {
       );
     });
 
-    test('caps the result at 10 entries even with more real usage', () {
+    test('caps the result at 10 entries even with more real usage', () async {
       final input = <String, int>{
         for (var i = 0; i < 15; i++) 'com.example.app$i': (15 - i) * 1000,
       };
 
-      final result = service.summarizeUsage(input);
+      final result = await service.summarizeUsage(input);
 
       expect(result, hasLength(10));
       // Confirms the cap keeps the TOP 10 by usage, not just the first 10
@@ -60,34 +60,39 @@ void main() {
 
     test(
       'derives a capitalized display name from the last package-name segment',
-      () {
-        final result = service.summarizeUsage({
+      () async {
+        final result = await service.summarizeUsage({
           'com.google.android.youtube': 60000,
         });
 
-        expect(result.single.displayName, 'Youtube');
+        // main's _makeReadableAppName special-cases this exact package via
+        // its knownPackages map, so this is the properly-capitalized brand
+        // name rather than a mechanically-titlecased path segment.
+        expect(result.single.displayName, 'YouTube');
       },
     );
 
     test(
       'falls back to the raw package name when it has no dot-separated '
       'segments to derive a name from',
-      () {
-        final result = service.summarizeUsage({'singleword': 60000});
+      () async {
+        final result = await service.summarizeUsage({'singleword': 60000});
         expect(result.single.displayName, 'Singleword');
       },
     );
 
-    test('usageDuration reflects the exact input milliseconds', () {
-      final result = service.summarizeUsage({'com.example.app': 123456});
+    test('usageDuration reflects the exact input milliseconds', () async {
+      final result = await service.summarizeUsage({
+        'com.example.app': 123456,
+      });
       expect(
         result.single.usageDuration,
         const Duration(milliseconds: 123456),
       );
     });
 
-    test('an empty map produces an empty summary list', () {
-      expect(service.summarizeUsage({}), isEmpty);
+    test('an empty map produces an empty summary list', () async {
+      expect(await service.summarizeUsage({}), isEmpty);
     });
   });
 }
