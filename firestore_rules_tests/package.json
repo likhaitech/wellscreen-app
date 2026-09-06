@@ -1,0 +1,20 @@
+{
+  "name": "firestore-rules-tests",
+  "version": "1.0.0",
+  "description": "Real Firestore Security Rules tests, run against the actual Firestore emulator (not a mock or static read-through) - see README.md.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "pretest": "cp ../firestore.rules ./firestore.rules",
+    "test": "firebase emulators:exec --project wellscreen-rules-test --only firestore \"vitest run\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.2",
+    "firebase": "^12.18.0",
+    "firebase-tools": "^15.29.0",
+    "vitest": "^5.0.0"
+  }
+}
