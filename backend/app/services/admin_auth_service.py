@@ -22,8 +22,18 @@ def require_admin(
     initialize_firebase()
 
     try:
+        # check_revoked=True: without this, verify_id_token only checks the
+        # JWT's signature/expiry, not whether the account was disabled or
+        # deleted since this token was issued (see user_admin_service.py's
+        # revoke_refresh_tokens() calls, which this checks against).
         decoded_token = auth.verify_id_token(
-            credentials.credentials
+            credentials.credentials,
+            check_revoked=True,
+        )
+    except auth.RevokedIdTokenError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This session has been revoked. Please sign in again.",
         )
     except Exception:
         raise HTTPException(

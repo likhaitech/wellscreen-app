@@ -10,6 +10,7 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import java.util.Calendar
+import org.json.JSONArray
 
 class WellScreenAccessibilityService : AccessibilityService() {
 
@@ -24,6 +25,13 @@ class WellScreenAccessibilityService : AccessibilityService() {
 
     private var lastBlockedPackageName: String? = null
     private var lastBlockedAppTime: Long = 0L
+
+    // Last domain captured per browser package (BrowserUrlExtractor), so
+    // repeated events for the same still-loaded page don't spam
+    // BrowsingLogger with duplicate entries. Separate from
+    // lastDetectedDomain/lastBlockedDomain above, which track the on-screen-
+    // text-based website-category detector, not raw URL capture.
+    private val lastCapturedDomain = mutableMapOf<String, String>()
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) {
@@ -53,6 +61,7 @@ class WellScreenAccessibilityService : AccessibilityService() {
         }
 
         val rootNode = rootInActiveWindow
+        captureBrowserUrlIfNeeded(packageName, rootNode)
         collectVisibleText(rootNode, visibleTexts)
 
         val detectionResult =
@@ -66,6 +75,32 @@ class WellScreenAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {
         // No active interruption handling is needed.
+    }
+
+    /**
+     * Captures the current address-bar domain for supported browsers via
+     * BrowserUrlExtractor and records it to BrowsingLogger, deduped against
+     * the last domain captured for that package so a still-loaded page
+     * doesn't spam the log on every subsequent accessibility event.
+     *
+     * This is separate from the on-screen-text-based website-category
+     * detection below (websiteCategoryDetector) - that classifies harmful
+     * content from visible text for blocking; this just records what
+     * domains were visited, for the parent dashboard.
+     */
+    private fun captureBrowserUrlIfNeeded(packageName: String, rootNode: AccessibilityNodeInfo?) {
+        if (!BrowserUrlExtractor.isKnownBrowser(packageName) || rootNode == null) {
+            return
+        }
+
+        val domain = BrowserUrlExtractor.extractDomain(rootNode, packageName, this) ?: return
+
+        if (lastCapturedDomain[packageName] == domain) {
+            return
+        }
+
+        lastCapturedDomain[packageName] = domain
+        BrowsingLogger.recordVisit(this, packageName, domain)
     }
 
     private fun handleAppEnforcementIfNeeded(packageName: String) {
@@ -134,6 +169,8 @@ class WellScreenAccessibilityService : AccessibilityService() {
         try {
             startActivity(blockIntent)
 
+            RestrictionLogger.recordOutcome(this, packageName, "blocked", currentTime)
+
             Log.d(
                 LOG_TAG,
                 "Blocked app: app=$appName, package=$packageName, " +
@@ -142,7 +179,38 @@ class WellScreenAccessibilityService : AccessibilityService() {
                     "attemptCount=$attemptCount"
             )
         } catch (exception: Exception) {
+            RestrictionLogger.recordOutcome(this, packageName, "failed_exception", currentTime)
             Log.e(LOG_TAG, "Failed to open blocked app screen.", exception)
+        }
+    }
+
+    /**
+     * Parent-configurable restricted-app list, backed by
+     * flutter.restricted_packages_json (written by the per-app rules screen
+     * on the Flutter side). Falls back to the hardcoded restrictedAppPackages
+     * set when the parent has never saved custom rules, using prefs.contains()
+     * to distinguish "never configured" from "configured as an empty list" -
+     * once the parent has saved rules, their list is fully authoritative,
+     * including the ability to un-restrict a previously-hardcoded app.
+     */
+    private fun getRestrictedAppPackages(): Set<String> {
+        val preferences = getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
+
+        if (!preferences.contains("flutter.restricted_packages_json")) {
+            return restrictedAppPackages
+        }
+
+        return try {
+            val raw = preferences.getString("flutter.restricted_packages_json", "[]") ?: "[]"
+            val jsonArray = JSONArray(raw)
+            val result = mutableSetOf<String>()
+            for (index in 0 until jsonArray.length()) {
+                result.add(jsonArray.getString(index))
+            }
+            result
+        } catch (exception: Exception) {
+            Log.e(LOG_TAG, "Failed to parse flutter.restricted_packages_json; falling back to defaults.", exception)
+            restrictedAppPackages
         }
     }
 
@@ -182,7 +250,7 @@ class WellScreenAccessibilityService : AccessibilityService() {
             return BLOCK_REASON_FOCUS_MODE
         }
 
-        if (rules.appBlockingEnabled && restrictedAppPackages.contains(packageName)) {
+        if (rules.appBlockingEnabled && getRestrictedAppPackages().contains(packageName)) {
             return BLOCK_REASON_APP_BLOCKING
         }
 
@@ -210,7 +278,7 @@ class WellScreenAccessibilityService : AccessibilityService() {
     }
 
     private fun isScheduledLockTargetApp(packageName: String): Boolean {
-        return restrictedAppPackages.contains(packageName) ||
+        return getRestrictedAppPackages().contains(packageName) ||
             distractingAppPackages.contains(packageName)
     }
 

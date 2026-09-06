@@ -1,6 +1,8 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="app_name">WellScreen</string>
     <string name="accessibility_service_description">WellScreen uses this service to help guardians monitor and manage screen time on this device.</string>
+    <string name="wellscreen_accessibility_description">WellScreen uses accessibility access to detect when a restricted app is opened and show a restriction screen based on parent rules, and to record which websites are visited in supported browsers (Chrome, Firefox, Samsung Internet, Edge, Opera, DuckDuckGo) so a parent can review browsing activity.</string>
 
     <string name="blocked_website_label">Website Blocked</string>
     <string name="blocked_website_title">Website Blocked</string>
