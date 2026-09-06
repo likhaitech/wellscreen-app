@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../theme/app_theme.dart';
 import 'admin_settings_screen.dart';
 import 'child_home_screen.dart';
 import 'parent_dashboard_screen.dart';
@@ -15,8 +16,10 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  static const Color purple = Color(0xFF5B2BBF);
-  static const Color grayText = Color(0xFF4B5563);
+  static const Color purple = AppColors.primary;
+  static const Color darkText = AppColors.textPrimary;
+  static const Color grayText = AppColors.textSecondary;
+  static const Color pageBg = AppColors.background;
 
   final emailController = TextEditingController();
   final passwordController = TextEditingController();
@@ -145,7 +148,7 @@ class _LoginScreenState extends State<LoginScreen> {
         );
       }
     } on FirebaseAuthException catch (e) {
-      showMessage(e.message ?? 'Invalid email or password.');
+      showMessage(authErrorMessage(e.code));
     } catch (e) {
       showMessage('Login error: $e');
     } finally {
@@ -153,6 +156,34 @@ class _LoginScreenState extends State<LoginScreen> {
         setState(() => isLoading = false);
       }
     }
+  }
+
+  String authErrorMessage(String code) {
+    if (code == 'user-not-found') {
+      return 'No account found with this email.';
+    }
+
+    if (code == 'wrong-password') {
+      return 'Incorrect password.';
+    }
+
+    if (code == 'invalid-email') {
+      return 'Invalid email address.';
+    }
+
+    if (code == 'invalid-credential') {
+      return 'Invalid email or password.';
+    }
+
+    if (code == 'user-disabled') {
+      return 'This account has been disabled.';
+    }
+
+    if (code == 'network-request-failed') {
+      return 'Network error. Please check your internet connection.';
+    }
+
+    return 'Login failed. Please try again.';
   }
 
   void showMessage(String message) {
@@ -166,160 +197,247 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: pageBg,
       body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(24),
-          children: [
-            const SizedBox(height: 34),
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(22, 24, 22, 24),
+            child: Column(
+              children: [
+                _logoHeader(),
+                const SizedBox(height: 30),
+                _loginCard(),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 
-            Center(
-              child: Image.asset(
-                'assets/icons/wellscreen_icon.png',
-                width: 110,
-                height: 110,
-                fit: BoxFit.contain,
+  Widget _logoHeader() {
+    return Column(
+      children: [
+        Container(
+          width: 132,
+          height: 132,
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(38),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x14000000),
+                blurRadius: 24,
+                offset: Offset(0, 8),
+              ),
+            ],
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(34),
+            child: Image.asset(
+              'assets/icons/wellscreen_icon.png',
+              fit: BoxFit.contain,
+            ),
+          ),
+        ),
+        const SizedBox(height: 18),
+        const Text(
+          'WellScreen',
+          style: TextStyle(
+            color: purple,
+            fontSize: 38,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Smart Parental Control\nfor Digital Wellness',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: darkText,
+            fontSize: 17,
+            height: 1.35,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _loginCard() {
+    return Container(
+      padding: const EdgeInsets.all(22),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(28),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x12000000),
+            blurRadius: 16,
+            offset: Offset(0, 7),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            'Login',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: darkText,
+              fontSize: 28,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Access your WellScreen account',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: grayText, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 22),
+          TextField(
+            controller: emailController,
+            keyboardType: TextInputType.emailAddress,
+            textInputAction: TextInputAction.next,
+            decoration: InputDecoration(
+              labelText: 'Email',
+              prefixIcon: const Icon(Icons.email_rounded, color: purple),
+              filled: true,
+              fillColor: pageBg,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+                borderSide: const BorderSide(color: purple, width: 2),
               ),
             ),
-
-            const SizedBox(height: 18),
-
-            const Text(
-              'WellScreen',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: purple,
-                fontSize: 34,
-                fontWeight: FontWeight.w900,
-              ),
-            ),
-
-            const SizedBox(height: 8),
-
-            const Text(
-              'Digital wellness monitoring for parents and children',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: grayText, fontSize: 15, height: 1.4),
-            ),
-
-            const SizedBox(height: 36),
-
-            TextField(
-              controller: emailController,
-              keyboardType: TextInputType.emailAddress,
-              textInputAction: TextInputAction.next,
-              decoration: InputDecoration(
-                labelText: 'Email Address',
-                prefixIcon: const Icon(Icons.email_rounded),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
+          ),
+          const SizedBox(height: 14),
+          TextField(
+            controller: passwordController,
+            obscureText: obscurePassword,
+            textInputAction: TextInputAction.next,
+            decoration: InputDecoration(
+              labelText: 'Password',
+              prefixIcon: const Icon(Icons.lock_rounded, color: purple),
+              suffixIcon: IconButton(
+                onPressed: () {
+                  setState(() => obscurePassword = !obscurePassword);
+                },
+                icon: Icon(
+                  obscurePassword
+                      ? Icons.visibility_off_rounded
+                      : Icons.visibility_rounded,
+                  color: grayText,
                 ),
               ),
+              filled: true,
+              fillColor: pageBg,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+                borderSide: const BorderSide(color: purple, width: 2),
+              ),
             ),
+          ),
+          const SizedBox(height: 14),
+          DropdownButtonFormField<String>(
+            initialValue: selectedRole,
+            decoration: InputDecoration(
+              labelText: 'Role',
+              prefixIcon: const Icon(
+                Icons.manage_accounts_rounded,
+                color: purple,
+              ),
+              filled: true,
+              fillColor: pageBg,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+                borderSide: const BorderSide(color: purple, width: 2),
+              ),
+            ),
+            items: const [
+              DropdownMenuItem(
+                value: 'parent',
+                child: Text('Parent / Guardian'),
+              ),
+              DropdownMenuItem(value: 'child', child: Text('Child')),
+            ],
+            onChanged: isLoading
+                ? null
+                : (value) {
+                    if (value == null) return;
 
-            const SizedBox(height: 16),
-
-            TextField(
-              controller: passwordController,
-              obscureText: obscurePassword,
-              textInputAction: TextInputAction.done,
-              decoration: InputDecoration(
-                labelText: 'Password',
-                prefixIcon: const Icon(Icons.lock_rounded),
-                suffixIcon: IconButton(
-                  icon: Icon(
-                    obscurePassword
-                        ? Icons.visibility_rounded
-                        : Icons.visibility_off_rounded,
-                  ),
-                  onPressed: () {
                     setState(() {
-                      obscurePassword = !obscurePassword;
+                      selectedRole = value;
                     });
                   },
-                ),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 16),
-
-            DropdownButtonFormField<String>(
-              initialValue: selectedRole,
-              decoration: InputDecoration(
-                labelText: 'Role',
-                prefixIcon: const Icon(Icons.manage_accounts_rounded),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
+          ),
+          const SizedBox(height: 22),
+          SizedBox(
+            height: 54,
+            child: FilledButton(
+              onPressed: isLoading ? null : loginUser,
+              style: FilledButton.styleFrom(
+                backgroundColor: purple,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
                 ),
               ),
-              items: const [
-                DropdownMenuItem(
-                  value: 'parent',
-                  child: Text('Parent / Guardian'),
-                ),
-                DropdownMenuItem(value: 'child', child: Text('Child')),
-              ],
-              onChanged: isLoading
-                  ? null
-                  : (value) {
-                      if (value == null) return;
-
-                      setState(() {
-                        selectedRole = value;
-                      });
-                    },
-            ),
-
-            const SizedBox(height: 24),
-
-            SizedBox(
-              height: 54,
-              child: FilledButton(
-                onPressed: isLoading ? null : loginUser,
-                style: FilledButton.styleFrom(
-                  backgroundColor: purple,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                ),
-                child: isLoading
-                    ? const SizedBox(
-                        width: 22,
-                        height: 22,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 3,
-                          color: Colors.white,
-                        ),
-                      )
-                    : const Text(
-                        'Log In',
-                        style: TextStyle(
-                          fontWeight: FontWeight.w800,
-                          fontSize: 16,
-                        ),
+              child: isLoading
+                  ? const SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 3,
+                        color: Colors.white,
                       ),
-              ),
+                    )
+                  : const Text(
+                      'Login',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w900,
+                        fontSize: 16,
+                      ),
+                    ),
             ),
-
-            const SizedBox(height: 18),
-
-            TextButton(
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const RegisterScreen()),
-                );
-              },
-              child: const Text(
-                'Create Account',
-                style: TextStyle(color: purple, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Text(
+                'No account yet?',
+                style: TextStyle(color: grayText, fontWeight: FontWeight.w600),
               ),
-            ),
-          ],
-        ),
+              TextButton(
+                onPressed: isLoading
+                    ? null
+                    : () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const RegisterScreen(),
+                          ),
+                        );
+                      },
+                child: const Text(
+                  'Register',
+                  style: TextStyle(color: purple, fontWeight: FontWeight.w900),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

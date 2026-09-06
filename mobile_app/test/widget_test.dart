@@ -25,18 +25,22 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      find.text('Digital wellness monitoring for parents and children'),
+      find.text('Smart Parental Control\nfor Digital Wellness'),
       findsOneWidget,
     );
 
-    expect(find.text('Log In'), findsOneWidget);
+    expect(find.text('Access your WellScreen account'), findsOneWidget);
     expect(find.text('Parent / Guardian'), findsOneWidget);
 
-    // The Create Account button is lower in the scrollable login screen.
-    await tester.drag(find.byType(ListView), const Offset(0, -400));
+    // The Register link is lower in the scrollable login card.
+    await tester.drag(
+      find.byType(SingleChildScrollView),
+      const Offset(0, -400),
+    );
 
     await tester.pumpAndSettle();
 
-    expect(find.text('Create Account'), findsOneWidget);
+    expect(find.text('No account yet?'), findsOneWidget);
+    expect(find.text('Register'), findsOneWidget);
   });
 }

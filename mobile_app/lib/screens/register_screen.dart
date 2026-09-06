@@ -78,14 +78,32 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
       await user.updateDisplayName(fullName);
 
-      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+      final userData = <String, dynamic>{
         'uid': user.uid,
         'fullName': fullName,
         'email': email,
         'role': selectedRole,
         'createdAt': FieldValue.serverTimestamp(),
         'lastLoginAt': FieldValue.serverTimestamp(),
-      });
+      };
+
+      // Track whether this child account has completed device pairing yet.
+      // This mirrors the 'pairingStatus' vocabulary ('not_paired' / 'waiting'
+      // / 'paired') already used by child_profiles/child_devices in
+      // device_pairing_screen.dart and child_home_screen.dart, so the value
+      // here stays consistent with the rest of the pairing model. Parent
+      // accounts don't get a stored child-count field: device_pairing_screen
+      // already derives the parent's children by querying child_profiles
+      // where parentId == the parent's uid, so a separate counter would just
+      // be redundant state that could drift out of sync.
+      if (selectedRole == 'child') {
+        userData['pairingStatus'] = 'not_paired';
+      }
+
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .set(userData);
 
       if (!mounted) return;
 

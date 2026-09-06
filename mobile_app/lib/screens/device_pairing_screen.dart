@@ -146,10 +146,29 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
     }
   }
 
-  String generateCode() {
+  /// Generates a 6-digit pairing code that is not currently in use, retrying
+  /// on a collision instead of handing out a code that already belongs to
+  /// another pairing_codes document. Without this check, two parents (or the
+  /// same parent adding two children back-to-back) could receive the same
+  /// random code, and creating the second one would silently overwrite the
+  /// first child's still-active pairing document.
+  Future<String> generateUniqueCode() async {
     final random = Random();
 
-    return (100000 + random.nextInt(900000)).toString();
+    for (int attempt = 0; attempt < 10; attempt++) {
+      final code = (100000 + random.nextInt(900000)).toString();
+
+      final existing = await FirebaseFirestore.instance
+          .collection('pairing_codes')
+          .doc(code)
+          .get();
+
+      if (!existing.exists) {
+        return code;
+      }
+    }
+
+    throw Exception('Unable to generate a unique pairing code. Please try again.');
   }
 
   void openAddChildForm() {
@@ -210,17 +229,17 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
     try {
       final parentName = await _getParentName(user);
 
-      final code = generateCode();
+      final code = await generateUniqueCode();
 
       final expiresAt = DateTime.now().add(const Duration(minutes: 30));
 
       final isNewChild = selectedChildId == null;
 
+      final firestore = FirebaseFirestore.instance;
+
       final childRef = isNewChild
-          ? FirebaseFirestore.instance.collection('child_profiles').doc()
-          : FirebaseFirestore.instance
-                .collection('child_profiles')
-                .doc(selectedChildId);
+          ? firestore.collection('child_profiles').doc()
+          : firestore.collection('child_profiles').doc(selectedChildId);
 
       final childData = <String, dynamic>{
         'childId': childRef.id,
@@ -238,26 +257,33 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
         childData['createdAt'] = FieldValue.serverTimestamp();
       }
 
-      await childRef.set(childData, SetOptions(merge: true));
+      final pairingCodeRef = firestore.collection('pairing_codes').doc(code);
 
-      await FirebaseFirestore.instance
-          .collection('pairing_codes')
-          .doc(code)
-          .set({
-            'pairingCode': code,
-            'parentId': user.uid,
-            'parentName': parentName,
-            'parentEmail': user.email,
-            'childId': childRef.id,
-            'childName': childName,
-            'childAge': age,
-            'status': 'active',
-            'isPaired': false,
-            'deviceName': null,
-            'childEmail': null,
-            'createdAt': FieldValue.serverTimestamp(),
-            'expiresAt': Timestamp.fromDate(expiresAt),
-          });
+      // Write the child profile and its pairing code together in one batch
+      // so the two documents can't end up out of sync (e.g. a child profile
+      // pointing at a pairing code that never actually got created because
+      // the app was killed between the two writes).
+      final batch = firestore.batch();
+
+      batch.set(childRef, childData, SetOptions(merge: true));
+
+      batch.set(pairingCodeRef, {
+        'pairingCode': code,
+        'parentId': user.uid,
+        'parentName': parentName,
+        'parentEmail': user.email,
+        'childId': childRef.id,
+        'childName': childName,
+        'childAge': age,
+        'status': 'active',
+        'isPaired': false,
+        'deviceName': null,
+        'childEmail': null,
+        'createdAt': FieldValue.serverTimestamp(),
+        'expiresAt': Timestamp.fromDate(expiresAt),
+      });
+
+      await batch.commit();
 
       if (!mounted) return;
 

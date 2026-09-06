@@ -407,6 +407,18 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
           'lastOpenedAt': FieldValue.serverTimestamp(),
           'updatedAt': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));
+
+        // Keep the 'pairingStatus' recorded on the child's own account
+        // (set to 'not_paired' at registration in register_screen.dart) in
+        // sync now that pairing has actually completed, so it doesn't stay
+        // stale forever.
+        final childUserRef = FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid);
+
+        transaction.set(childUserRef, {
+          'pairingStatus': 'paired',
+        }, SetOptions(merge: true));
       });
 
       pairingCodeController.clear();

@@ -55,6 +55,35 @@ void main() {
 
     });
 
+    test(
+      'does not flag apps whose name merely contains a risky keyword as a '
+      'substring (word-boundary matching, not substring matching)',
+      () {
+        final service = PatternDetectionService();
+
+        final summaries = [
+          // Contains the risky keyword 'x' as a bare substring, but is not
+          // actually the "X" (formerly Twitter) app.
+          AppUsageSummary(
+            packageName: 'org.mozilla.firefox',
+            displayName: 'Firefox',
+            usageDuration: Duration(hours: 2),
+          ),
+          // Contains the risky keyword 'cod' (Call of Duty) as a bare
+          // substring, but is not actually a Call of Duty game.
+          AppUsageSummary(
+            packageName: 'com.microsoft.vscode',
+            displayName: 'VSCode',
+            usageDuration: Duration(hours: 2),
+          ),
+        ];
+
+        final report = service.generateReport(summaries);
+
+        expect(report.unhealthyAppCount, 0);
+      },
+    );
+
     test('returns Unhealthy when total usage is too high', () {
       final service = PatternDetectionService();
 
