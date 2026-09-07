@@ -79,6 +79,16 @@
             <action android:name="android.intent.action.PROCESS_TEXT" />
             <data android:mimeType="text/plain" />
         </intent>
+
+        <!-- Needed for MainActivity.kt's getInstalledApps() (per-app rules
+             picker, rules_screen.dart) to see other apps' launcher
+             activities via queryIntentActivities - Android 11+ package
+             visibility hides them otherwise, and without this the picker
+             would silently return nothing but WellScreen itself. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
     </queries>
 
 </manifest>

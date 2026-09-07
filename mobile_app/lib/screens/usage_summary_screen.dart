@@ -1,6 +1,7 @@
 ﻿import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 
+import '../theme/app_theme.dart';
 import '../models/app_usage_summary.dart';
 import '../models/usage_period_summary.dart';
 import '../models/usage_report.dart';
@@ -11,10 +12,10 @@ import '../services/usage_dashboard_controller_service.dart';
 class UsageSummaryScreen extends StatefulWidget {
   const UsageSummaryScreen({super.key});
 
-  static const Color purple = Color(0xFF5B2BBF);
+  static const Color purple = AppColors.primary;
   static const Color darkText = Color(0xFF111827);
   static const Color grayText = Color(0xFF4B5563);
-  static const Color softPurple = Color(0xFFF1ECFF);
+  static const Color softPurple = AppColors.primaryLight;
 
   @override
   State<UsageSummaryScreen> createState() => _UsageSummaryScreenState();

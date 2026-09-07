@@ -2,12 +2,14 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../theme/app_theme.dart';
 import '../services/daily_screen_time_limit_service.dart';
 import '../services/notification_service.dart';
 import '../services/usage_dashboard_controller_service.dart';
 import 'alerts_reports_screen.dart';
 import 'device_pairing_screen.dart';
 import 'login_screen.dart';
+import 'rules/app_rules_screen.dart';
 
 class RuleSettingsScreen extends StatefulWidget {
   const RuleSettingsScreen({super.key});
@@ -17,10 +19,10 @@ class RuleSettingsScreen extends StatefulWidget {
 }
 
 class _RuleSettingsScreenState extends State<RuleSettingsScreen> {
-  static const Color purple = Color(0xFF5B2BBF);
+  static const Color purple = AppColors.primary;
   static const Color darkText = Color(0xFF111827);
   static const Color grayText = Color(0xFF4B5563);
-  static const Color softPurple = Color(0xFFF4F0FF);
+  static const Color softPurple = AppColors.primaryLight;
   static const Color softGray = Color(0xFFF9FAFB);
 
   final TextEditingController limitController = TextEditingController(
@@ -115,6 +117,17 @@ class _RuleSettingsScreenState extends State<RuleSettingsScreen> {
     });
 
     await _dashboardFuture;
+  }
+
+  // Opens the per-app rules picker (monitor/restrict individual installed
+  // apps) - distinct from this screen's own app-blocking/focus-mode/etc.
+  // toggles, which turn whole categories of enforcement on or off rather
+  // than choosing specific apps.
+  void _openAppRules() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const AppRulesScreen()),
+    );
   }
 
   Future<void> saveRules() async {
@@ -399,6 +412,11 @@ class _RuleSettingsScreenState extends State<RuleSettingsScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'App Rules',
+            onPressed: _openAppRules,
+            icon: const Icon(Icons.apps_rounded),
+          ),
           IconButton(
             tooltip: 'Refresh',
             onPressed: _refreshDashboard,
@@ -857,7 +875,7 @@ class AccountOverviewCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: const Color(0xFFF4F0FF),
+        color: AppColors.primaryLight,
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
@@ -867,7 +885,7 @@ class AccountOverviewCard extends StatelessWidget {
             backgroundColor: Colors.white,
             child: Icon(
               Icons.person_rounded,
-              color: Color(0xFF5B2BBF),
+              color: AppColors.primary,
               size: 31,
             ),
           ),
@@ -907,7 +925,7 @@ class AccountOverviewCard extends StatelessWidget {
             onPressed: onAccountTap,
             icon: const Icon(
               Icons.chevron_right_rounded,
-              color: Color(0xFF5B2BBF),
+              color: AppColors.primary,
             ),
           ),
         ],
@@ -944,10 +962,10 @@ class SettingsActionTile extends StatelessWidget {
           width: 43,
           height: 43,
           decoration: BoxDecoration(
-            color: const Color(0xFFF4F0FF),
+            color: AppColors.primaryLight,
             borderRadius: BorderRadius.circular(12),
           ),
-          child: Icon(icon, color: const Color(0xFF5B2BBF)),
+          child: Icon(icon, color: AppColors.primary),
         ),
         title: Text(
           title,
@@ -985,7 +1003,7 @@ class _SmsBackupAlertSettingsSectionState
   bool isLoading = true;
   bool isSaving = false;
 
-  static const Color purple = Color(0xFF5B2BBF);
+  static const Color purple = AppColors.primary;
 
   static const Color darkText = Color(0xFF111827);
 
@@ -1204,7 +1222,7 @@ class _SmsBackupAlertSettingsSectionState
 class EmergencyAccessApprovalSection extends StatelessWidget {
   const EmergencyAccessApprovalSection({super.key});
 
-  static const Color purple = Color(0xFF5B2BBF);
+  static const Color purple = AppColors.primary;
 
   static const Color darkText = Color(0xFF111827);
 
@@ -1336,7 +1354,7 @@ class EmergencyAccessApprovalSection extends StatelessWidget {
                     margin: const EdgeInsets.only(top: 10),
                     padding: const EdgeInsets.all(14),
                     decoration: BoxDecoration(
-                      color: const Color(0xFFF4F0FF),
+                      color: AppColors.primaryLight,
                       borderRadius: BorderRadius.circular(14),
                     ),
                     child: Column(
@@ -1581,7 +1599,7 @@ class RuleGoalStatusCard extends StatelessWidget {
           width: 44,
           height: 44,
           decoration: BoxDecoration(
-            color: const Color(0xFFF4F0FF),
+            color: AppColors.primaryLight,
             borderRadius: BorderRadius.circular(12),
           ),
           child: Icon(icon, color: iconColor),
@@ -1618,7 +1636,7 @@ class RuleSwitch extends StatelessWidget {
   final bool value;
   final ValueChanged<bool> onChanged;
 
-  static const Color purple = Color(0xFF5B2BBF);
+  static const Color purple = AppColors.primary;
 
   static const Color darkText = Color(0xFF111827);
 
@@ -1638,7 +1656,7 @@ class RuleSwitch extends StatelessWidget {
           width: 42,
           height: 42,
           decoration: BoxDecoration(
-            color: const Color(0xFFF4F0FF),
+            color: AppColors.primaryLight,
             borderRadius: BorderRadius.circular(12),
           ),
           child: Icon(icon, color: purple, size: 22),

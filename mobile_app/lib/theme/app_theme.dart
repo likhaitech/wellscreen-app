@@ -62,14 +62,6 @@ class AppColors {
   static const Color info = Color(0xFF2557A7);
   static const Color infoBg = Color(0xFFE4EEF9);
 
-  // Detection-source tags (SiteCategoryService's three mechanisms) - one
-  // fixed color per source everywhere it's shown, instead of the ad hoc
-  // string suffixes ("(AI-detected)"/"(keyword match)") previously used
-  // with no visual distinction at all.
-  static const Color sourceLookup = primary;
-  static const Color sourceKeyword = warning;
-  static const Color sourceMl = accent;
-
   // Neutral track/background gray - was duplicated as the literal
   // Color(0xFFD1D5DB) in 6 separate places across 4 files (bottom nav
   // background, progress-bar/slider track backgrounds) before being

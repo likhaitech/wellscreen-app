@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../theme/app_theme.dart';
 import '../models/app_usage_summary.dart';
 import '../models/usage_period_summary.dart';
 import '../models/usage_report.dart';
@@ -19,10 +20,10 @@ import 'parent_location_screen.dart';
 import 'rule_settings_screen.dart';
 import 'usage_summary_screen.dart';
 
-const Color _purple = Color(0xFF5B2BBF);
+const Color _purple = AppColors.primary;
 const Color _darkText = Color(0xFF111827);
 const Color _grayText = Color(0xFF4B5563);
-const Color _softPurple = Color(0xFFF4F0FF);
+const Color _softPurple = AppColors.primaryLight;
 const Color _softGray = Color(0xFFF9FAFB);
 
 class ParentDashboardScreen extends StatefulWidget {

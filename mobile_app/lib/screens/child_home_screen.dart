@@ -6,6 +6,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../theme/app_theme.dart';
 import '../services/accessibility_service_status_service.dart';
 import '../services/firestore_usage_report_sync_service.dart';
 import '../services/location_tracking_service.dart';
@@ -23,10 +24,10 @@ class ChildHomeScreen extends StatefulWidget {
 
 class _ChildHomeScreenState extends State<ChildHomeScreen>
     with WidgetsBindingObserver {
-  static const Color purple = Color(0xFF5B2BBF);
+  static const Color purple = AppColors.primary;
   static const Color darkText = Color(0xFF111827);
   static const Color grayText = Color(0xFF4B5563);
-  static const Color softPurple = Color(0xFFF4F0FF);
+  static const Color softPurple = AppColors.primaryLight;
 
   final TextEditingController pairingCodeController = TextEditingController();
 
@@ -1466,15 +1467,15 @@ class ChildActionTile extends StatelessWidget {
           width: 48,
           height: 48,
           decoration: BoxDecoration(
-            color: const Color(0xFFF4F0FF),
+            color: AppColors.primaryLight,
             borderRadius: BorderRadius.circular(13),
           ),
-          child: Icon(icon, color: const Color(0xFF5B2BBF)),
+          child: Icon(icon, color: AppColors.primary),
         ),
         title: Text(
           title,
           style: const TextStyle(
-            color: Color(0xFF5B2BBF),
+            color: AppColors.primary,
             fontWeight: FontWeight.w900,
             fontSize: 16,
           ),
@@ -1491,7 +1492,7 @@ class ChildActionTile extends StatelessWidget {
         ),
         trailing: const Icon(
           Icons.chevron_right_rounded,
-          color: Color(0xFF5B2BBF),
+          color: AppColors.primary,
           size: 30,
         ),
       ),
@@ -1509,7 +1510,7 @@ class ContactParentDialog extends StatefulWidget {
 }
 
 class _ContactParentDialogState extends State<ContactParentDialog> {
-  static const Color purple = Color(0xFF5B2BBF);
+  static const Color purple = AppColors.primary;
 
   final TextEditingController messageController = TextEditingController();
 
@@ -1693,7 +1694,7 @@ class ChildNotificationsPanel extends StatelessWidget {
                         return Card(
                           color: isRead
                               ? Colors.white
-                              : const Color(0xFFF4F0FF),
+                              : AppColors.primaryLight,
                           child: ListTile(
                             onTap: () async {
                               await doc.reference.set({
@@ -1705,7 +1706,7 @@ class ChildNotificationsPanel extends StatelessWidget {
                               isRead
                                   ? Icons.notifications_none_rounded
                                   : Icons.notifications_active_rounded,
-                              color: const Color(0xFF5B2BBF),
+                              color: AppColors.primary,
                             ),
                             title: Text(
                               title,
@@ -1792,7 +1793,7 @@ class PermissionOverviewCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: const Color(0xFFF4F0FF),
+        color: AppColors.primaryLight,
         borderRadius: BorderRadius.circular(18),
       ),
       child: Row(
@@ -1802,7 +1803,7 @@ class PermissionOverviewCard extends StatelessWidget {
             backgroundColor: Colors.white,
             child: Icon(
               Icons.security_rounded,
-              color: Color(0xFF5B2BBF),
+              color: AppColors.primary,
               size: 29,
             ),
           ),
@@ -1838,7 +1839,7 @@ class PermissionOverviewCard extends StatelessWidget {
           Text(
             '$enabledCount/3',
             style: const TextStyle(
-              color: Color(0xFF5B2BBF),
+              color: AppColors.primary,
               fontSize: 22,
               fontWeight: FontWeight.w900,
             ),
@@ -1997,12 +1998,12 @@ class PermissionCard extends StatelessWidget {
                   width: 48,
                   height: 48,
                   decoration: BoxDecoration(
-                    color: const Color(0xFFF4F0FF),
+                    color: AppColors.primaryLight,
                     borderRadius: BorderRadius.circular(13),
                   ),
                   child: Icon(
                     icon,
-                    color: granted ? Colors.green : const Color(0xFF5B2BBF),
+                    color: granted ? Colors.green : AppColors.primary,
                   ),
                 ),
 
@@ -2165,7 +2166,7 @@ class ServiceCard extends StatelessWidget {
           children: [
             Row(
               children: [
-                Icon(icon, color: const Color(0xFF5B2BBF), size: 32),
+                Icon(icon, color: AppColors.primary, size: 32),
 
                 const SizedBox(width: 12),
 
@@ -2194,7 +2195,7 @@ class ServiceCard extends StatelessWidget {
               child: FilledButton.icon(
                 onPressed: onPressed == null ? null : () => onPressed!(),
                 style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFF5B2BBF),
+                  backgroundColor: AppColors.primary,
                 ),
                 icon: isWorking
                     ? const SizedBox(
@@ -2224,7 +2225,7 @@ class ParentRulesSection extends StatelessWidget {
 
   final String? parentId;
 
-  static const Color purple = Color(0xFF5B2BBF);
+  static const Color purple = AppColors.primary;
 
   @override
   Widget build(BuildContext context) {
@@ -2424,10 +2425,10 @@ class ParentRuleCard extends StatelessWidget {
           width: 46,
           height: 46,
           decoration: BoxDecoration(
-            color: const Color(0xFFF4F0FF),
+            color: AppColors.primaryLight,
             borderRadius: BorderRadius.circular(13),
           ),
-          child: Icon(icon, color: const Color(0xFF5B2BBF)),
+          child: Icon(icon, color: AppColors.primary),
         ),
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
         subtitle: Padding(
@@ -2529,7 +2530,7 @@ class _EmergencyAccessRequestSectionState
   bool isSubmitting = false;
   int requestedDurationMinutes = 30;
 
-  static const Color purple = Color(0xFF5B2BBF);
+  static const Color purple = AppColors.primary;
 
   static const List<int> requestDurationOptions = [15, 30, 60];
 

@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../theme/app_theme.dart';
 import 'child_home_screen.dart';
 import 'parent_dashboard_screen.dart';
 
@@ -13,7 +14,7 @@ class RegisterScreen extends StatefulWidget {
 }
 
 class _RegisterScreenState extends State<RegisterScreen> {
-  static const Color purple = Color(0xFF5B2BBF);
+  static const Color purple = AppColors.primary;
   static const Color grayText = Color(0xFF4B5563);
 
   final nameController = TextEditingController();

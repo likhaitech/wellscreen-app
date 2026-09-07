@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../theme/app_theme.dart';
 class ParentLocationScreen extends StatefulWidget {
   const ParentLocationScreen({super.key});
 
@@ -12,10 +13,10 @@ class ParentLocationScreen extends StatefulWidget {
 }
 
 class _ParentLocationScreenState extends State<ParentLocationScreen> {
-  static const Color purple = Color(0xFF5B2BBF);
+  static const Color purple = AppColors.primary;
   static const Color darkText = Color(0xFF111827);
   static const Color grayText = Color(0xFF4B5563);
-  static const Color softPurple = Color(0xFFF4F0FF);
+  static const Color softPurple = AppColors.primaryLight;
 
   final MapController _mapController = MapController();
 
@@ -381,7 +382,7 @@ class _ChildLocationMarker extends StatelessWidget {
           width: 56,
           height: 56,
           decoration: BoxDecoration(
-            color: const Color(0xFF5B2BBF).withAlpha(38),
+            color: AppColors.primary.withAlpha(38),
             shape: BoxShape.circle,
           ),
         ),
@@ -389,7 +390,7 @@ class _ChildLocationMarker extends StatelessWidget {
           width: 42,
           height: 42,
           decoration: BoxDecoration(
-            color: const Color(0xFF5B2BBF),
+            color: AppColors.primary,
             shape: BoxShape.circle,
             border: Border.all(color: Colors.white, width: 4),
             boxShadow: const [
@@ -431,7 +432,7 @@ class _LocationDetailRow extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 20, color: const Color(0xFF5B2BBF)),
+          Icon(icon, size: 20, color: AppColors.primary),
           const SizedBox(width: 10),
           SizedBox(
             width: 92,
@@ -509,7 +510,7 @@ class _EmptyLocationState extends StatelessWidget {
             const Icon(
               Icons.location_off_rounded,
               size: 64,
-              color: Color(0xFF5B2BBF),
+              color: AppColors.primary,
             ),
             const SizedBox(height: 16),
             const Text(

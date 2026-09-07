@@ -2,6 +2,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../theme/app_theme.dart';
 import '../models/app_usage_summary.dart';
 import '../models/usage_period_summary.dart';
 import '../models/usage_report.dart';
@@ -17,10 +18,10 @@ import 'usage_summary_screen.dart';
 class AlertsReportsScreen extends StatefulWidget {
   const AlertsReportsScreen({super.key});
 
-  static const Color purple = Color(0xFF5B2BBF);
+  static const Color purple = AppColors.primary;
   static const Color darkText = Color(0xFF111827);
   static const Color grayText = Color(0xFF4B5563);
-  static const Color softPurple = Color(0xFFF4F0FF);
+  static const Color softPurple = AppColors.primaryLight;
   static const Color softGray = Color(0xFFF9FAFB);
 
   @override
@@ -2551,7 +2552,7 @@ class InAppRuleAlertsSection extends StatelessWidget {
                       border: Border.all(
                         color: isRead
                             ? const Color(0xFFE5E7EB)
-                            : const Color(0xFFD9CCFF),
+                            : AppColors.primary,
                       ),
                     ),
                     child: Column(

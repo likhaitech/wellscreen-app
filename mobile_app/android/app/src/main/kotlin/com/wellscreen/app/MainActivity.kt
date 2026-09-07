@@ -20,6 +20,13 @@ class MainActivity : FlutterActivity() {
     private val appInfoChannelName =
         "com.wellscreen.app/app_info"
 
+    // Backs the per-app rules picker (rules_screen.dart / AndroidAppService):
+    // lists launchable apps so a parent can choose which ones to monitor or
+    // restrict individually, distinct from the appInfoChannelName above
+    // (which only resolves one package's label on demand).
+    private val installedAppsChannelName =
+        "wellscreen/apps"
+
     private val restrictionRulesPreferencesName =
         "wellscreen_restriction_rules"
 
@@ -167,6 +174,94 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            installedAppsChannelName
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getInstalledApps" -> {
+                    result.success(getInstalledApps())
+                }
+
+                "openAccessibilitySettings" -> {
+                    val intent = Intent(
+                        Settings.ACTION_ACCESSIBILITY_SETTINGS
+                    )
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(intent)
+                    result.success(true)
+                }
+
+                "openUsageAccessSettings" -> {
+                    val intent = Intent(
+                        Settings.ACTION_USAGE_ACCESS_SETTINGS
+                    )
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(intent)
+                    result.success(true)
+                }
+
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    /**
+     * Lists apps with a home-screen launcher icon, for the per-app rules
+     * picker (rules_screen.dart). Uses queryIntentActivities against
+     * ACTION_MAIN/CATEGORY_LAUNCHER rather than PackageManager.getInstalledApplications(),
+     * which also returns system components/services with no icon a parent
+     * could ever open - those would just be confusing noise in the picker.
+     *
+     * Requires the <queries> MAIN/LAUNCHER intent declaration in
+     * AndroidManifest.xml (Android 11+ package-visibility rules hide
+     * other apps' launcher activities from queryIntentActivities otherwise -
+     * without it this silently returns only WellScreen itself).
+     */
+    private fun getInstalledApps(): List<Map<String, String>> {
+        val launcherIntent = Intent(Intent.ACTION_MAIN, null).apply {
+            addCategory(Intent.CATEGORY_LAUNCHER)
+        }
+
+        @Suppress("DEPRECATION")
+        val resolvedActivities =
+            packageManager.queryIntentActivities(launcherIntent, 0)
+
+        val seenPackageNames = mutableSetOf<String>()
+        val apps = mutableListOf<Map<String, String>>()
+
+        for (resolveInfo in resolvedActivities) {
+            val resolvedPackageName = resolveInfo.activityInfo.packageName
+
+            // Skip WellScreen itself - it isn't something a parent would
+            // ever monitor or restrict, and would just clutter its own
+            // rules picker.
+            if (resolvedPackageName == packageName) {
+                continue
+            }
+
+            if (!seenPackageNames.add(resolvedPackageName)) {
+                continue
+            }
+
+            val label = try {
+                resolveInfo.loadLabel(packageManager)
+                    .toString()
+                    .trim()
+            } catch (exception: Exception) {
+                resolvedPackageName
+            }
+
+            apps.add(
+                mapOf(
+                    "appName" to label.ifEmpty { resolvedPackageName },
+                    "packageName" to resolvedPackageName
+                )
+            )
+        }
+
+        return apps
     }
 
     private fun saveRestrictionRules(

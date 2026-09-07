@@ -6,6 +6,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../theme/app_theme.dart';
 import 'alerts_reports_screen.dart';
 import 'rule_settings_screen.dart';
 
@@ -17,10 +18,10 @@ class DevicePairingScreen extends StatefulWidget {
 }
 
 class _DevicePairingScreenState extends State<DevicePairingScreen> {
-  static const Color purple = Color(0xFF5B2BBF);
+  static const Color purple = AppColors.primary;
   static const Color darkText = Color(0xFF111827);
   static const Color grayText = Color(0xFF4B5563);
-  static const Color softPurple = Color(0xFFF4F0FF);
+  static const Color softPurple = AppColors.primaryLight;
 
   final TextEditingController childNameController = TextEditingController();
   final TextEditingController ageController = TextEditingController();
@@ -806,8 +807,8 @@ class DeviceSummaryCard extends StatelessWidget {
   final int totalDevices;
   final int connectedDevices;
 
-  static const Color purple = Color(0xFF5B2BBF);
-  static const Color softPurple = Color(0xFFF4F0FF);
+  static const Color purple = AppColors.primary;
+  static const Color softPurple = AppColors.primaryLight;
   static const Color darkText = Color(0xFF111827);
   static const Color grayText = Color(0xFF4B5563);
 
@@ -894,10 +895,10 @@ class ChildDeviceCard extends StatelessWidget {
   final bool isSelected;
   final VoidCallback onViewDetails;
 
-  static const Color purple = Color(0xFF5B2BBF);
+  static const Color purple = AppColors.primary;
   static const Color darkText = Color(0xFF111827);
   static const Color grayText = Color(0xFF4B5563);
-  static const Color softPurple = Color(0xFFF4F0FF);
+  static const Color softPurple = AppColors.primaryLight;
 
   @override
   Widget build(BuildContext context) {
@@ -1056,10 +1057,10 @@ class SelectedDeviceDetailsCard extends StatelessWidget {
   final VoidCallback onViewLocation;
   final VoidCallback onViewRules;
 
-  static const Color purple = Color(0xFF5B2BBF);
+  static const Color purple = AppColors.primary;
   static const Color darkText = Color(0xFF111827);
   static const Color grayText = Color(0xFF4B5563);
-  static const Color softPurple = Color(0xFFF4F0FF);
+  static const Color softPurple = AppColors.primaryLight;
 
   @override
   Widget build(BuildContext context) {
@@ -1245,9 +1246,9 @@ class PairingCodeCard extends StatelessWidget {
   final bool hasCode;
   final VoidCallback onCopy;
 
-  static const Color purple = Color(0xFF5B2BBF);
+  static const Color purple = AppColors.primary;
   static const Color grayText = Color(0xFF4B5563);
-  static const Color softPurple = Color(0xFFF4F0FF);
+  static const Color softPurple = AppColors.primaryLight;
 
   @override
   Widget build(BuildContext context) {
