@@ -1,48 +1,79 @@
-name: Build Android APK
+name: Build APK
 
+# Runs flutter analyze and flutter test on every push and pull request
+# against main, so unit test results and static analysis reflect the
+# actual state of the source code at submission time - not a single
+# manual run on one machine. Referenced by the manuscript's Unit Testing
+# section (Chapter III, Testing/Quality Assurance Phase).
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch: {}
 
 jobs:
-  build-apk:
+  analyze-and-test:
     runs-on: ubuntu-latest
-
     defaults:
       run:
         working-directory: mobile_app
 
     steps:
-      - name: Checkout repository
+      - name: Check out repository
         uses: actions/checkout@v4
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          channel: 'stable'
+          cache: true
 
-      - name: Get dependencies
+      - name: Install dependencies
         run: flutter pub get
 
-      - name: Analyze
+      - name: Static analysis
         run: flutter analyze
 
-      - name: Test
+      - name: Run unit tests
         run: flutter test
 
-      - name: Build debug APK
-        run: flutter build apk --debug
+      - name: Write Firebase config
+        # google-services.json is gitignored (it's real Firebase project
+        # config, incl. an API key - see .gitignore's "Secrets" section)
+        # and was never committed, so CI has no way to see it on its own.
+        # Without this step, `flutter build apk --release` below fails at
+        # Gradle's :app:processReleaseGoogleServices task with "File
+        # google-services.json is missing" (confirmed - see Build Android
+        # APK run #26). This decodes it from a repo secret instead of
+        # hardcoding it here: add GOOGLE_SERVICES_JSON_BASE64 under
+        # Settings > Secrets and variables > Actions, set to
+        # `base64 -w0 google-services.json` (or `base64 -i
+        # google-services.json` on macOS) run on your real file. Base64,
+        # not the raw JSON, so multiline/quoting in the JSON can't break
+        # the workflow YAML - a GitHub Actions secret value doesn't need
+        # to be a real secret's *format*, just its *content*.
+        # If the secret isn't set yet, this warns and continues rather
+        # than failing here, so analyze/test results above still land -
+        # the release-build step will fail same as before until it's set.
+        run: |
+          if [ -n "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" ]; then
+            echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 -d > android/app/google-services.json
+          else
+            echo "::warning::GOOGLE_SERVICES_JSON_BASE64 secret is not set - the release APK build below will fail at :app:processReleaseGoogleServices. Add it under Settings > Secrets and variables > Actions."
+          fi
+
+      - name: Build release APK
+        # Signs with the debug key unless android/key.properties is present
+        # (see android/app/build.gradle.kts) - CI has no release keystore,
+        # so this always produces a debug-signed build. That's fine here:
+        # this job verifies the app *builds* and passes tests, it does not
+        # publish a signed release artifact.
+        run: flutter build apk --release
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wellscreen-debug-apk
-          path: mobile_app/build/app/outputs/flutter-apk/app-debug.apk
+          name: wellscreen-debug-signed-apk
+          path: mobile_app/build/app/outputs/flutter-apk/*.apk
+          retention-days: 14
