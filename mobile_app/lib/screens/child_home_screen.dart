@@ -7,11 +7,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../theme/app_theme.dart';
+import '../models/app_rule.dart';
 import '../services/accessibility_service_status_service.dart';
+import '../services/app_rules_service.dart';
 import '../services/firestore_usage_report_sync_service.dart';
 import '../services/location_tracking_service.dart';
 import '../services/native_restriction_rules_service.dart';
 import '../services/notification_service.dart';
+import '../services/usage_dashboard_controller_service.dart';
 import '../services/usage_tracking_service.dart';
 import 'login_screen.dart';
 
@@ -41,6 +44,14 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
 
   final LocationTrackingService _locationTrackingService =
       LocationTrackingService();
+
+  // Same controller the parent's rule-settings screen uses to compute
+  // today's usage-vs-limit progress, so the number the child sees can never
+  // drift from what the parent sees - one calculation, two screens.
+  final UsageDashboardControllerService _usageDashboardController =
+      UsageDashboardControllerService();
+
+  Future<UsageDashboardControllerState>? _usageDashboardFuture;
 
   final Connectivity _connectivity = Connectivity();
 
@@ -78,6 +89,8 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     _checkUsagePermission();
     _checkAccessibilityPermission();
     _checkLocationPermission();
+
+    _usageDashboardFuture = _usageDashboardController.loadTodayDashboardState();
 
     unawaited(_startConnectivityMonitoring());
 
@@ -142,10 +155,20 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   }
 
   Future<void> _refreshEverything() async {
+    final usageDashboardFuture = _usageDashboardController
+        .loadTodayDashboardState();
+
+    if (mounted) {
+      setState(() {
+        _usageDashboardFuture = usageDashboardFuture;
+      });
+    }
+
     await Future.wait([
       _checkUsagePermission(),
       _checkAccessibilityPermission(),
       _checkLocationPermission(),
+      usageDashboardFuture,
     ]);
   }
 
@@ -788,6 +811,13 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
 
           const SizedBox(height: 20),
 
+          FutureBuilder<UsageDashboardControllerState>(
+            future: _usageDashboardFuture,
+            builder: (context, snapshot) {
+              return TodayScreenTimeCard(state: snapshot.data);
+            },
+          ),
+
           Card(
             elevation: 1.5,
             shadowColor: Colors.black12,
@@ -1125,6 +1155,17 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         const SizedBox(height: 22),
 
         ParentRulesSection(parentId: parentId),
+
+        const SizedBox(height: 20),
+
+        const ChildSectionHeader(
+          title: 'Monitored Apps',
+          subtitle: 'Apps your parent is watching or restricting on this device.',
+        ),
+
+        const SizedBox(height: 12),
+
+        AppRulesSection(parentId: parentId),
 
         const SizedBox(height: 12),
 
@@ -1496,6 +1537,260 @@ class ChildActionTile extends StatelessWidget {
           size: 30,
         ),
       ),
+    );
+  }
+}
+
+// Shows how much of today's screen time has been used against the parent's
+// daily limit. Deliberately reuses UsageDashboardControllerService - the
+// same pipeline rule_settings_screen.dart's parent dashboard runs on - so
+// the child's number is always exactly what the parent sees, never a
+// second calculation that could quietly drift from it.
+class TodayScreenTimeCard extends StatelessWidget {
+  const TodayScreenTimeCard({super.key, required this.state});
+
+  final UsageDashboardControllerState? state;
+
+  @override
+  Widget build(BuildContext context) {
+    if (state == null) {
+      return const _TodayScreenTimeCardShell(
+        child: Row(
+          children: [
+            SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2.5),
+            ),
+            SizedBox(width: 14),
+            Expanded(
+              child: Text(
+                "Loading today's screen time...",
+                style: TextStyle(color: AppColors.textSecondary),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final goalResult = state!.screenTimeGoalResult;
+
+    if (goalResult == null) {
+      return _TodayScreenTimeCardShell(
+        child: Row(
+          children: [
+            const Icon(Icons.hourglass_empty_rounded, color: AppColors.primary),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Text(
+                'No usage report available yet. Daily limit: '
+                '${_formatDuration(state!.dailyScreenTimeLimit)}.',
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  height: 1.3,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final progress = goalResult.progressPercent.clamp(0.0, 1.0);
+
+    // Same 0.8 / 1.0 thresholds rule_settings_screen.dart's parent-facing
+    // goal card uses, so "getting close" and "over the limit" mean the same
+    // thing on both the parent's and the child's screen.
+    final Color statusColor = progress >= 1
+        ? AppColors.danger
+        : progress >= 0.8
+        ? AppColors.warning
+        : AppColors.success;
+
+    return _TodayScreenTimeCardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.timer_outlined, color: AppColors.primary),
+              SizedBox(width: 10),
+              Text(
+                "Today's Screen Time",
+                style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 16,
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 14),
+
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: LinearProgressIndicator(
+              value: progress,
+              minHeight: 10,
+              backgroundColor: AppColors.border,
+              valueColor: AlwaysStoppedAnimation<Color>(statusColor),
+            ),
+          ),
+
+          const SizedBox(height: 10),
+
+          Text(
+            '${_formatDuration(goalResult.usedDuration)} used of '
+            '${_formatDuration(goalResult.dailyLimit)}',
+            style: const TextStyle(
+              color: AppColors.textPrimary,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+
+          const SizedBox(height: 4),
+
+          Text(
+            goalResult.isExceeded
+                ? goalResult.message
+                : '${_formatDuration(goalResult.remainingDuration)} left today',
+            style: TextStyle(color: statusColor, fontWeight: FontWeight.w600),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _formatDuration(Duration duration) {
+    final hours = duration.inHours;
+    final minutes = duration.inMinutes.remainder(60);
+
+    if (hours > 0) {
+      return '${hours}h ${minutes}m';
+    }
+
+    if (minutes > 0) {
+      return '${minutes}m';
+    }
+
+    return '${duration.inSeconds}s';
+  }
+}
+
+class _TodayScreenTimeCardShell extends StatelessWidget {
+  const _TodayScreenTimeCardShell({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 1.5,
+      shadowColor: Colors.black12,
+      margin: const EdgeInsets.only(bottom: 20),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Padding(padding: const EdgeInsets.all(18), child: child),
+    );
+  }
+}
+
+// Lists the specific apps the parent is monitoring/restricting via the
+// per-app rules picker (AppRulesService/AppRulesScreen) - previously
+// invisible to the child even though firestore.rules already permits this
+// exact read (see the app_rules match block's comment).
+class AppRulesSection extends StatelessWidget {
+  const AppRulesSection({super.key, required this.parentId});
+
+  final String? parentId;
+
+  @override
+  Widget build(BuildContext context) {
+    if (parentId == null || parentId!.isEmpty) {
+      return const ChildStatusCard(
+        icon: Icons.apps_rounded,
+        iconColor: Colors.orange,
+        title: 'App Rules Unavailable',
+        subtitle: 'The linked parent account could not be found.',
+      );
+    }
+
+    return StreamBuilder<List<AppRule>>(
+      stream: AppRulesService().watchRulesForParent(parentId!),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const ChildStatusCard(
+            icon: Icons.hourglass_top_rounded,
+            iconColor: AppColors.primary,
+            title: 'Loading App Rules',
+            subtitle: 'Checking which apps your parent is monitoring...',
+          );
+        }
+
+        if (snapshot.hasError) {
+          return ChildStatusCard(
+            icon: Icons.error_outline_rounded,
+            iconColor: Colors.red,
+            title: 'Unable to Load App Rules',
+            subtitle: snapshot.error.toString(),
+          );
+        }
+
+        final rules = (snapshot.data ?? const <AppRule>[])
+            .where((rule) => rule.monitorEnabled || rule.restrictEnabled)
+            .toList();
+
+        if (rules.isEmpty) {
+          return const ChildStatusCard(
+            icon: Icons.apps_rounded,
+            iconColor: AppColors.primary,
+            title: 'No Per-App Rules Set',
+            subtitle:
+                'Your parent has not set monitoring or restriction rules '
+                'for individual apps yet.',
+          );
+        }
+
+        return Column(
+          children: [
+            for (final rule in rules)
+              Card(
+                elevation: 1,
+                shadowColor: Colors.black12,
+                margin: const EdgeInsets.only(bottom: 10),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: ListTile(
+                  leading: Icon(
+                    rule.restrictEnabled
+                        ? Icons.block_rounded
+                        : Icons.visibility_outlined,
+                    color: rule.restrictEnabled
+                        ? AppColors.danger
+                        : AppColors.primary,
+                  ),
+                  title: Text(
+                    rule.appName.isNotEmpty ? rule.appName : rule.packageName,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                  subtitle: Text(
+                    rule.restrictEnabled && rule.monitorEnabled
+                        ? 'Monitored and restricted'
+                        : rule.restrictEnabled
+                        ? 'Restricted'
+                        : 'Monitored',
+                    style: const TextStyle(color: AppColors.textSecondary),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 }
