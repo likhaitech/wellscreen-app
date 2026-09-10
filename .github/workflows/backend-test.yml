@@ -8,7 +8,12 @@ name: Backend Tests
 # needed for any of this to run.
 on:
   push:
-    branches: [ main ]
+    # Intentionally no `branches:` filter here (unlike this repo's other
+    # workflows) - this one was added on a feature branch and, with a
+    # branch filter of just `main`, never ran at all until that branch
+    # merges. Running on every branch (still gated by the paths filter
+    # below) means it actually executes on real pushes instead of sitting
+    # silently unverified.
     paths:
       - 'backend/**'
       - '.github/workflows/backend-test.yml'
