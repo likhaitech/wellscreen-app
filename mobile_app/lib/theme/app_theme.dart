@@ -69,6 +69,14 @@ class AppColors {
   static const Color sourceLookup = primary;
   static const Color sourceKeyword = warning;
   static const Color sourceMl = accent;
+
+  // Neutral track/background gray - was duplicated as the literal
+  // Color(0xFFD1D5DB) in 6 separate places across 4 files (bottom nav
+  // background, progress-bar/slider track backgrounds) before being
+  // consolidated here. Distinct from `border` (lighter, for card/input
+  // outlines) - this one is for a filled inactive track or subtle section
+  // background that needs a bit more contrast than a hairline border.
+  static const Color track = Color(0xFFD1D5DB);
 }
 
 /// Spacing scale - use multiples of this instead of literal EdgeInsets
@@ -365,6 +373,58 @@ class AppEmptyState extends StatelessWidget {
           ),
           const SizedBox(height: AppSpacing.sm),
           Text(message, style: Theme.of(context).textTheme.bodyMedium),
+        ],
+      ),
+    );
+  }
+}
+
+/// A single error state, styled to match AppEmptyState but in the danger
+/// palette with an optional retry action - previously every screen that
+/// bothered to handle a stream/future error at all (not all did - see
+/// git history / the UI audit that added this) wrote its own ad hoc
+/// Center(Text(...)) for it, so a real backend failure looked different
+/// on every screen instead of being instantly recognizable as "this is an
+/// error state" the way a parent or admin only has to learn once.
+class AppErrorState extends StatelessWidget {
+  const AppErrorState({
+    super.key,
+    this.title = 'Something Went Wrong',
+    required this.message,
+    this.onRetry,
+  });
+
+  final String title;
+  final String message;
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return AppCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AppSectionHeader(
+            icon: Icons.error_outline_rounded,
+            iconColor: AppColors.danger,
+            title: title,
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Text(message, style: Theme.of(context).textTheme.bodyMedium),
+          if (onRetry != null) ...[
+            const SizedBox(height: AppSpacing.sm),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh_rounded, size: 18),
+                label: const Text(
+                  'Retry',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );

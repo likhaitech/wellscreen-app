@@ -38,12 +38,14 @@ class PatternDetectionService {
     final topUsedApp = _getTopUsedApp(summaries);
     final unhealthyAppCount = _getUnhealthyAppCount(summaries);
     final hasLongSingleAppUsage = _hasLongSingleAppUsage(summaries);
+    final hasVeryLongSingleAppUsage = _hasVeryLongSingleAppUsage(summaries);
     final hasLateNightUsage = _hasLateNightUsage(summaries);
 
     final status = _detectStatus(
       totalUsageDuration: totalUsageDuration,
       unhealthyAppCount: unhealthyAppCount,
       hasLongSingleAppUsage: hasLongSingleAppUsage,
+      hasVeryLongSingleAppUsage: hasVeryLongSingleAppUsage,
       hasLateNightUsage: hasLateNightUsage,
     );
 
@@ -94,6 +96,17 @@ class PatternDetectionService {
     );
   }
 
+  /// True when a single app was used continuously for [unhealthySingleAppLimit]
+  /// (3h) or more. Previously this constant was declared but never checked
+  /// anywhere, so an extreme single-app session (e.g. 6 straight hours)
+  /// produced the exact same "warning-tier" signal as a 1h31m session via
+  /// [_hasLongSingleAppUsage]. This escalates it to the unhealthy tier.
+  bool _hasVeryLongSingleAppUsage(List<AppUsageSummary> summaries) {
+    return summaries.any(
+      (app) => app.usageDuration >= unhealthySingleAppLimit,
+    );
+  }
+
   bool _hasLateNightUsage(List<AppUsageSummary> summaries) {
     return summaries.any((app) {
       final lastTimeUsed = app.lastTimeUsed;
@@ -133,11 +146,13 @@ class PatternDetectionService {
     required Duration totalUsageDuration,
     required int unhealthyAppCount,
     required bool hasLongSingleAppUsage,
+    required bool hasVeryLongSingleAppUsage,
     required bool hasLateNightUsage,
   }) {
     if (totalUsageDuration >= unhealthyTotalUsageLimit ||
         unhealthyAppCount >= 3 ||
-        hasLateNightUsage) {
+        hasLateNightUsage ||
+        hasVeryLongSingleAppUsage) {
       return UsagePatternStatus.unhealthy;
     }
 

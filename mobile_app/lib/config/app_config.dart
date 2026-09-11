@@ -12,8 +12,12 @@ class AppConfig {
   /// to this backend) to work on a real device, or for the panel
   /// demo/defense, the backend needs to be deployed somewhere reachable and
   /// this needs to point at that real URL - see backend/DEPLOYMENT.md.
+  ///
+  /// Deployed to Render's free tier (see backend/DEPLOYMENT.md) - free
+  /// instances spin down after 15 minutes idle and take ~1 minute to wake
+  /// back up, so hit /health a few minutes before a live demo.
   static const String backendBaseUrl = String.fromEnvironment(
     'WELLSCREEN_BACKEND_URL',
-    defaultValue: 'https://your-backend-url.example.com',
+    defaultValue: 'https://wellscreen-app.onrender.com',
   );
 }

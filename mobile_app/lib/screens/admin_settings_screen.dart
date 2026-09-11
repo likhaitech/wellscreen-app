@@ -31,6 +31,7 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
 
   bool isLoading = true;
   bool isSaving = false;
+  String? loadError;
 
   DateTime? updatedAt;
   String? updatedBy;
@@ -61,6 +62,11 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
   }
 
   Future<void> loadSettings() async {
+    setState(() {
+      isLoading = true;
+      loadError = null;
+    });
+
     try {
       final isAdmin = await currentUserIsAdmin();
 
@@ -108,11 +114,19 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
         isLoading = false;
       });
     } catch (e) {
-      if (mounted) {
-        setState(() => isLoading = false);
-      }
+      if (!mounted) return;
 
-      showMessage('Failed to load system settings: $e');
+      // Previously this only fired a transient SnackBar and then still
+      // rendered the toggle UI with its in-memory default values (true/
+      // true/true/false/true/true, 180 min) - an admin who didn't catch
+      // the snackbar could hit "Save" and silently overwrite the real
+      // system settings with those defaults. Now blocks on a persistent,
+      // retryable error state instead (see the AppErrorState branch in
+      // build() below), matching the pattern used on rules_screen.dart.
+      setState(() {
+        isLoading = false;
+        loadError = 'Failed to load system settings. $e';
+      });
     }
   }
 
@@ -255,7 +269,18 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
         ],
       ),
       body: isLoading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+          : loadError != null
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(AppSpacing.lg),
+                child: AppErrorState(
+                  title: 'Could Not Load Settings',
+                  message: loadError!,
+                  onRetry: loadSettings,
+                ),
+              ),
+            )
           : ListView(
               padding: const EdgeInsets.all(20),
               children: [
@@ -297,48 +322,40 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
 
                 const SizedBox(height: 20),
 
-                InkWell(
+                AppCard(
                   onTap: openSystemLogs,
-                  borderRadius: BorderRadius.circular(20),
-                  child: Container(
-                    padding: const EdgeInsets.all(18),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: const Row(
-                      children: [
-                        CircleAvatar(
-                          backgroundColor: AppColors.primaryLight,
-                          child: Icon(
-                            Icons.receipt_long_rounded,
-                            color: purple,
-                          ),
+                  child: const Row(
+                    children: [
+                      CircleAvatar(
+                        backgroundColor: AppColors.primaryLight,
+                        child: Icon(
+                          Icons.receipt_long_rounded,
+                          color: purple,
                         ),
-                        SizedBox(width: 14),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'System Logs',
-                                style: TextStyle(
-                                  color: darkText,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w900,
-                                ),
+                      ),
+                      SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'System Logs',
+                              style: TextStyle(
+                                color: darkText,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w900,
                               ),
-                              SizedBox(height: 3),
-                              Text(
-                                'Monitor administrative and system activity.',
-                                style: TextStyle(color: grayText),
-                              ),
-                            ],
-                          ),
+                            ),
+                            SizedBox(height: 3),
+                            Text(
+                              'Monitor administrative and system activity.',
+                              style: TextStyle(color: grayText),
+                            ),
+                          ],
                         ),
-                        Icon(Icons.chevron_right_rounded, color: grayText),
-                      ],
-                    ),
+                      ),
+                      Icon(Icons.chevron_right_rounded, color: grayText),
+                    ],
                   ),
                 ),
 
@@ -464,25 +481,24 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
     required bool value,
     required ValueChanged<bool> onChanged,
   }) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: SwitchListTile(
-        activeThumbColor: purple,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
-        title: Text(
-          title,
-          style: const TextStyle(color: darkText, fontWeight: FontWeight.w900),
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: AppCard(
+        padding: EdgeInsets.zero,
+        child: SwitchListTile(
+          activeThumbColor: purple,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
+          title: Text(
+            title,
+            style: const TextStyle(color: darkText, fontWeight: FontWeight.w900),
+          ),
+          subtitle: Text(
+            subtitle,
+            style: const TextStyle(color: grayText, height: 1.3),
+          ),
+          value: value,
+          onChanged: onChanged,
         ),
-        subtitle: Text(
-          subtitle,
-          style: const TextStyle(color: grayText, height: 1.3),
-        ),
-        value: value,
-        onChanged: onChanged,
       ),
     );
   }

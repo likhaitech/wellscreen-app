@@ -139,6 +139,20 @@ def update_user(
             current_claims,
         )
 
+    if disabled is True:
+        # FIX: Firebase ID tokens are verified statelessly by default (see
+        # admin_auth_service.require_admin / user_auth_service.require_user),
+        # so disabling an account here alone did NOT stop an already-issued
+        # token (valid up to 1h) from continuing to pass auth.verify_id_token
+        # on every admin/alert route. revoke_refresh_tokens() marks a
+        # revocation timestamp Firebase checks when the caller verifies with
+        # check_revoked=True (see the require_admin/require_user fix in
+        # admin_auth_service.py / user_auth_service.py) - without both
+        # halves of this fix, disabling a user is close to a no-op for up
+        # to an hour, which defeats the point of an admin "disable" action
+        # in a parental-control app.
+        auth.revoke_refresh_tokens(uid)
+
     db = get_firestore_client()
 
     firestore_update: dict[str, Any] = {
@@ -167,6 +181,11 @@ def update_user(
 
 def delete_user(uid: str) -> None:
     initialize_firebase()
+
+    # FIX: revoke before delete, same reasoning as update_user's disabled
+    # branch above - an already-issued ID token for this uid must stop
+    # verifying immediately, not just once it happens to expire.
+    auth.revoke_refresh_tokens(uid)
 
     auth.delete_user(uid)
 

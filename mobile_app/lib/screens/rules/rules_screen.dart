@@ -19,6 +19,7 @@ class _RulesScreenState extends State<RulesScreen> {
 
   bool _loading = true;
   bool _saving = false;
+  String? _loadError;
 
   String _searchText = '';
 
@@ -31,21 +32,41 @@ class _RulesScreenState extends State<RulesScreen> {
     _loadAppsAndRules();
   }
 
+  /// Was previously missing a try/catch entirely: if getInstalledApps() or
+  /// getRules() ever threw (both already guard their own known failure
+  /// modes internally, but neither guarantees it can never throw - e.g. a
+  /// SharedPreferences platform-channel failure in getRules() happens
+  /// before its own try block), setState(_loading = false) was never
+  /// reached and this screen was stuck on an infinite spinner with no way
+  /// out except leaving it. Now surfaces a real, retryable error state
+  /// instead.
   Future<void> _loadAppsAndRules() async {
     setState(() {
       _loading = true;
+      _loadError = null;
     });
 
-    final apps = await _androidAppService.getInstalledApps();
-    final rules = await _rulesService.getRules();
+    try {
+      final apps = await _androidAppService.getInstalledApps();
+      final rules = await _rulesService.getRules();
 
-    setState(() {
-      _installedApps = apps;
-      _rulesByPackage = {
-        for (final rule in rules) rule.packageName: rule,
-      };
-      _loading = false;
-    });
+      setState(() {
+        _installedApps = apps;
+        _rulesByPackage = {
+          for (final rule in rules) rule.packageName: rule,
+        };
+      });
+    } catch (e) {
+      setState(() {
+        _loadError = 'Could not load apps and rules. $e';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+        });
+      }
+    }
   }
 
   Future<void> _saveAllRules() async {
@@ -177,7 +198,18 @@ class _RulesScreenState extends State<RulesScreen> {
         ],
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+          : _loadError != null
+          ? Center(
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.lg),
+          child: AppErrorState(
+            title: 'Could Not Load Rules',
+            message: _loadError!,
+            onRetry: _loadAppsAndRules,
+          ),
+        ),
+      )
           : Column(
         children: [
           _PermissionCard(
@@ -220,8 +252,15 @@ class _RulesScreenState extends State<RulesScreen> {
           ),
           Expanded(
             child: filteredApps.isEmpty
-                ? const Center(
-              child: Text('No apps found.'),
+                ? Padding(
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+              child: AppEmptyState(
+                icon: Icons.apps_rounded,
+                title: 'No Apps Found',
+                message: _searchText.trim().isEmpty
+                    ? 'No installed apps were detected on this device.'
+                    : 'No installed apps match "$_searchText".',
+              ),
             )
                 : ListView.separated(
               padding: const EdgeInsets.only(bottom: 18),
@@ -312,7 +351,7 @@ class _PermissionCard extends StatelessWidget {
             ),
             const SizedBox(height: 14),
             const Text(
-              'For demo: enable WellScreen in Accessibility Settings. This allows the child device to detect restricted apps when opened.',
+              'Enable WellScreen in Accessibility Settings so this device can detect restricted apps when they are opened.',
               style: TextStyle(
                 fontSize: 14,
                 height: 1.35,
