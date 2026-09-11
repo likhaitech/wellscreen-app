@@ -58,7 +58,11 @@ class AppRulesService {
       if (rawRules is! List) {
         // No Firestore doc yet (brand-new parent, never saved) - nothing
         // to be authoritative about, fall back to local like getRules().
-        return getRules();
+        // Awaited (not just returned) so this stays inside the try/catch:
+        // a bare `return getRules();` here would let getRules() reject
+        // outside this frame, unhandled, instead of hitting the catch
+        // block below (same reason the catch's own fallback awaits it).
+        return await getRules();
       }
 
       final rules = rawRules
