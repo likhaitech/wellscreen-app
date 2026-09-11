@@ -19,6 +19,16 @@ class WellScreenAccessibilityService : AccessibilityService() {
     private var lastBlockedPackage: String? = null
     private var lastBlockTime: Long = 0L
 
+    // Separate debounce state for the emergency-access-bypass log path
+    // (see checkRestrictedApp) - a restricted app can trigger many
+    // TYPE_WINDOW_STATE_CHANGED/TYPE_WINDOWS_CHANGED events per minute
+    // (screen/dialog/tab changes) while a bypass is active, same as it can
+    // while blocked. Without this, every one of those became its own
+    // restrictionLog Firestore write for the whole bypass window, instead
+    // of one entry per ~2.5s like the "blocked" path already debounces to.
+    private var lastBypassLoggedPackage: String? = null
+    private var lastBypassLogTime: Long = 0L
+
     // Last domain captured per browser package, so repeated events for the
     // same still-loaded page (this fires more than once per navigation in
     // practice) don't spam BrowsingLogger with duplicate entries.
@@ -82,12 +92,24 @@ class WellScreenAccessibilityService : AccessibilityService() {
                 // still log it the same way a real block would be logged so
                 // the parent's report/reports_screen.dart restrictionLog
                 // shows the bypass happened rather than going silent.
-                RestrictionLogger.recordOutcome(
-                    this,
-                    currentPackage,
-                    "emergency_access_bypass",
-                    now,
-                )
+                // Debounced the same way "blocked" is below - without this,
+                // a single bypass session logged one Firestore write per
+                // window-state event instead of ~1 per 2.5s.
+                val recentlyLoggedSameBypass =
+                    lastBypassLoggedPackage == currentPackage &&
+                        now - lastBypassLogTime < 2500
+
+                if (!recentlyLoggedSameBypass) {
+                    lastBypassLoggedPackage = currentPackage
+                    lastBypassLogTime = now
+
+                    RestrictionLogger.recordOutcome(
+                        this,
+                        currentPackage,
+                        "emergency_access_bypass",
+                        now,
+                    )
+                }
                 return
             }
 

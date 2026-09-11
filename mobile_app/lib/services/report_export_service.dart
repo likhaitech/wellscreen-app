@@ -364,12 +364,28 @@ class ReportExportService {
     final restrictionLog = _decodeLog(data['restrictionLog']);
     final pushAlertLog = _decodeLog(data['pushAlertLog']);
 
+    // restrictionLog mixes two legitimate enforcement outcomes - "blocked"
+    // (the restriction held) and "emergency_access_bypass" (the parent
+    // approved a temporary bypass, logged honestly rather than hidden) -
+    // plus any failure outcomes. Counting the whole log as "blocks" would
+    // overstate how many apps were actually blocked whenever a bypass was
+    // granted. Same distinction reports_screen.dart's in-app summary makes
+    // (see its restrictionFailed calculation) - split out here too so the
+    // exported PDF and the in-app numbers agree.
+    final restrictionBlocked = restrictionLog
+        .where((e) => e['outcome'] == 'blocked')
+        .length;
+    final emergencyBypasses = restrictionLog
+        .where((e) => e['outcome'] == 'emergency_access_bypass')
+        .length;
+
     return pw.Column(
       crossAxisAlignment: pw.CrossAxisAlignment.start,
       children: [
         _sectionTitle('Alerts'),
         _kv('SMS backup alerts sent', '${smsLog.length}'),
-        _kv('Restricted-app blocks', '${restrictionLog.length}'),
+        _kv('Restricted-app blocks', '$restrictionBlocked'),
+        _kv('Emergency access grants', '$emergencyBypasses'),
         _kv('Push notifications delivered', '${pushAlertLog.length}'),
         if (restrictionLog.isNotEmpty) ...[
           pw.SizedBox(height: 8),
