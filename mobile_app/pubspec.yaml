@@ -35,12 +35,21 @@ dependencies:
   # Report export (see lib/services/report_export_service.dart): pdf builds
   # the PDF in-memory, path_provider finds a writable temp directory to
   # save it to, share_plus hands it to the platform share sheet so a
-  # guardian can save it or send it elsewhere. Versions below are current
-  # as of when this was added - run `flutter pub outdated` and bump if
-  # newer compatible releases exist by the time this is built.
+  # guardian can save it or send it elsewhere.
+  #
+  # share_plus is pinned to ^13.3.0, not the newest release at the time
+  # this was added (^10.1.4) - `flutter pub get` in CI (Build APK run #34)
+  # failed version solving: share_plus <13.0.0 depends on win32 ^5.5.3,
+  # which conflicts with geolocator ^14.0.3's transitive dependency chain
+  # (geolocator -> geolocator_linux -> package_info_plus >=10.0.0 ->
+  # win32 ^6.0.0). ^13.3.0 is pub's own suggested resolution
+  # (`flutter pub add share_plus:^13.3.0`); Share.shareXFiles()'s
+  # signature and ShareResult return type - what report_export_service.dart
+  # actually calls - have been stable since well before 10.x, so this is a
+  # constraint bump, not an API migration.
   pdf: ^3.11.3
   path_provider: ^2.1.5
-  share_plus: ^10.1.4
+  share_plus: ^13.3.0
 
   # QR pairing (device_pairing_screen.dart generates, qr_scan_screen.dart /
   # child_home_screen.dart scans) - a faster alternative to typing the
