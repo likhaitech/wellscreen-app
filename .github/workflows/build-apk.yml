@@ -7,9 +7,9 @@
 # section (Chapter III, Testing/Quality Assurance Phase).
 on:
   push:
-    branches: [ main ]
+    branches: [ main, ui-dashboard-polish ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, ui-dashboard-polish ]
   workflow_dispatch: {}
 
 jobs:

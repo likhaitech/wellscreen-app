@@ -1,4 +1,4 @@
-name: Firestore Rules Tests
+﻿name: Firestore Rules Tests
 
 # Runs the real Firestore Security Rules tests (firestore_rules_tests/)
 # against a real Firestore emulator on every push/PR touching the rules or
@@ -13,13 +13,13 @@ name: Firestore Rules Tests
 # egress, so this workflow is the actual place these tests run for real.
 on:
   push:
-    branches: [ main ]
+    branches: [ main, ui-dashboard-polish ]
     paths:
       - 'firestore.rules'
       - 'firestore_rules_tests/**'
       - '.github/workflows/firestore-rules-test.yml'
   pull_request:
-    branches: [ main ]
+    branches: [ main, ui-dashboard-polish ]
     paths:
       - 'firestore.rules'
       - 'firestore_rules_tests/**'
