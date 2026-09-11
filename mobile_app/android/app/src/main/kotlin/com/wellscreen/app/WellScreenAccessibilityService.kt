@@ -76,6 +76,21 @@ class WellScreenAccessibilityService : AccessibilityService() {
         if (restrictedPackages.contains(currentPackage)) {
             val now = System.currentTimeMillis()
 
+            if (isEmergencyAccessActive(now)) {
+                // Parent approved a temporary bypass (EmergencyAccessService,
+                // Dart side) and it hasn't expired yet - skip blocking, but
+                // still log it the same way a real block would be logged so
+                // the parent's report/reports_screen.dart restrictionLog
+                // shows the bypass happened rather than going silent.
+                RestrictionLogger.recordOutcome(
+                    this,
+                    currentPackage,
+                    "emergency_access_bypass",
+                    now,
+                )
+                return
+            }
+
             val recentlyBlockedSameApp =
                 lastBlockedPackage == currentPackage && now - lastBlockTime < 2500
 
@@ -171,6 +186,24 @@ class WellScreenAccessibilityService : AccessibilityService() {
             CaptureDebugLogger.log(this, msg)
             // Best-effort capture only - never let this interfere with the
             // restricted-app blocking logic below.
+        }
+    }
+
+    /**
+     * True when the parent has approved a still-unexpired Emergency Access
+     * request. EmergencyAccessService.syncGrantedUntilLocally (Dart side)
+     * mirrors the approval's expiry timestamp from Firestore into this same
+     * local key on every status update, the same "Firestore is the source
+     * of truth, SharedPreferences is the native side's local mirror of it"
+     * pattern getRestrictedPackages() below already uses for rules.
+     */
+    private fun isEmergencyAccessActive(now: Long): Boolean {
+        return try {
+            val prefs = getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
+            val grantedUntil = prefs.getLong("flutter.emergency_access_granted_until_ms", 0L)
+            grantedUntil > now
+        } catch (_: Exception) {
+            false
         }
     }
 
