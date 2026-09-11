@@ -23,3 +23,14 @@ mobile_app/android/app/google-services.json
 Thumbs.db
 .vscode/
 .idea/
+
+# Local tooling and Claude deliverables - not part of the app
+_rules_verification/
+Claude outputs/
+
+# Firestore rules tests (firestore_rules_tests/)
+firestore_rules_tests/node_modules/
+firestore_rules_tests/firestore.rules
+firestore_rules_tests/firebase-debug.log
+firestore_rules_tests/firestore-debug.log
+firestore_rules_tests/ui-debug.log

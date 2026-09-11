@@ -359,6 +359,30 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
         child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
           stream: childProfilesStream(parentUser.uid),
           builder: (context, snapshot) {
+            // Previously this StreamBuilder had no loading or error
+            // handling at all - on first load, every card below briefly
+            // rendered its own "No data yet" placeholder instead of a
+            // spinner, and a genuine Firestore failure was invisible
+            // (silently fell through to the same empty-list default).
+            if (snapshot.hasError) {
+              return Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(AppSpacing.lg),
+                  child: AppErrorState(
+                    title: 'Could Not Load Dashboard',
+                    message: 'Something went wrong loading your child '
+                        'profiles.\n\n${snapshot.error}',
+                  ),
+                ),
+              );
+            }
+
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(
+                child: CircularProgressIndicator(color: AppColors.primary),
+              );
+            }
+
             final childDocs = snapshot.data?.docs ?? [];
             final primaryChildDoc = getPrimaryChildDoc(childDocs);
             final primaryChild = primaryChildDoc?.data();
@@ -914,7 +938,7 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                 value: progress,
                 minHeight: 7,
                 color: purple,
-                backgroundColor: const Color(0xFFD1D5DB),
+                backgroundColor: AppColors.track,
               ),
             ),
           ],
@@ -1220,7 +1244,7 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                     value: value,
                     minHeight: 5,
                     color: purple,
-                    backgroundColor: const Color(0xFFD1D5DB),
+                    backgroundColor: AppColors.track,
                   ),
                 ),
               ],
