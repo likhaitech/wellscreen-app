@@ -70,10 +70,19 @@ class ReportExportService {
     );
     await file.writeAsBytes(await pdf.save());
 
-    final shareResult = await Share.shareXFiles(
-      [XFile(file.path, mimeType: 'application/pdf')],
-      text: 'WellScreen report for $childName',
-      subject: 'WellScreen Report - $childName',
+    // Share.shareXFiles() is deprecated as of share_plus 11 (removed the
+    // old static-method surface in favor of a singleton) - SharePlus
+    // .instance.share() is the replacement `flutter analyze` expects.
+    // Confirmed via CI (Build APK run #35): the old call still compiled
+    // and ran fine, but `flutter analyze` treats the resulting `info`-
+    // level deprecated_member_use lints as failures (exit code 1),
+    // same as any other analyzer issue.
+    final shareResult = await SharePlus.instance.share(
+      ShareParams(
+        files: [XFile(file.path, mimeType: 'application/pdf')],
+        text: 'WellScreen report for $childName',
+        subject: 'WellScreen Report - $childName',
+      ),
     );
 
     if (shareResult.status == ShareResultStatus.dismissed) {
