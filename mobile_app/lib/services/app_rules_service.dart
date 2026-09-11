@@ -28,6 +28,58 @@ class AppRulesService {
     }
   }
 
+  /// Parent side: the source of truth for loading rules to *edit*
+  /// (RulesScreen), as opposed to [getRules]'s local-only read. Firestore
+  /// is authoritative here - local storage on the parent's own device is
+  /// only ever a cache [saveRulesLocally] writes as a side effect of a
+  /// save, and it starts empty on a fresh install, a second parent device,
+  /// or after the app's data is cleared. RulesScreen used to load from
+  /// [getRules] directly: in any of those states it would show no rules
+  /// toggled, and then [saveRules] - which always overwrites Firestore's
+  /// whole `rules` array, not a per-rule merge - would silently delete
+  /// every restriction the child device was still mirroring via
+  /// [watchRulesForParent]. Falls back to the local cache only if the
+  /// Firestore read itself fails (e.g. offline), same as before.
+  Future<List<AppRule>> fetchCurrentRules() async {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      return getRules();
+    }
+
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('app_rules')
+          .doc(user.uid)
+          .get();
+
+      final rawRules = snapshot.data()?['rules'];
+
+      if (rawRules is! List) {
+        // No Firestore doc yet (brand-new parent, never saved) - nothing
+        // to be authoritative about, fall back to local like getRules().
+        // Awaited (not just returned) so this stays inside the try/catch:
+        // a bare `return getRules();` here would let getRules() reject
+        // outside this frame, unhandled, instead of hitting the catch
+        // block below (same reason the catch's own fallback awaits it).
+        return await getRules();
+      }
+
+      final rules = rawRules
+          .map((item) => AppRule.fromMap(Map<String, dynamic>.from(item)))
+          .toList();
+
+      // Keep the local cache in step with what's actually authoritative,
+      // so a later getRules() call (or this device going offline) isn't
+      // left with stale data either.
+      await saveRulesLocally(rules);
+
+      return rules;
+    } catch (_) {
+      return getRules();
+    }
+  }
+
   Future<void> saveRules(List<AppRule> rules) async {
     await saveRulesLocally(rules);
     await syncRulesToFirestore(rules);
