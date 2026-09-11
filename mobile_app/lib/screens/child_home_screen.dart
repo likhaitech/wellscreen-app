@@ -14,6 +14,7 @@ import '../models/usage_report.dart';
 import '../services/alert_notification_client.dart';
 import '../services/app_rules_service.dart';
 import '../services/daily_screen_time_limit_service.dart';
+import '../services/emergency_access_service.dart';
 import '../services/ml_risk_classifier_service.dart';
 import '../services/site_category_service.dart';
 import '../services/sync_status_service.dart';
@@ -24,6 +25,7 @@ import '../widgets/wellscreen_bottom_nav.dart';
 import 'capture_debug_screen.dart';
 import 'login_screen.dart';
 import 'profile_settings_screen.dart';
+import 'qr_scan_screen.dart';
 
 /// Thrown by [_ChildHomeScreenState._getCurrentPositionOrThrow] specifically
 /// when Android's device-wide location services (GPS) are off - as opposed
@@ -86,13 +88,17 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   final SiteCategoryService _siteCategoryService = SiteCategoryService();
   final DailyScreenTimeLimitService _dailyScreenTimeLimitService =
       DailyScreenTimeLimitService();
+  final EmergencyAccessService _emergencyAccessService =
+      EmergencyAccessService();
   final pairingCodeController = TextEditingController();
+  final emergencyReasonController = TextEditingController();
   StreamSubscription<bool>? _connectivitySubscription;
 
   int currentIndex = 0;
   bool isPairing = false;
   bool isSharingLocation = false;
   bool isSyncingUsage = false;
+  bool isRequestingEmergencyAccess = false;
 
   // Real local usage data loaded via UsageDashboardControllerService, which
   // wraps UsageTrackingService (Android UsageStats), PatternDetectionService
@@ -172,6 +178,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     pairingCodeController.dispose();
+    emergencyReasonController.dispose();
     _connectivitySubscription?.cancel();
     _locationAutoShareTimer?.cancel();
     _usageAutoSyncTimer?.cancel();
@@ -592,6 +599,22 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         setState(() => isPairing = false);
       }
     }
+  }
+
+  /// Opens [QrScanScreen] and, if a code was scanned, fills it into
+  /// [pairingCodeController] and immediately runs it through the same
+  /// [pairWithParent] validation/submit path used for manual entry - QR is
+  /// only a faster way to fill in the code, not a separate pairing route.
+  Future<void> scanQrCode() async {
+    final scannedCode = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(builder: (_) => const QrScanScreen()),
+    );
+
+    if (scannedCode == null || !mounted) return;
+
+    pairingCodeController.text = scannedCode;
+    await pairWithParent();
   }
 
   /// Requests the device's real GPS position via [Geolocator] and shares it
@@ -1524,6 +1547,8 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
                 if (connected) _smsAlertsCard(),
                 if (connected) const SizedBox(height: 22),
                 if (connected) _activeRulesCard(data),
+                if (connected) const SizedBox(height: 22),
+                if (connected) _emergencyAccessCard(data),
                 const SizedBox(height: 22),
                 KeyedSubtree(
                   key: _reportsSectionKey,
@@ -1916,6 +1941,26 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
               label: Text(
                 isPairing ? 'Connecting...' : 'Pair Student Device',
                 style: const TextStyle(fontWeight: FontWeight.w900),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 50,
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: isPairing ? null : scanQrCode,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: purple,
+                side: const BorderSide(color: purple, width: 1.4),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              ),
+              icon: const Icon(Icons.qr_code_scanner_rounded),
+              label: const Text(
+                'Scan QR Code Instead',
+                style: TextStyle(fontWeight: FontWeight.w900),
               ),
             ),
           ),
@@ -2349,6 +2394,253 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         ],
       ),
     );
+  }
+
+  /// Child-requests-temporary-bypass card (EmergencyAccessService). Only
+  /// shown once paired - a request needs a parent to notify and a
+  /// child_profiles doc to write the status onto, same precondition as
+  /// _activeRulesCard right below.
+  Widget _emergencyAccessCard(Map<String, dynamic> data) {
+    final parentId = (data['pairedParentId'] ?? '').toString();
+    final childProfileId = (data['pairedChildProfileId'] ?? '').toString();
+
+    if (parentId.isEmpty || childProfileId.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return StreamBuilder<Map<String, dynamic>>(
+      stream: _emergencyAccessService.watchStatus(childProfileId),
+      builder: (context, snapshot) {
+        final status = (snapshot.data?['status'] ?? 'none').toString();
+
+        return _whiteCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 52,
+                    height: 52,
+                    decoration: BoxDecoration(
+                      color: softRed,
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                    child: const Icon(
+                      Icons.lock_open_rounded,
+                      color: AppColors.danger,
+                      size: 29,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  const Expanded(
+                    child: Text(
+                      'Emergency Access',
+                      style: TextStyle(
+                        color: darkText,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 17,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              _emergencyAccessBody(
+                status,
+                snapshot.data ?? const {},
+                childProfileId,
+                parentId,
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _emergencyAccessBody(
+    String status,
+    Map<String, dynamic> statusData,
+    String childProfileId,
+    String parentId,
+  ) {
+    switch (status) {
+      case 'requested':
+        return const Row(
+          children: [
+            SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2.5, color: purple),
+            ),
+            SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Waiting for your parent to respond to your request...',
+                style: TextStyle(
+                  color: grayText,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                ),
+              ),
+            ),
+          ],
+        );
+      case 'approved':
+        final grantedUntil = statusData['grantedUntil'];
+        final until = grantedUntil is Timestamp ? grantedUntil.toDate() : null;
+        final stillActive = until != null && until.isAfter(DateTime.now());
+
+        if (stillActive) {
+          final hh = until.hour.toString().padLeft(2, '0');
+          final mm = until.minute.toString().padLeft(2, '0');
+          return Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: softGreen,
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.check_circle_rounded,
+                  color: AppColors.success,
+                  size: 22,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Approved - restrictions are lifted until $hh:$mm.',
+                    style: const TextStyle(
+                      color: darkText,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+
+        return _emergencyAccessRequestForm(childProfileId, parentId);
+      case 'denied':
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: softRed,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.cancel_rounded, color: AppColors.danger, size: 22),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Your parent denied your last request.',
+                      style: TextStyle(
+                        color: darkText,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            _emergencyAccessRequestForm(childProfileId, parentId),
+          ],
+        );
+      case 'none':
+      default:
+        return _emergencyAccessRequestForm(childProfileId, parentId);
+    }
+  }
+
+  Widget _emergencyAccessRequestForm(String childProfileId, String parentId) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Need a restricted app for something urgent? Ask your parent to '
+          'temporarily lift restrictions.',
+          style: TextStyle(color: grayText, fontWeight: FontWeight.w600, fontSize: 13),
+        ),
+        const SizedBox(height: 10),
+        TextField(
+          controller: emergencyReasonController,
+          maxLength: 140,
+          decoration: InputDecoration(
+            hintText: 'Reason (optional) - e.g. "need calculator app"',
+            isDense: true,
+            filled: true,
+            fillColor: pageBg,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide.none,
+            ),
+            counterText: '',
+          ),
+        ),
+        const SizedBox(height: 6),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+            onPressed: isRequestingEmergencyAccess
+                ? null
+                : () => requestEmergencyAccess(childProfileId, parentId),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.danger,
+              padding: const EdgeInsets.symmetric(vertical: 13),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+            ),
+            icon: isRequestingEmergencyAccess
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.5,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Icon(Icons.lock_open_rounded, size: 19),
+            label: Text(
+              isRequestingEmergencyAccess ? 'Sending...' : 'Request Access',
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> requestEmergencyAccess(
+    String childProfileId,
+    String parentId,
+  ) async {
+    setState(() => isRequestingEmergencyAccess = true);
+
+    try {
+      await _emergencyAccessService.requestAccess(
+        childProfileId: childProfileId,
+        parentId: parentId,
+        reason: emergencyReasonController.text,
+      );
+      emergencyReasonController.clear();
+      showMessage('Request sent - your parent has been notified.');
+    } catch (e) {
+      showMessage('Could not send request: $e');
+    } finally {
+      if (mounted) {
+        setState(() => isRequestingEmergencyAccess = false);
+      }
+    }
   }
 
   Widget _activeRulesCard(Map<String, dynamic> data) {

@@ -30,7 +30,12 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   final phoneNumberController = TextEditingController();
   final extraDetailController = TextEditingController();
 
+  final currentPasswordController = TextEditingController();
+  final newPasswordController = TextEditingController();
+  final confirmPasswordController = TextEditingController();
+
   bool isSaving = false;
+  bool isChangingPassword = false;
 
   @override
   void dispose() {
@@ -38,6 +43,9 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
     profilePhotoUrlController.dispose();
     phoneNumberController.dispose();
     extraDetailController.dispose();
+    currentPasswordController.dispose();
+    newPasswordController.dispose();
+    confirmPasswordController.dispose();
     super.dispose();
   }
 
@@ -96,6 +104,214 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
         setState(() => isSaving = false);
       }
     }
+  }
+
+  /// Changes the signed-in user's password via Firebase Auth.
+  ///
+  /// Firebase requires a "recent" sign-in before it will accept a password
+  /// change (`requires-recent-login`), so this re-authenticates with the
+  /// user's current password first via [EmailAuthProvider], then calls
+  /// [User.updatePassword]. Nothing here touches Firestore - password
+  /// changes only ever go through Firebase Auth itself, never through the
+  /// app's own `users` collection, so there is no plaintext or hashed
+  /// password anywhere in app data.
+  Future<void> changePassword() async {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null || user.email == null) {
+      showMessage('Please log in again.');
+      return;
+    }
+
+    final currentPassword = currentPasswordController.text;
+    final newPassword = newPasswordController.text;
+    final confirmPassword = confirmPasswordController.text;
+
+    if (currentPassword.isEmpty) {
+      showMessage('Enter your current password.');
+      return;
+    }
+
+    if (newPassword.length < 8) {
+      showMessage('New password must be at least 8 characters.');
+      return;
+    }
+
+    if (newPassword != confirmPassword) {
+      showMessage('New password and confirmation do not match.');
+      return;
+    }
+
+    if (newPassword == currentPassword) {
+      showMessage('New password must be different from the current one.');
+      return;
+    }
+
+    setState(() => isChangingPassword = true);
+
+    try {
+      final credential = EmailAuthProvider.credential(
+        email: user.email!,
+        password: currentPassword,
+      );
+
+      await user.reauthenticateWithCredential(credential);
+      await user.updatePassword(newPassword);
+
+      currentPasswordController.clear();
+      newPasswordController.clear();
+      confirmPasswordController.clear();
+
+      if (!mounted) return;
+
+      Navigator.pop(context);
+      showMessage('Password changed successfully.');
+    } on FirebaseAuthException catch (e) {
+      final message = switch (e.code) {
+        'wrong-password' ||
+        'invalid-credential' => 'Current password is incorrect.',
+        'weak-password' => 'New password is too weak.',
+        'requires-recent-login' =>
+          'Please log out and log back in, then try again.',
+        'too-many-requests' => 'Too many attempts. Please try again later.',
+        _ => 'Failed to change password: ${e.message ?? e.code}',
+      };
+      showMessage(message);
+    } catch (e) {
+      showMessage('Failed to change password: $e');
+    } finally {
+      if (mounted) {
+        setState(() => isChangingPassword = false);
+      }
+    }
+  }
+
+  void showChangePasswordSheet() {
+    currentPasswordController.clear();
+    newPasswordController.clear();
+    confirmPasswordController.clear();
+
+    // Captured by the StatefulBuilder closure below so it survives across
+    // setSheetState() rebuilds (a plain local re-declared inside the
+    // builder callback would reset to its initial value every rebuild).
+    var sheetIsSubmitting = false;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) {
+        return Padding(
+          padding: EdgeInsets.only(
+            left: 18,
+            right: 18,
+            bottom: MediaQuery.of(context).viewInsets.bottom + 18,
+          ),
+          child: StatefulBuilder(
+            builder: (context, setSheetState) {
+              return Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(28),
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Center(
+                        child: Container(
+                          width: 48,
+                          height: 5,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFD1D5DB),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      const Text(
+                        'Change Password',
+                        style: TextStyle(
+                          color: darkText,
+                          fontSize: 24,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      const Text(
+                        'For your security, confirm your current password before setting a new one.',
+                        style: TextStyle(
+                          color: grayText,
+                          height: 1.35,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      _textField(
+                        controller: currentPasswordController,
+                        label: 'Current Password',
+                        icon: Icons.lock_outline_rounded,
+                        obscureText: true,
+                      ),
+                      const SizedBox(height: 12),
+                      _textField(
+                        controller: newPasswordController,
+                        label: 'New Password (min. 8 characters)',
+                        icon: Icons.lock_rounded,
+                        obscureText: true,
+                      ),
+                      const SizedBox(height: 12),
+                      _textField(
+                        controller: confirmPasswordController,
+                        label: 'Confirm New Password',
+                        icon: Icons.lock_rounded,
+                        obscureText: true,
+                      ),
+                      const SizedBox(height: 20),
+                      SizedBox(
+                        height: 54,
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          onPressed: sheetIsSubmitting
+                              ? null
+                              : () async {
+                                  setSheetState(() => sheetIsSubmitting = true);
+                                  await changePassword();
+                                  // On success, changePassword() already
+                                  // popped this sheet - only reset the
+                                  // local flag if it's still on screen
+                                  // (e.g. it failed validation/auth).
+                                  if (context.mounted) {
+                                    setSheetState(
+                                      () => sheetIsSubmitting = false,
+                                    );
+                                  }
+                                },
+                          style: FilledButton.styleFrom(
+                            backgroundColor: purple,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                          ),
+                          icon: const Icon(Icons.save_rounded),
+                          label: Text(
+                            sheetIsSubmitting ? 'Changing...' : 'Change Password',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
   }
 
   Future<void> logout() async {
@@ -242,10 +458,12 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
     required String label,
     required IconData icon,
     TextInputType keyboardType = TextInputType.text,
+    bool obscureText = false,
   }) {
     return TextField(
       controller: controller,
       keyboardType: keyboardType,
+      obscureText: obscureText,
       decoration: InputDecoration(
         labelText: label,
         prefixIcon: Icon(icon, color: purple),
@@ -412,6 +630,14 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
               _settingsSection(
                 title: 'Privacy and System',
                 children: [
+                  _settingsTile(
+                    icon: Icons.password_rounded,
+                    iconColor: purple,
+                    backgroundColor: softBlue,
+                    title: 'Change Password',
+                    subtitle: 'Update the password for this account.',
+                    onTap: showChangePasswordSheet,
+                  ),
                   _settingsTile(
                     icon: Icons.privacy_tip_rounded,
                     iconColor: teal,

@@ -19,6 +19,13 @@
          permission_handler; declared here so the OS allows the request. -->
     <uses-permission android:name="android.permission.SEND_SMS" />
 
+    <!-- QR pairing scan (child_home_screen.dart -> qr_scan_screen.dart, via
+         the mobile_scanner package). android:required="false" so a device
+         with no camera (e.g. some tablets) can still install the app and
+         fall back to the existing manual 6-digit code entry. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
     <application
         android:label="WellScreen"
         android:name="${applicationName}"

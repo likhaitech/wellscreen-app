@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../services/location_geocoding_service.dart';
+import '../services/report_export_service.dart';
 import '../theme/app_theme.dart';
 import 'gps_map_screen.dart';
 
@@ -421,6 +422,13 @@ class ReportsScreen extends StatelessWidget {
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Reports'),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.ios_share_rounded),
+              tooltip: 'Export report as PDF',
+              onPressed: () => _exportReport(context),
+            ),
+          ],
           // A branded pill/segmented control instead of Material's default
           // underline TabBar - the underline style reads as a plain
           // document viewer; a filled sliding pill (the same rounded-pill
@@ -532,6 +540,29 @@ class ReportsScreen extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// Builds a PDF snapshot of this child's current report data (via
+  /// [ReportExportService], which does its own one-off Firestore read
+  /// rather than reusing this screen's live stream - see that service's
+  /// class doc comment) and opens the platform share sheet on it.
+  Future<void> _exportReport(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('Generating report...'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+
+    try {
+      await ReportExportService.exportChildReport(childProfileId);
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('Failed to export report: $e')),
+      );
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -823,8 +854,18 @@ class ReportsScreen extends StatelessWidget {
     final smsFailed = smsLog
         .where((e) => (e['outcome'] as String? ?? '').startsWith('failed'))
         .length;
-    final restrictionFailed =
-        restrictionLog.where((e) => e['outcome'] != 'blocked').length;
+    // "blocked" is the normal enforcement outcome; a parent-approved
+    // emergency-access bypass is also a correctly-working outcome, not a
+    // failure - matches the isSuccess check passed to _logSummarySection
+    // below so this summary count and that section's per-entry badges and
+    // sort-to-top-when-failing behavior agree with each other.
+    final restrictionFailed = restrictionLog
+        .where(
+          (e) =>
+              e['outcome'] != 'blocked' &&
+              e['outcome'] != 'emergency_access_bypass',
+        )
+        .length;
     final pushFailed = pushAlertLog.where((e) => e['outcome'] != 'sent').length;
     final syncFailed = syncLog.where((e) => e['outcome'] != 'synced').length;
 
@@ -850,7 +891,13 @@ class ReportsScreen extends StatelessWidget {
           title: 'Restriction Enforcement',
           emptyMessage: 'No restricted-app blocks recorded yet on the '
               'child device.',
-          isSuccess: (entry) => entry['outcome'] == 'blocked',
+          // "blocked" is the normal enforcement outcome; an emergency-access
+          // bypass is also a correctly-working outcome (the parent approved
+          // it), not a failure, so both read as success-styled here - only
+          // an actual failed_exception should show as a failure.
+          isSuccess: (entry) =>
+              entry['outcome'] == 'blocked' ||
+              entry['outcome'] == 'emergency_access_bypass',
           entryLabel: (entry) =>
               '${_friendlyAppName(entry['packageName'] as String?)} · '
               '${entry['outcome'] ?? 'unknown'}',

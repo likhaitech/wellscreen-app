@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../services/emergency_access_service.dart';
 import '../services/pattern_detection_service.dart';
 import '../services/push_notification_service.dart';
 import '../theme/app_theme.dart';
@@ -46,6 +47,12 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
 
   final PushNotificationService _pushNotificationService =
       PushNotificationService();
+  final EmergencyAccessService _emergencyAccessService =
+      EmergencyAccessService();
+
+  // Guards the Approve/Deny buttons so a double-tap can't fire
+  // respondToRequest() twice for the same request.
+  bool _isRespondingToEmergencyAccess = false;
 
   @override
   void initState() {
@@ -387,6 +394,13 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                 _topBar(),
                 const SizedBox(height: 18),
                 _deviceProfileCard(primaryChild),
+                if (_hasPendingEmergencyAccessRequest(primaryChild)) ...[
+                  const SizedBox(height: 22),
+                  _emergencyAccessRequestCard(
+                    _primaryChildId ?? '',
+                    primaryChild!,
+                  ),
+                ],
                 const SizedBox(height: 22),
                 _screenTimeAndRiskSection(primaryChild),
                 const SizedBox(height: 18),
@@ -501,6 +515,152 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
         ),
       ),
     );
+  }
+
+  /// True when this child has a live, unanswered Emergency Access request
+  /// (EmergencyAccessService.requestAccess on the child side). Read directly
+  /// off the childProfilesStream doc already in hand here rather than a
+  /// second stream - this dashboard already rebuilds on every change to
+  /// that doc, so the pending-request card appears/disappears live for
+  /// free as soon as the parent responds.
+  bool _hasPendingEmergencyAccessRequest(Map<String, dynamic>? child) {
+    final raw = child?['emergencyAccess'];
+    if (raw is! Map) return false;
+
+    return (raw['status'] ?? '').toString() == 'requested';
+  }
+
+  /// Parent-side approve/deny surface for a pending Emergency Access
+  /// request. Only rendered by build() while status == 'requested', so it
+  /// reads as a real "action needed" card rather than a permanent fixture.
+  Widget _emergencyAccessRequestCard(
+    String childProfileId,
+    Map<String, dynamic> child,
+  ) {
+    final emergencyAccess = child['emergencyAccess'];
+    final reason = emergencyAccess is Map
+        ? (emergencyAccess['reason'] ?? '').toString()
+        : '';
+    final childName = (child['name'] ?? 'Your child').toString();
+
+    return _whiteCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 52,
+                height: 52,
+                decoration: BoxDecoration(
+                  color: AppColors.dangerBg,
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: const Icon(
+                  Icons.lock_open_rounded,
+                  color: AppColors.danger,
+                  size: 29,
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Emergency Access Requested',
+                      style: TextStyle(
+                        color: darkText,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 16,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      reason.isEmpty
+                          ? '$childName wants restrictions temporarily lifted.'
+                          : '$childName: "$reason"',
+                      style: const TextStyle(
+                        color: grayText,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: _isRespondingToEmergencyAccess
+                      ? null
+                      : () => _respondToEmergencyAccess(
+                          childProfileId,
+                          approve: false,
+                        ),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.danger,
+                    side: const BorderSide(color: AppColors.danger),
+                    padding: const EdgeInsets.symmetric(vertical: 13),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                  child: const Text('Deny'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton(
+                  onPressed: _isRespondingToEmergencyAccess
+                      ? null
+                      : () => _respondToEmergencyAccess(
+                          childProfileId,
+                          approve: true,
+                        ),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: purple,
+                    padding: const EdgeInsets.symmetric(vertical: 13),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                  child: const Text('Approve (30 min)'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _respondToEmergencyAccess(
+    String childProfileId, {
+    required bool approve,
+  }) async {
+    setState(() => _isRespondingToEmergencyAccess = true);
+
+    try {
+      await _emergencyAccessService.respondToRequest(
+        childProfileId: childProfileId,
+        approve: approve,
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not respond to request: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isRespondingToEmergencyAccess = false);
+      }
+    }
   }
 
   Widget _deviceProfileCard(Map<String, dynamic>? child) {

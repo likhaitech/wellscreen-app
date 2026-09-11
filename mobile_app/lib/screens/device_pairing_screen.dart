@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../theme/app_theme.dart';
 import 'login_screen.dart';
@@ -438,6 +439,48 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
                 letterSpacing: 8,
                 fontWeight: FontWeight.w900,
               ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          // Same code as above, just scannable - the student can either
+          // type the 6 digits or point their camera at this on the child
+          // app's pairing screen (see qr_scan_screen.dart). Encodes the
+          // plain code only, nothing else, so it carries no more trust
+          // than the digits do: whoever holds pairing_codes/{code} in
+          // Firestore is still what actually grants the pairing, not
+          // possession of the image.
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(22),
+            ),
+            child: Column(
+              children: [
+                QrImageView(
+                  data: generatedCode,
+                  version: QrVersions.auto,
+                  size: 160,
+                  backgroundColor: Colors.white,
+                  eyeStyle: const QrEyeStyle(
+                    eyeShape: QrEyeShape.square,
+                    color: purple,
+                  ),
+                  dataModuleStyle: const QrDataModuleStyle(
+                    dataModuleShape: QrDataModuleShape.square,
+                    color: purple,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Or let the student scan this QR code',
+                  style: TextStyle(
+                    color: grayText,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
             ),
           ),
           const SizedBox(height: 12),
