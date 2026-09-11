@@ -113,8 +113,18 @@ class WellScreenAccessibilityService : AccessibilityService() {
                 return
             }
 
+            // Gated on BlockedAppActivity.isShowing too, not just elapsed
+            // time - a bare time window let a child dismiss the block
+            // screen ("Go Back", or just switching via Recents - both
+            // near-instant) and land right back on the still-running
+            // restricted app underneath with nothing re-blocking it until
+            // the 2.5s window happened to expire on its own. Once the
+            // block screen is actually gone, the very next foreground
+            // event for that package must re-block it.
             val recentlyBlockedSameApp =
-                lastBlockedPackage == currentPackage && now - lastBlockTime < 2500
+                lastBlockedPackage == currentPackage &&
+                    now - lastBlockTime < 2500 &&
+                    BlockedAppActivity.isShowing
 
             if (!recentlyBlockedSameApp) {
                 lastBlockedPackage = currentPackage

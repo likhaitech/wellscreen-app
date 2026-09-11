@@ -58,8 +58,6 @@ object SmsAlertSender {
         if (!hasSmsPermission(context)) return
         if (isOnCooldown(prefs, blockedPackage)) return
 
-        markSent(prefs, blockedPackage)
-
         val message = "WellScreen alert: \"$appLabel\" was opened and blocked on your child's device."
 
         try {
@@ -90,6 +88,18 @@ object SmsAlertSender {
                 pendingIntentFlags(),
             )
 
+            // FIX: mark the cooldown only once a send is actually going to
+            // be attempted, not unconditionally before the SmsManager
+            // null-check above. On a device with no telephony/SIM (a
+            // Wi-Fi-only tablet used as the monitored device - a real,
+            // expected target per getInstalledApps' own notes), the old
+            // order logged one visible "failed_no_manager" and then
+            // silently swallowed every later block for the rest of the
+            // cooldown period (and every day after) with no outcome
+            // recorded at all - masking a permanent failure of this whole
+            // backup channel as a one-time blip.
+            markSent(prefs, blockedPackage)
+
             smsManager.sendTextMessage(phoneNumber, null, message, sentPI, deliveredPI)
         } catch (_: Exception) {
             recordOutcome(context, blockedPackage, "failed_exception", triggeredAtMs)
@@ -106,10 +116,20 @@ object SmsAlertSender {
     }
 
     private fun pendingIntentFlags(): Int {
+        // FIX: FLAG_UPDATE_CURRENT is required here, not optional - without
+        // it, a PendingIntent.getBroadcast() call with a request code that
+        // already has a live PendingIntent (same blockedPackage.hashCode(),
+        // which repeats every time the same app is blocked again on a
+        // later day - the 24h cooldown is designed to allow exactly that)
+        // returns the EXISTING PendingIntent with its ORIGINAL extras,
+        // silently discarding the new EXTRA_TRIGGERED_AT_MS. SmsSent/
+        // DeliveredReceiver then compute responseTimeMs against a stale,
+        // possibly days-old timestamp, corrupting the delivery-latency
+        // numbers reports_screen.dart shows the parent.
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         } else {
-            0
+            PendingIntent.FLAG_UPDATE_CURRENT
         }
     }
 
@@ -151,6 +171,32 @@ object SmsAlertSender {
             val log = JSONArray(prefs.getString(LOG_KEY, "[]") ?: "[]")
 
             val now = System.currentTimeMillis()
+
+            // FIX: "delivered"/"undelivered" is a follow-up report for the
+            // SAME SMS a prior "sent" entry already recorded (SmsSentReceiver
+            // fires first, SmsDeliveredReceiver second, when the carrier
+            // supplies a delivery report) - update that entry in place
+            // instead of appending a second one. Appending unconditionally
+            // meant one successful, delivery-confirmed SMS produced two log
+            // entries while a failed send produced one, so reports_screen.dart's
+            // "X sent/delivered out of N attempts" summary double-counted
+            // successes and inflated the apparent attempt count.
+            if (outcome == "delivered" || outcome == "undelivered") {
+                for (i in log.length() - 1 downTo 0) {
+                    val existing = log.optJSONObject(i) ?: continue
+                    if (existing.optString("packageName") == packageName &&
+                        existing.optString("outcome") == "sent"
+                    ) {
+                        existing.put("outcome", outcome)
+                        existing.put("timestampMs", now)
+                        if (triggeredAtMs != null) {
+                            existing.put("responseTimeMs", now - triggeredAtMs)
+                        }
+                        prefs.edit().putString(LOG_KEY, log.toString()).apply()
+                        return
+                    }
+                }
+            }
 
             val entry = JSONObject()
             entry.put("packageName", packageName)

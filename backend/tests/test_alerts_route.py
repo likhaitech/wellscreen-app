@@ -102,6 +102,42 @@ def test_notify_unauthorized_caller_returns_403():
     assert response.status_code == 403
 
 
+def test_notify_unexpected_error_returns_generic_500_not_internal_details():
+    # FIX: unlike the admin/* routes (require_admin-gated - an already-
+    # trusted admin seeing their own action's raw error is low-stakes),
+    # this route is require_user-gated, so ANY signed-in parent or child
+    # can trigger an unhandled exception here (e.g. a Firestore hiccup
+    # inside caller_may_notify()/send_alert_notification() that isn't one
+    # of the two typed exceptions covered above). The response must never
+    # leak the real exception text to that caller.
+    app.dependency_overrides[require_user] = lambda: {"uid": "parent-1"}
+    try:
+        with patch(
+            "app.routes.alerts.send_alert_notification",
+            side_effect=RuntimeError(
+                "internal detail: firestore project wellscreen-prod-4471 unreachable"
+            ),
+        ):
+            response = client.post(
+                "/alerts/notify",
+                json={
+                    "parent_uid": "parent-1",
+                    "title": "t",
+                    "body": "b",
+                    "alert_type": "usage_limit",
+                },
+                headers={"Authorization": "Bearer fake-token-for-test"},
+            )
+    finally:
+        app.dependency_overrides.pop(require_user, None)
+
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert detail == "Failed to send alert notification."
+    assert "firestore" not in detail.lower()
+    assert "wellscreen-prod-4471" not in detail
+
+
 def test_notify_missing_device_token_returns_200_with_failed_status():
     # Documented as "not a server error" in alerts.py - the recipient just
     # hasn't registered a device yet, so this must be 200 + failed status,

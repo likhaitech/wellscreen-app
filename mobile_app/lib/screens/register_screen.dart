@@ -63,8 +63,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
         return;
       }
 
-      await user.updateDisplayName(fullName);
-
       final userData = <String, dynamic>{
         'uid': user.uid,
         'fullName': fullName,
@@ -86,10 +84,30 @@ class _RegisterScreenState extends State<RegisterScreen> {
         userData.addAll({'childrenCount': 0});
       }
 
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .set(userData);
+      try {
+        await user.updateDisplayName(fullName);
+
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .set(userData);
+      } catch (setupError) {
+        // createUserWithEmailAndPassword() above already created (and
+        // signed in) the Auth account. If either write below it fails
+        // (dropped connection, backgrounded app, a Firestore rule hiccup -
+        // all realistic on mobile), that Auth account is left permanently
+        // orphaned with no users/{uid} doc: re-registering the same email
+        // fails with "email-already-in-use", and login_screen.dart shows
+        // "Account role not found" forever, since nothing anywhere
+        // auto-creates a missing profile doc. Delete the Auth account so
+        // the user can cleanly retry from scratch instead of getting stuck.
+        try {
+          await user.delete();
+        } catch (_) {
+          // Best-effort cleanup - surface the original error either way.
+        }
+        rethrow;
+      }
 
       if (!mounted) return;
 

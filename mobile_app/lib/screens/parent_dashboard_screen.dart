@@ -272,6 +272,7 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
           longitude: longitude,
           label: label,
           updatedAt: updatedAt,
+          hasLocation: hasSharedLocation(child),
         ),
       ),
     );

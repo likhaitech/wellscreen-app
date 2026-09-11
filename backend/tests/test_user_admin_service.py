@@ -107,6 +107,50 @@ class TestCreateUser:
 
         mock_claims.assert_called_once_with("new-uid", {"role": "user", "admin": False})
 
+    def test_firestore_write_failure_deletes_the_orphaned_auth_account(self):
+        # FIX: auth.create_user() already created the Auth account before
+        # this Firestore write runs. Without cleanup, a failure here left
+        # that account permanently orphaned - no Firestore doc, but the
+        # email already taken (a retry would 409 "email already exists").
+        created = _fake_user_record(uid="new-uid", email="new@example.com")
+        fake_db = MagicMock()
+        fake_db.collection.return_value.document.return_value.set.side_effect = (
+            RuntimeError("firestore unavailable")
+        )
+
+        with patch.object(svc, "initialize_firebase"), patch.object(
+            svc.auth, "create_user", return_value=created
+        ), patch.object(svc.auth, "set_custom_user_claims"), patch.object(
+            svc, "get_firestore_client", return_value=fake_db
+        ), patch.object(svc.auth, "delete_user") as mock_delete:
+            try:
+                svc.create_user(email="new@example.com", password="secret123")
+                raised = False
+            except RuntimeError:
+                raised = True
+
+        assert raised, "the original error must still propagate"
+        mock_delete.assert_called_once_with("new-uid")
+
+    def test_custom_claims_failure_also_deletes_the_orphaned_auth_account(self):
+        created = _fake_user_record(uid="new-uid", email="new@example.com")
+
+        with patch.object(svc, "initialize_firebase"), patch.object(
+            svc.auth, "create_user", return_value=created
+        ), patch.object(
+            svc.auth,
+            "set_custom_user_claims",
+            side_effect=RuntimeError("claims service unavailable"),
+        ), patch.object(
+            svc, "get_firestore_client", return_value=MagicMock()
+        ), patch.object(svc.auth, "delete_user") as mock_delete:
+            try:
+                svc.create_user(email="new@example.com", password="secret123")
+            except RuntimeError:
+                pass
+
+        mock_delete.assert_called_once_with("new-uid")
+
     def test_writes_a_users_firestore_document(self):
         created = _fake_user_record(uid="new-uid", email="new@example.com")
         fake_db = MagicMock()
@@ -196,6 +240,76 @@ class TestUpdateUser:
         ):
             svc.update_user("u1", disabled=False)
             svc.update_user("u1", display_name="No disabled arg at all")
+
+        mock_revoke.assert_not_called()
+
+    def test_demoting_an_admin_revokes_refresh_tokens(self):
+        # Same class of bug as the disabled-path FIX above, for the role
+        # path: set_custom_user_claims() only affects tokens issued AFTER
+        # the change - a just-demoted admin's already-issued token keeps
+        # carrying "admin": true and keeps passing require_admin's claim
+        # check (see admin_auth_service.py) until it expires (up to 1h)
+        # unless the demotion also revokes it here.
+        with patch.object(svc, "initialize_firebase"), patch.object(
+            svc.auth, "update_user"
+        ), patch.object(
+            svc.auth,
+            "get_user",
+            return_value=_fake_user_record(
+                custom_claims={"role": "admin", "admin": True}
+            ),
+        ), patch.object(
+            svc.auth, "set_custom_user_claims"
+        ), patch.object(
+            svc.auth, "revoke_refresh_tokens"
+        ) as mock_revoke, patch.object(
+            svc, "get_firestore_client", return_value=MagicMock()
+        ):
+            svc.update_user("u1", role="user")
+
+        mock_revoke.assert_called_once_with("u1")
+
+    def test_promoting_to_admin_does_not_revoke(self):
+        # The hole only exists in one direction (an admin's already-issued
+        # token outliving its claims) - a newly-promoted admin's OLD token
+        # correctly still lacks the admin claim, so there's nothing stale
+        # to revoke on promotion.
+        with patch.object(svc, "initialize_firebase"), patch.object(
+            svc.auth, "update_user"
+        ), patch.object(
+            svc.auth,
+            "get_user",
+            return_value=_fake_user_record(
+                custom_claims={"role": "user", "admin": False}
+            ),
+        ), patch.object(
+            svc.auth, "set_custom_user_claims"
+        ), patch.object(
+            svc.auth, "revoke_refresh_tokens"
+        ) as mock_revoke, patch.object(
+            svc, "get_firestore_client", return_value=MagicMock()
+        ):
+            svc.update_user("u1", role="admin")
+
+        mock_revoke.assert_not_called()
+
+    def test_non_admin_role_change_does_not_revoke(self):
+        with patch.object(svc, "initialize_firebase"), patch.object(
+            svc.auth, "update_user"
+        ), patch.object(
+            svc.auth,
+            "get_user",
+            return_value=_fake_user_record(
+                custom_claims={"role": "user", "admin": False}
+            ),
+        ), patch.object(
+            svc.auth, "set_custom_user_claims"
+        ), patch.object(
+            svc.auth, "revoke_refresh_tokens"
+        ) as mock_revoke, patch.object(
+            svc, "get_firestore_client", return_value=MagicMock()
+        ):
+            svc.update_user("u1", role="parent")
 
         mock_revoke.assert_not_called()
 

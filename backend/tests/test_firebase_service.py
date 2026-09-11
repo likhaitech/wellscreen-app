@@ -16,6 +16,8 @@ reads real global module state that would otherwise leak between tests.
 """
 from __future__ import annotations
 
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -104,6 +106,55 @@ class TestInitializeFirebase:
         # Credentials, matching the try/except fallback branch.
         mock_init.assert_called_once_with()
         assert result is fake_app
+
+    def test_concurrent_calls_only_initialize_once(self, tmp_path, monkeypatch):
+        # FIX regression test: FastAPI runs sync dependencies (require_admin/
+        # require_user, both of which call this) in a real OS thread pool,
+        # not just interleaved async tasks. Before the lock, two threads
+        # could both pass the unguarded `if firebase_admin._apps` check
+        # while empty and both reach initialize_app() - the loser raising
+        # ValueError("The default Firebase app already exists") outside any
+        # try/except in the callers. This drives two real threads through
+        # initialize_firebase() at once, with initialize_app() deliberately
+        # slowed down to widen that race window, and asserts it only ever
+        # runs once.
+        fake_service_account = tmp_path / "firebase-service-account.json"
+        fake_service_account.write_text("{}")
+        monkeypatch.delenv("FIREBASE_SERVICE_ACCOUNT_PATH", raising=False)
+        monkeypatch.setattr(svc, "_DEFAULT_SERVICE_ACCOUNT", fake_service_account)
+
+        fake_app = MagicMock()
+        call_count = 0
+        start_barrier = threading.Barrier(2)
+
+        def slow_initialize_app(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            time.sleep(0.05)
+            firebase_admin._apps["[DEFAULT]"] = fake_app
+            return fake_app
+
+        results: list = []
+        errors: list = []
+
+        def worker():
+            start_barrier.wait()
+            try:
+                results.append(svc.initialize_firebase())
+            except Exception as exc:  # pragma: no cover - failure path
+                errors.append(exc)
+
+        with patch.object(svc.credentials, "Certificate", return_value=MagicMock()), \
+             patch.object(svc.firebase_admin, "initialize_app", side_effect=slow_initialize_app):
+            threads = [threading.Thread(target=worker) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=5)
+
+        assert errors == []
+        assert call_count == 1
+        assert results == [fake_app, fake_app]
 
     def test_missing_credentials_raise_a_clear_runtime_error(self, tmp_path, monkeypatch):
         missing_path = tmp_path / "does-not-exist.json"

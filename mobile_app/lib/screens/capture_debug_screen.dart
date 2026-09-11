@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -40,6 +41,18 @@ class _CaptureDebugScreenState extends State<CaptureDebugScreen> {
   @override
   void initState() {
     super.initState();
+    // This screen renders the RAW, un-normalized address-bar text captured
+    // by BrowserUrlExtractor.kt (full URL incl. path/query, not just the
+    // domain parents see in Reports) and it's reachable via an
+    // undocumented long-press on child_home_screen.dart's logo - a gesture
+    // with no auth check, only obscurity. That's fine for development
+    // troubleshooting but must never load real captured data in a release
+    // build, or the monitored child could read their own logged browsing
+    // history straight out of the app meant to keep it from them.
+    if (!kDebugMode) {
+      _loading = false;
+      return;
+    }
     _loadLog();
   }
 
@@ -90,6 +103,24 @@ class _CaptureDebugScreenState extends State<CaptureDebugScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (!kDebugMode) {
+      return Scaffold(
+        backgroundColor: AppColors.background,
+        appBar: AppBar(title: const Text('Capture Debug Log')),
+        body: const Center(
+          child: Padding(
+            padding: EdgeInsets.all(AppSpacing.lg),
+            child: Text(
+              'The capture debug log is only available in development '
+              'builds.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: AppColors.textSecondary),
+            ),
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
