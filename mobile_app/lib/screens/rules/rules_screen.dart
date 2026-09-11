@@ -48,7 +48,14 @@ class _RulesScreenState extends State<RulesScreen> {
 
     try {
       final apps = await _androidAppService.getInstalledApps();
-      final rules = await _rulesService.getRules();
+      // fetchCurrentRules(), not getRules() - this screen edits and then
+      // saves the FULL rule set back to Firestore (a whole-array
+      // overwrite, not a per-rule merge), so it must start from whatever
+      // is actually authoritative there, not just this device's local
+      // cache. See fetchCurrentRules()'s doc comment for the data-loss
+      // scenario that created (a fresh install/second device/cleared app
+      // data silently wiping every rule the child device was mirroring).
+      final rules = await _rulesService.fetchCurrentRules();
 
       setState(() {
         _installedApps = apps;
