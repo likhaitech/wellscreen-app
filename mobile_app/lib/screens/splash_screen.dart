@@ -4,6 +4,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import 'admin_settings_screen.dart';
 import 'child_home_screen.dart';
 import 'login_screen.dart';
 import 'parent_dashboard_screen.dart';
@@ -41,6 +42,25 @@ class _SplashScreenState extends State<SplashScreen> {
 
       if (user == null) {
         goToLogin();
+        return;
+      }
+
+      // Check custom claims first, same as login_screen.dart - without
+      // this, an already-signed-in admin (grant_admin.py sets Firestore
+      // role: 'admin', which matches neither 'parent' nor 'child'/'student'
+      // below) fell through to goToLogin() on every cold start, even
+      // though logging in again from there would route them correctly.
+      final tokenResult = await user.getIdTokenResult(true);
+      final claims = tokenResult.claims ?? <String, dynamic>{};
+      final isAdmin = claims['admin'] == true || claims['role'] == 'admin';
+
+      if (!mounted) return;
+
+      if (isAdmin) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const AdminSettingsScreen()),
+        );
         return;
       }
 

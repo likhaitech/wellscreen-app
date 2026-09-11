@@ -1376,6 +1376,7 @@ class _LocationTabCardState extends State<_LocationTabCard> {
                         longitude: _longitude,
                         label: _fallbackLabel,
                         updatedAt: _formatTimestamp(widget.updatedAt),
+                        hasLocation: true,
                       ),
                     ),
                   );

@@ -12,12 +12,22 @@ class GpsMapScreen extends StatefulWidget {
     required this.longitude,
     required this.label,
     required this.updatedAt,
+    required this.hasLocation,
   });
 
   final double latitude;
   final double longitude;
   final String label;
   final String updatedAt;
+
+  // False when latitude/longitude are the "Cebu City, Philippines preview"
+  // placeholder point (parent_dashboard_screen.dart's openGpsMap(), when
+  // hasSharedLocation() is false) rather than a real GPS fix. Needed
+  // because that placeholder sits on real, valid downtown-Cebu coordinates
+  // - without this flag, _resolveAddress() reverse-geocodes it to a real
+  // street/city name and renders it with nothing marking it a placeholder,
+  // unlike GpsMapPreview's "Cebu Preview" pill on the dashboard.
+  final bool hasLocation;
 
   @override
   State<GpsMapScreen> createState() => _GpsMapScreenState();
@@ -55,6 +65,20 @@ class _GpsMapScreenState extends State<GpsMapScreen> {
   }
 
   Future<void> _resolveAddress() async {
+    // The "no GPS shared yet" placeholder sits on real, valid coordinates -
+    // reverse-geocoding it would return a plausible real address and
+    // render it as if it were the child's actual current location, with
+    // nothing on screen marking it a placeholder. Skip the lookup entirely
+    // and fall back to widget.label (the "Cebu City, Philippines preview"
+    // text) instead.
+    if (!widget.hasLocation) {
+      setState(() {
+        _isResolvingAddress = false;
+        _resolvedPlaceName = null;
+      });
+      return;
+    }
+
     setState(() {
       _isResolvingAddress = true;
       _resolvedPlaceName = null;

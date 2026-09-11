@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.models.alert import AlertNotifyRequest, AlertNotifyResponse
@@ -9,6 +11,8 @@ from app.services.notification_service import (
 from app.services.user_auth_service import require_user
 
 router = APIRouter(prefix="/alerts", tags=["Alerts"])
+
+logger = logging.getLogger(__name__)
 
 
 @router.post("/notify", response_model=AlertNotifyResponse)
@@ -38,8 +42,19 @@ def notify(
         # caller distinguish "we tried and it didn't work" from "the server
         # is broken", matching AlertNotifyResponse's shape either way.
         return AlertNotifyResponse(status="failed", error=str(exc))
-    except Exception as exc:
+    except Exception:
+        # FIX: unlike admin_users.py/admin_logs.py/admin_settings.py (all
+        # gated by require_admin - an already-trusted caller seeing their
+        # own action's error text is low-stakes), this route is gated by
+        # require_user, so ANY signed-in parent or child hits this path -
+        # e.g. a transient Firestore hiccup inside caller_may_notify()/
+        # send_alert_notification() that isn't one of the two typed
+        # exceptions above. Returning str(exc) here would hand a regular,
+        # non-admin user raw internal exception text (Firestore paths,
+        # gRPC error details). Log the real exception server-side instead
+        # and return a generic message to the client.
+        logger.exception("Unexpected error sending alert notification")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
+            detail="Failed to send alert notification.",
         )
