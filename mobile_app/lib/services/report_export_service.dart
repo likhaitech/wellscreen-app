@@ -166,7 +166,13 @@ class ReportExportService {
     ),
   );
 
-  static String _formatDuration(dynamic totalMs) {
+  /// Public (not `_formatDuration`) so report_export_service_test.dart can
+  /// exercise this pure formatting logic directly - previously private and
+  /// therefore untestable from outside this file, same reasoning as every
+  /// other pure-logic extraction in this codebase (see
+  /// usage_tracking_service.dart's countMaxAppOpens() for the established
+  /// pattern). No behavior change - purely a visibility rename.
+  static String formatDuration(dynamic totalMs) {
     if (totalMs is! num) return 'Not available';
     final duration = Duration(milliseconds: totalMs.toInt());
     final hours = duration.inHours;
@@ -176,7 +182,8 @@ class ReportExportService {
     return '${duration.inSeconds} s';
   }
 
-  static String _formatTimestamp(dynamic value) {
+  /// Public for the same testability reason as [formatDuration] above.
+  static String formatTimestamp(dynamic value) {
     DateTime? date;
     if (value is Timestamp) {
       date = value.toDate();
@@ -191,7 +198,8 @@ class ReportExportService {
     return '$month/$day $hour:$minute';
   }
 
-  static List<Map<String, dynamic>> _decodeLog(dynamic raw) {
+  /// Public for the same testability reason as [formatDuration] above.
+  static List<Map<String, dynamic>> decodeLog(dynamic raw) {
     if (raw is! List) return <Map<String, dynamic>>[];
     return raw
         .whereType<Map>()
@@ -237,9 +245,9 @@ class ReportExportService {
         _sectionTitle('Usage Summary'),
         _kv(
           'Screen time today',
-          _formatDuration(reportMap['totalUsageDurationMs']),
+          formatDuration(reportMap['totalUsageDurationMs']),
         ),
-        _kv('Last synced', _formatTimestamp(data['usageReportUpdatedAt'])),
+        _kv('Last synced', formatTimestamp(data['usageReportUpdatedAt'])),
         _kv('Top apps', topAppNames.isEmpty ? 'None recorded' : topAppNames),
         _kv(
           'Apps flagged unhealthy',
@@ -264,7 +272,7 @@ class ReportExportService {
   }
 
   static pw.Widget _buildBrowsingSection(Map<String, dynamic> data) {
-    final log = _decodeLog(data['browsingLog']);
+    final log = decodeLog(data['browsingLog']);
 
     if (log.isEmpty) {
       return pw.Column(
@@ -306,7 +314,7 @@ class ReportExportService {
                 children: [
                   _tableCell((entry['domain'] ?? entry['url'] ?? 'Unknown').toString()),
                   _tableCell((entry['category'] ?? 'flagged').toString()),
-                  _tableCell(_formatTimestamp(entry['timestamp'])),
+                  _tableCell(formatTimestamp(entry['timestamp'])),
                 ],
               ),
           ],
@@ -354,15 +362,15 @@ class ReportExportService {
       children: [
         _sectionTitle('Location'),
         _kv('Last known location', subtitle),
-        _kv('Last synced', _formatTimestamp(data['locationUpdatedAt'])),
+        _kv('Last synced', formatTimestamp(data['locationUpdatedAt'])),
       ],
     );
   }
 
   static pw.Widget _buildAlertsSection(Map<String, dynamic> data) {
-    final smsLog = _decodeLog(data['smsAlertLog']);
-    final restrictionLog = _decodeLog(data['restrictionLog']);
-    final pushAlertLog = _decodeLog(data['pushAlertLog']);
+    final smsLog = decodeLog(data['smsAlertLog']);
+    final restrictionLog = decodeLog(data['restrictionLog']);
+    final pushAlertLog = decodeLog(data['pushAlertLog']);
 
     // restrictionLog mixes two legitimate enforcement outcomes - "blocked"
     // (the restriction held) and "emergency_access_bypass" (the parent
@@ -399,7 +407,7 @@ class ReportExportService {
               child: pw.Text(
                 '• ${entry['packageName'] ?? 'unknown app'} · '
                 '${entry['outcome'] ?? 'unknown'} · '
-                '${_formatTimestamp(entry['timestamp'])}',
+                '${formatTimestamp(entry['timestamp'])}',
                 style: const pw.TextStyle(fontSize: 9),
               ),
             ),
