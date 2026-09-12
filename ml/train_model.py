@@ -35,6 +35,7 @@ FEATURE_COLUMNS = [
     "longest_session_minutes",
     "restricted_app_attempts_today",
     "rule_violations_7d",
+    "frequent_app_opens_today",
 ]
 LABEL_COLUMN = "risk_label"
 CLASS_ORDER = ["Low Risk", "Moderate Risk", "High Risk"]

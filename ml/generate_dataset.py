@@ -13,25 +13,30 @@ INTERPRETATION") rather than an invented rule. No real child usage data is
 used or required.
 
 IMPORTANT SCOPE NOTE - read before citing this in the manuscript:
-Table 6 lists 7 indicators. Only 5 are currently computable by the shipped
-WellScreen app today:
+Table 6 lists 7 indicators. 6 are now computable by the shipped WellScreen
+app:
   - Daily screen time exceeds the limit   (2 pts) - ScreenTimeGoalService
   - Late-night use                        (2 pts) - PatternDetectionService
   - Prolonged continuous session          (1 pt)  - PatternDetectionService
   - Restricted app attempt (>=3/day)      (2 pts) - RestrictionLogger.kt (blocks)
   - Repeated rule violations (>=3/7 days) (2 pts) - RestrictionLogger.kt (blocks, 7d window)
-The remaining 2 are NOT included as model inputs, because the app cannot
-supply real values for them yet, and training on a feature that's always 0
+  - Frequent distracting app use          (2 pts) - UsageTrackingService.
+    getTodayMaxAppOpenCount() (Android UsageEvents ACTIVITY_RESUMED launch
+    counting, added after the original 5-indicator version of this
+    pipeline - see mobile_app/lib/services/usage_tracking_service.dart's
+    countMaxAppOpens() doc comment for exactly what counts as an "open").
+    Threshold: >15 opens/day for the single most-opened app that day
+    (Table 6's own wording scores per-app frequency, not a cross-app sum).
+The remaining 1 is NOT included as a model input, because the app cannot
+supply a real value for it yet, and training on a feature that's always 0
 at inference time would be misleading, not a genuine capability:
-  - Frequent distracting app use (>15 opens/day) - app tracks usage DURATION
-    per app, not OPEN/LAUNCH COUNT. Would need a new usage_tracking_service
-    capability (Android UsageEvents launch counting) - not built.
-  - Harmful website/category attempt - category-level detection is
-    explicitly unbuilt (see alerts_reports_screen.dart's own "Not
-    implemented yet" note). Faking this would be fabricating a safety
+  - Harmful website/category attempt - category-level detection exists
+    (SiteCategoryService) but real-time blocking/scoring at the moment of
+    the attempt is explicitly unbuilt (see ml/site_category/README.md's
+    "What's NOT done yet"). Faking this would be fabricating a safety
     signal, which is worse than not having it.
-Max achievable point total with 5 indicators is 9 (2+2+1+2+2), which still
-spans all three of Table 7's bands (0-2 Low, 3-5 Moderate, 6+ High).
+Max achievable point total with 6 indicators is 11 (2+2+1+2+2+2), which
+still spans all three of Table 7's bands (0-2 Low, 3-5 Moderate, 6+ High).
 """
 
 import csv
@@ -64,12 +69,13 @@ N_RECORDS = 60000
 # option parents sometimes choose.
 DAILY_LIMIT_CHOICES = [60, 120, 180, 240]
 
-# Table 6 point values, applied only to the 5 currently-computable indicators.
+# Table 6 point values, applied only to the 6 currently-computable indicators.
 POINTS_SCREEN_TIME_EXCEEDED = 2
 POINTS_LATE_NIGHT = 2
 POINTS_PROLONGED_SESSION = 1
 POINTS_RESTRICTED_ATTEMPTS = 2
 POINTS_RULE_VIOLATIONS_7D = 2
+POINTS_FREQUENT_APP_OPENS = 2
 
 LABEL_NOISE_RATE = 0.04  # see README - simulates real-world labeling imperfection
 
@@ -112,6 +118,21 @@ def sample_record():
     if random.random() < 0.35:
         rule_violations_7d = min(int(random.expovariate(1 / 2.2)) + 1, 25)
 
+    # Max times any single app was opened today (Android UsageEvents
+    # ACTIVITY_RESUMED count for one package, collapsed so bouncing between
+    # that app's own activities doesn't inflate the count - see
+    # countMaxAppOpens()'s doc comment in usage_tracking_service.dart for
+    # the exact counting rule). Most days the most-reopened app is
+    # unremarkable; a meaningful minority of days show the kind of
+    # compulsive re-opening (a game, a chat app) Table 6's >15/day
+    # threshold is meant to catch.
+    frequent_app_opens_today = max(0, int(random.gauss(7, 6)))
+    if random.random() < 0.22:
+        frequent_app_opens_today = max(
+            frequent_app_opens_today, int(random.gauss(25, 10))
+        )
+    frequent_app_opens_today = min(frequent_app_opens_today, 150)
+
     return {
         "total_screen_time_minutes": total_screen_time_minutes,
         "daily_limit_minutes": daily_limit_minutes,
@@ -119,12 +140,13 @@ def sample_record():
         "longest_session_minutes": longest_session_minutes,
         "restricted_app_attempts_today": restricted_app_attempts_today,
         "rule_violations_7d": rule_violations_7d,
+        "frequent_app_opens_today": frequent_app_opens_today,
     }
 
 
 def score_record(r):
-    """Applies Table 6's point allocation (5 computable indicators only)
-    and Table 7's risk-level bands. Returns (points, label)."""
+    """Applies Table 6's point allocation (6 computable indicators) and
+    Table 7's risk-level bands. Returns (points, label)."""
     points = 0
 
     if r["total_screen_time_minutes"] > r["daily_limit_minutes"]:
@@ -141,6 +163,9 @@ def score_record(r):
 
     if r["rule_violations_7d"] >= 3:
         points += POINTS_RULE_VIOLATIONS_7D
+
+    if r["frequent_app_opens_today"] > 15:
+        points += POINTS_FREQUENT_APP_OPENS
 
     if points <= 2:
         label = "Low Risk"
@@ -182,6 +207,7 @@ def main():
         "longest_session_minutes",
         "restricted_app_attempts_today",
         "rule_violations_7d",
+        "frequent_app_opens_today",
         "risk_points",
         "risk_label",
     ]

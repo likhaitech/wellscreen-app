@@ -876,17 +876,18 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     );
   }
 
-  /// Builds the 6-feature input vector for MlRiskClassifierService, using
+  /// Builds the 7-feature input vector for MlRiskClassifierService, using
   /// only data the app can genuinely compute today - see
   /// ml/generate_dataset.py's doc comment for which of the manuscript's
-  /// Table 6 indicators are included and which are deferred (frequent-app
-  /// launch counting and harmful-category detection aren't built yet, so
-  /// they're not faked here).
+  /// Table 6 indicators are included and which are still deferred
+  /// (harmful-category real-time detection isn't built yet, so it's not
+  /// faked here).
   Map<String, num> _buildMlFeatures({
     required UsageReport report,
     required List<AppUsageSummary> summaries,
     required List<Map<String, dynamic>> restrictionLog,
     required int dailyLimitMinutes,
+    required int maxAppOpensToday,
   }) {
     var lateNightMinutes = 0;
     var longestSessionMinutes = 0;
@@ -941,6 +942,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       'longest_session_minutes': longestSessionMinutes,
       'restricted_app_attempts_today': attemptsToday,
       'rule_violations_7d': violations7d,
+      'frequent_app_opens_today': maxAppOpensToday,
     };
   }
 
@@ -1122,11 +1124,14 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       Map<String, dynamic>? mlRiskAssessmentData;
       try {
         final dailyLimit = await _dailyScreenTimeLimitService.getDailyLimit();
+        final maxAppOpensToday =
+            await _usageTrackingService.getTodayMaxAppOpenCount();
         final mlFeatures = _buildMlFeatures(
           report: report,
           summaries: summaries,
           restrictionLog: restrictionLog,
           dailyLimitMinutes: dailyLimit.inMinutes,
+          maxAppOpensToday: maxAppOpensToday,
         );
         final assessment = await _mlRiskClassifierService.classify(
           mlFeatures,
