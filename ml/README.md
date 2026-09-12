@@ -31,27 +31,33 @@ versions of all three:
   importances, all computed on a genuinely held-out test set the model
   never saw during training. Copy this directly into your Results chapter.
 
-## Why only 5 of the manuscript's 7 indicators are used as model inputs
+## Why only 6 of the manuscript's 7 indicators are used as model inputs
 
 Table 6 (USAGE-INDICATOR THRESHOLD AND POINT ALLOCATION) lists 7
-indicators. Two aren't computable by the shipped app yet:
+indicators. One isn't computable by the shipped app yet:
 
-- **Frequent distracting app use (>15 opens/day)** - the app tracks usage
-  *duration* per app, not *open/launch count*. Would need new Android
-  UsageEvents-based launch counting in `usage_tracking_service.dart` - not
-  built.
-- **Harmful website/category attempt** - category-level detection is
-  explicitly unbuilt (`alerts_reports_screen.dart` already says so).
+- **Harmful website/category attempt** - category-level detection exists
+  (`SiteCategoryService`, see `ml/site_category/README.md`), but real-time
+  scoring at the moment of the attempt is explicitly unbuilt (detection
+  currently happens at the next sync, after the page has already loaded).
   Faking this signal would be worse than omitting it - it's described in
   the manuscript as a safety override that can push a record straight to
   High Risk, so a fabricated version could misrepresent real risk.
 
 Training on a feature that's always 0 at real inference time isn't a
-genuine model input, so both are left out entirely rather than padded with
-placeholder zeros. The remaining 5 indicators (worth up to 9 of the
-original point scale) still span all three of Table 7's risk bands (0-2 Low,
-3-5 Moderate, 6+ High) - see `generate_dataset.py`'s module doc comment for
-the full mapping from Table 6 points to the model's input features.
+genuine model input, so it's left out entirely rather than padded with
+placeholder zeros. **Frequent distracting app use (>15 opens/day)** used to
+be excluded for the same reason - the app only tracked usage *duration*
+per app, not *open/launch count* - but that gap is now closed:
+`UsageTrackingService.getTodayMaxAppOpenCount()` counts real Android
+`ACTIVITY_RESUMED` events (collapsing an app's own internal navigation so
+only genuine app-to-app switches count - see that method's doc comment),
+and `child_home_screen.dart`'s `_buildMlFeatures()` feeds the result in as
+`frequent_app_opens_today`. The remaining 6 indicators (worth up to 11 of
+the original point scale) still span all three of Table 7's risk bands
+(0-2 Low, 3-5 Moderate, 6+ High) - see `generate_dataset.py`'s module doc
+comment for the full mapping from Table 6 points to the model's input
+features.
 
 ## Ground-truth labeling
 
@@ -119,11 +125,22 @@ anything, this was diagnosed properly rather than guessed at:
    kept rather than introducing custom weights.
 
 Final, reproducible result on the real 70/30 held-out split (not the CV
-estimate): **High Risk recall rose from 70.0% to 83.6%** (509/609 caught,
-`output/evaluation_report.txt`), with overall accuracy unchanged (0.928).
-No change to the labeling rule, the feature distributions, or what counts
-as synthetic vs. real data - only the volume of simulated records
-generated from the same process.
+estimate), **at the time this was a 5-feature model**: High Risk recall
+rose from 70.0% to 83.6% (509/609 caught), with overall accuracy unchanged
+(0.928). No change to the labeling rule, the feature distributions, or
+what counts as synthetic vs. real data - only the volume of simulated
+records generated from the same process.
+
+**Update after adding the 6th indicator (`frequent_app_opens_today`):**
+`output/evaluation_report.txt` now reflects the current 6-feature, 60,000
+-record model, not the numbers above - re-run `train_model.py` any time
+you want to reproduce them fresh. Current real result: **91.7% High Risk
+recall** (1,310/1,428 caught) at **91.6% overall accuracy**, with
+`frequent_app_opens_today` landing as the model's second-most-important
+feature (0.2357, just behind `late_night_minutes` at 0.2328) - both
+recall and accuracy moved in the direction the manuscript's evaluation
+guidance prioritizes (recall) once a real signal for this indicator
+existed to train on, rather than leaving it at a permanent 0.
 
 ## Why the trained model ships as JSON tree rules, not a TFLite file
 
@@ -164,7 +181,7 @@ here.
 ## Where this is used in the app
 
 `mobile_app/lib/screens/child_home_screen.dart`'s `syncUsageReport()` builds
-the 6-feature input vector from real on-device data (see
+the 7-feature input vector from real on-device data (see
 `_buildMlFeatures()`), calls `MlRiskClassifierService.classify()`, and
 syncs the result to `child_profiles/{id}.mlRiskAssessment`. It's displayed
 on `alerts_reports_screen.dart` as a card explicitly labeled "AI Risk

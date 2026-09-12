@@ -2,21 +2,23 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:app/services/usage_tracking_service.dart';
 
-/// Covers UsageTrackingService.summarizeUsage - previously untestable
-/// because getTodayUsage() called the native usage_stats plugin's static
-/// UsageStats.queryAndAggregateUsageStats() directly and worked with its
-/// UsageInfo type, which has no in-memory fake and talks to real Android
-/// APIs. Fixed by extracting the actual transformation logic (readable
-/// app-name conversion, dropping zero-usage entries, sorting by usage
-/// descending, capping to the top 10) into summarizeUsage(), which takes
-/// a plain `Map<String, int>` of package name -> foreground milliseconds -
-/// exactly what's left after getTodayUsage() parses UsageInfo's
-/// totalTimeInForeground string, but with no dependency on the plugin
-/// type itself. getTodayUsage() (the native-plugin-touching part) is
-/// intentionally NOT covered here - there's nothing to check without a
-/// real device/emulator, and pub.dev is unreachable from this dev
-/// environment's network policy to even confirm UsageInfo's exact
-/// constructor shape, so no test pretends to cover that part.
+/// Covers UsageTrackingService.summarizeUsage and .countMaxAppOpens -
+/// previously untestable because getTodayUsage()/getTodayMaxAppOpenCount()
+/// call the native usage_stats plugin's static
+/// UsageStats.queryAndAggregateUsageStats()/queryEvents() directly and
+/// work with its UsageInfo/EventUsageInfo types, which have no in-memory
+/// fake and talk to real Android APIs. Fixed the same way for both: the
+/// actual transformation logic is extracted into a pure method that takes
+/// plain Dart values instead of the plugin's own types (a
+/// `Map<String, int>` for summarizeUsage, a `List<UsageEventRecord>` -
+/// itself a plain record type, not the plugin's EventUsageInfo - for
+/// countMaxAppOpens). getTodayUsage()/getTodayMaxAppOpenCount() (the
+/// native-plugin-touching parts) are intentionally NOT covered here -
+/// there's nothing to check without a real device/emulator. The
+/// EventUsageInfo shape and its ACTIVITY_RESUMED=1 event-type mapping
+/// used to build countMaxAppOpens() were confirmed directly from the
+/// usage_stats plugin's real source (github.com/Parassharmaa/usage_stats),
+/// not guessed.
 void main() {
   group('UsageTrackingService.summarizeUsage', () {
     final service = UsageTrackingService();
@@ -89,5 +91,100 @@ void main() {
     test('an empty map produces an empty summary list', () {
       expect(service.summarizeUsage({}), isEmpty);
     });
+  });
+
+  group('UsageTrackingService.countMaxAppOpens', () {
+    final service = UsageTrackingService();
+
+    UsageEventRecord resumed(String packageName, int timestampMs) => (
+          packageName: packageName,
+          eventType: 1, // ACTIVITY_RESUMED
+          timestampMs: timestampMs,
+        );
+
+    UsageEventRecord paused(String packageName, int timestampMs) => (
+          packageName: packageName,
+          eventType: 2, // ACTIVITY_PAUSED
+          timestampMs: timestampMs,
+        );
+
+    test('an empty event list has no opens', () {
+      expect(service.countMaxAppOpens([]), 0);
+    });
+
+    test('counts one open per distinct ACTIVITY_RESUMED event', () {
+      final events = [
+        resumed('com.example.a', 1000),
+        resumed('com.example.b', 2000),
+        resumed('com.example.a', 3000),
+      ];
+
+      // com.example.a resumed twice, separated by b - both are genuine
+      // re-opens, so it should count 2.
+      expect(service.countMaxAppOpens(events), 2);
+    });
+
+    test(
+      'collapses consecutive resumes of the SAME app into a single open '
+      '(internal navigation, not a re-open)',
+      () {
+        final events = [
+          resumed('com.example.a', 1000),
+          resumed('com.example.a', 1200), // same app's own next activity
+          resumed('com.example.a', 1400),
+        ];
+
+        expect(service.countMaxAppOpens(events), 1);
+      },
+    );
+
+    test('ignores non-ACTIVITY_RESUMED event types', () {
+      final events = [
+        resumed('com.example.a', 1000),
+        paused('com.example.a', 1500),
+        resumed('com.example.a', 2000), // still "same as last resumed"
+      ];
+
+      // The intervening PAUSED event must not reset the
+      // same-package-collapse logic - this is still one continuous
+      // session from ACTIVITY_RESUMED's point of view.
+      expect(service.countMaxAppOpens(events), 1);
+    });
+
+    test('returns the single HIGHEST per-app count, not the cross-app sum', () {
+      final events = [
+        resumed('com.example.frequent', 1000),
+        resumed('com.example.other', 2000),
+        resumed('com.example.frequent', 3000),
+        resumed('com.example.other', 4000),
+        resumed('com.example.frequent', 5000),
+      ];
+
+      // com.example.frequent: 3 opens, com.example.other: 2 opens.
+      // Table 6 scores per-app, so this must return 3, not 5.
+      expect(service.countMaxAppOpens(events), 3);
+    });
+
+    test('ignores events with an empty package name', () {
+      final events = [resumed('', 1000), resumed('com.example.a', 2000)];
+      expect(service.countMaxAppOpens(events), 1);
+    });
+
+    test(
+      'sorts defensively by timestamp before collapsing, even if the '
+      'input list is out of order',
+      () {
+        final events = [
+          resumed('com.example.a', 3000),
+          resumed('com.example.b', 1000),
+          resumed('com.example.a', 2000),
+        ];
+
+        // Chronologically: b, a, a - the two 'a' resumes are adjacent in
+        // TIME even though they aren't adjacent in this out-of-order
+        // input list, so they should still collapse to one open for 'a'.
+        expect(service.countMaxAppOpens(events), 1);
+      },
+    );
   });
 }
