@@ -1,17 +1,23 @@
-# app
+# WellScreen mobile app
 
-A new Flutter project.
+Flutter app for both the parent and the child side of WellScreen, plus the Android code (Kotlin) that enforces app and website blocking on the child's phone.
 
-## Getting Started
+For what the project is and how to run, test and build it, see the [main README](../README.md).
 
-This project is a starting point for a Flutter application.
+Quick start:
 
-A few resources to get you started if this is your first Flutter project:
+```
+flutter pub get
+flutter run
+```
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+You need `android/app/google-services.json` from the Firebase console first (it is git-ignored). Turn on Settings > Accessibility > WellScreen on the child device or blocking will not work.
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+Where things are:
+
+- `lib/screens/` - parent and child screens
+- `lib/services/` - usage tracking, rules sync, alerts, reports, ML scoring
+- `lib/config/app_config.dart` - backend URL
+- `android/app/src/main/kotlin/com/wellscreen/app/` - accessibility service, block screens, website blocker, SMS alerts
+- `assets/` - the trained risk model and the harmful-site data bundled into the app
+- `test/` - unit and widget tests

@@ -1,5 +1,5 @@
 name: app
-description: "A new Flutter project."
+description: "WellScreen: parental-control and digital-wellbeing app (parent and child apps in one codebase)."
 publish_to: 'none'
 
 version: 1.0.0+1
