@@ -26,6 +26,7 @@ class BlockedAppActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        val blockedDomain = intent.getStringExtra("blocked_domain")
         val blockedPackage = intent.getStringExtra("blocked_package") ?: "Restricted app"
 
         val root = LinearLayout(this).apply {
@@ -35,13 +36,13 @@ class BlockedAppActivity : Activity() {
         }
 
         val title = TextView(this).apply {
-            text = "App Restricted"
+            text = if (blockedDomain != null) "Website Blocked" else "App Restricted"
             textSize = 30f
             gravity = Gravity.CENTER
         }
 
         val message = TextView(this).apply {
-            text = "This app is currently restricted by WellScreen.\n\nPackage:\n$blockedPackage\n\nPlease take a break or ask your parent/guardian."
+            text = if (blockedDomain != null) "This website is blocked by WellScreen.\n\n$blockedDomain\n\nPlease ask your parent/guardian." else "This app is currently restricted by WellScreen.\n\nPackage:\n$blockedPackage\n\nPlease take a break or ask your parent/guardian."
             textSize = 17f
             gravity = Gravity.CENTER
             setPadding(0, 32, 0, 32)
@@ -50,6 +51,15 @@ class BlockedAppActivity : Activity() {
         val button = Button(this).apply {
             text = "Go Back"
             setOnClickListener {
+                if (blockedDomain != null) {
+                    // Leave the browser, not just the overlay, so the blocked
+                    // page isn't sitting right underneath.
+                    startActivity(
+                        android.content.Intent(android.content.Intent.ACTION_MAIN)
+                            .addCategory(android.content.Intent.CATEGORY_HOME)
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }
                 finish()
             }
         }

@@ -152,6 +152,34 @@ class WellScreenAccessibilityService : AccessibilityService() {
         }
     }
 
+    private var lastBlockedDomain: String? = null
+    private var lastWebBlockTime: Long = 0L
+
+    private fun blockWebsite(browserPackage: String, domain: String) {
+        val now = System.currentTimeMillis()
+        val recent = lastBlockedDomain == domain &&
+            now - lastWebBlockTime < 2500 &&
+            BlockedAppActivity.isShowing
+        if (recent) return
+        lastBlockedDomain = domain
+        lastWebBlockTime = now
+
+        val msg = "$browserPackage: BLOCKED website '$domain'"
+        Log.d(CAPTURE_LOG_TAG, msg)
+        CaptureDebugLogger.log(this, msg)
+
+        try {
+            val intent = Intent(this, BlockedAppActivity::class.java)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            intent.putExtra("blocked_domain", domain)
+            startActivity(intent)
+            RestrictionLogger.recordOutcome(this, domain, "blocked", now)
+        } catch (_: Exception) {
+            RestrictionLogger.recordOutcome(this, domain, "failed_exception", now)
+        }
+    }
+
     override fun onInterrupt() {
         // Required override.
     }
@@ -197,6 +225,13 @@ class WellScreenAccessibilityService : AccessibilityService() {
                     "not found, or its text wasn't URL-shaped)"
                 Log.d(CAPTURE_LOG_TAG, msg)
                 CaptureDebugLogger.log(this, msg)
+                return
+            }
+
+            // Block BEFORE the dedup below - a still-loaded blocked page must be
+            // re-blocked after the child dismisses the block screen.
+            if (SiteBlocker.isBlocked(this, domain)) {
+                blockWebsite(currentPackage, domain)
                 return
             }
 
