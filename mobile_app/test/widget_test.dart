@@ -1,42 +1,26 @@
-import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_core_platform_interface/test.dart';
+import 'package:app/screens/login_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:app/main.dart';
-
 void main() {
-  TestWidgetsFlutterBinding.ensureInitialized();
+  testWidgets('WellScreen app shows updated login screen', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: LoginScreen()));
 
-  setupFirebaseCoreMocks();
-
-  setUpAll(() async {
-    await Firebase.initializeApp();
-  });
-
-  testWidgets('WellScreen app starts and moves to login screen', (
-    WidgetTester tester,
-  ) async {
-    await tester.pumpWidget(const WellScreenApp());
+    await tester.pump();
 
     expect(find.text('WellScreen'), findsOneWidget);
-
-    await tester.pump(const Duration(seconds: 2));
-    await tester.pumpAndSettle();
-
     expect(
-      find.text('Digital wellness monitoring for parents and children'),
+      find.text('Smart Parental Control\nfor Digital Wellness'),
       findsOneWidget,
     );
+    expect(find.text('Login'), findsWidgets);
+    expect(find.text('Access your WellScreen account'), findsOneWidget);
 
-    expect(find.text('Log In'), findsOneWidget);
-    expect(find.text('Parent / Guardian'), findsOneWidget);
-
-    // The Create Account button is lower in the scrollable login screen.
-    await tester.drag(find.byType(ListView), const Offset(0, -400));
-
-    await tester.pumpAndSettle();
-
-    expect(find.text('Create Account'), findsOneWidget);
+    expect(
+      find.text('Parent access for digital wellness monitoring'),
+      findsNothing,
+    );
+    expect(find.textContaining('Monitored child devices'), findsNothing);
+    expect(find.textContaining('QR option'), findsNothing);
   });
 }

@@ -1,715 +1,313 @@
-﻿package com.wellscreen.app
+package com.wellscreen.app
 
-import android.Manifest
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.os.Build
-import android.telephony.SmsManager
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
-import android.view.accessibility.AccessibilityNodeInfo
-import java.util.Calendar
+import org.json.JSONArray
+
+// Debug-only tag for the browsing-capture path specifically (not restricted-
+// app blocking, which already has its own real signal - the block screen
+// itself). Added because remote troubleshooting hit a wall: usage-stats
+// sync proved pairing/Firestore/sync all work, isolating the problem to
+// this capture path specifically, with no way to see WHERE it fails short
+// of reading actual logcat output. Filter with: adb logcat -s WellScreenCapture
+private const val CAPTURE_LOG_TAG = "WellScreenCapture"
 
 class WellScreenAccessibilityService : AccessibilityService() {
 
-    private val websiteCategoryDetector = WebsiteCategoryDetector()
+    private var lastBlockedPackage: String? = null
+    private var lastBlockTime: Long = 0L
 
-    private var lastDetectedDomain: String? = null
-    private var lastDetectedCategory: String? = null
-    private var lastDetectedTime: Long = 0L
+    // Separate debounce state for the emergency-access-bypass log path
+    // (see checkRestrictedApp) - a restricted app can trigger many
+    // TYPE_WINDOW_STATE_CHANGED/TYPE_WINDOWS_CHANGED events per minute
+    // (screen/dialog/tab changes) while a bypass is active, same as it can
+    // while blocked. Without this, every one of those became its own
+    // restrictionLog Firestore write for the whole bypass window, instead
+    // of one entry per ~2.5s like the "blocked" path already debounces to.
+    private var lastBypassLoggedPackage: String? = null
+    private var lastBypassLogTime: Long = 0L
 
-    private var lastBlockedDomain: String? = null
-    private var lastBlockedWebsiteTime: Long = 0L
-
-    private var lastBlockedPackageName: String? = null
-    private var lastBlockedAppTime: Long = 0L
+    // Last domain captured per browser package, so repeated events for the
+    // same still-loaded page (this fires more than once per navigation in
+    // practice) don't spam BrowsingLogger with duplicate entries.
+    private val lastCapturedDomain = mutableMapOf<String, String>()
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event == null) {
-            return
+        if (event == null) return
+
+        val currentPackage = event.packageName?.toString() ?: return
+
+        // Do not block WellScreen itself.
+        if (currentPackage == packageName) return
+
+        when (event.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+            AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
+                // Fires on app switches and new windows/tabs - covers both
+                // "child opened a browser" (captures whatever's already in
+                // the address bar) and restricted-app detection.
+                if (BrowserUrlExtractor.isKnownBrowser(currentPackage)) {
+                    val msg = "$currentPackage: window-state/windows-changed event received"
+                    Log.d(CAPTURE_LOG_TAG, msg)
+                    CaptureDebugLogger.log(this, msg)
+                }
+                maybeCaptureBrowserUrl(currentPackage)
+                checkRestrictedApp(currentPackage)
+            }
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
+                // Covers in-app navigation that DOESN'T fire a window-state
+                // event - the common case of typing a new URL into an
+                // already-open browser's address bar and hitting Go. This
+                // was the original gap: without it, capture only ever saw
+                // whatever page a browser happened to already be showing
+                // at the moment it became the foreground window, and
+                // silently missed every navigation after that. Content-
+                // changed fires constantly across every app, so this is
+                // deliberately restricted to known-browser packages only -
+                // restricted-app blocking doesn't need it (that's fully
+                // covered by the branch above), so it's skipped here to
+                // avoid running that check on every UI update system-wide.
+                if (BrowserUrlExtractor.isKnownBrowser(currentPackage)) {
+                    val msg = "$currentPackage: content-changed event received"
+                    Log.d(CAPTURE_LOG_TAG, msg)
+                    CaptureDebugLogger.log(this, msg)
+                    maybeCaptureBrowserUrl(currentPackage)
+                }
+            }
+            else -> return
         }
+    }
 
-        val packageName = event.packageName?.toString() ?: return
+    private fun checkRestrictedApp(currentPackage: String) {
+        val restrictedPackages = getRestrictedPackages()
 
-        if (!isSupportedEvent(event.eventType)) {
-            return
-        }
+        if (restrictedPackages.contains(currentPackage)) {
+            val now = System.currentTimeMillis()
 
-        handleAppEnforcementIfNeeded(packageName)
+            if (isEmergencyAccessActive(now)) {
+                // Parent approved a temporary bypass (EmergencyAccessService,
+                // Dart side) and it hasn't expired yet - skip blocking, but
+                // still log it the same way a real block would be logged so
+                // the parent's report/reports_screen.dart restrictionLog
+                // shows the bypass happened rather than going silent.
+                // Debounced the same way "blocked" is below - without this,
+                // a single bypass session logged one Firestore write per
+                // window-state event instead of ~1 per 2.5s.
+                val recentlyLoggedSameBypass =
+                    lastBypassLoggedPackage == currentPackage &&
+                        now - lastBypassLogTime < 2500
 
-        if (!isSupportedBrowser(packageName)) {
-            return
-        }
+                if (!recentlyLoggedSameBypass) {
+                    lastBypassLoggedPackage = currentPackage
+                    lastBypassLogTime = now
 
-        val visibleTexts = mutableListOf<String>()
+                    RestrictionLogger.recordOutcome(
+                        this,
+                        currentPackage,
+                        "emergency_access_bypass",
+                        now,
+                    )
+                }
+                return
+            }
 
-        for (textItem in event.text) {
-            val text = textItem?.toString()?.trim()
+            // Gated on BlockedAppActivity.isShowing too, not just elapsed
+            // time - a bare time window let a child dismiss the block
+            // screen ("Go Back", or just switching via Recents - both
+            // near-instant) and land right back on the still-running
+            // restricted app underneath with nothing re-blocking it until
+            // the 2.5s window happened to expire on its own. Once the
+            // block screen is actually gone, the very next foreground
+            // event for that package must re-block it.
+            val recentlyBlockedSameApp =
+                lastBlockedPackage == currentPackage &&
+                    now - lastBlockTime < 2500 &&
+                    BlockedAppActivity.isShowing
 
-            if (!text.isNullOrEmpty()) {
-                visibleTexts.add(text)
+            if (!recentlyBlockedSameApp) {
+                lastBlockedPackage = currentPackage
+                lastBlockTime = now
+
+                try {
+                    openBlockedScreen(currentPackage)
+                    RestrictionLogger.recordOutcome(this, currentPackage, "blocked", now)
+                } catch (_: Exception) {
+                    RestrictionLogger.recordOutcome(
+                        this,
+                        currentPackage,
+                        "failed_exception",
+                        now,
+                    )
+                }
+
+                SmsAlertSender.maybeSendRestrictedAppAlert(
+                    this,
+                    currentPackage,
+                    getAppLabel(currentPackage),
+                    now,
+                )
             }
         }
+    }
 
-        val rootNode = rootInActiveWindow
-        collectVisibleText(rootNode, visibleTexts)
+    private var lastBlockedDomain: String? = null
+    private var lastWebBlockTime: Long = 0L
 
-        val detectionResult =
-            websiteCategoryDetector.detectFromTexts(visibleTexts) ?: return
+    private fun blockWebsite(browserPackage: String, domain: String) {
+        val now = System.currentTimeMillis()
+        val recent = lastBlockedDomain == domain &&
+            now - lastWebBlockTime < 2500 &&
+            BlockedAppActivity.isShowing
+        if (recent) return
+        lastBlockedDomain = domain
+        lastWebBlockTime = now
 
-        handleWebsiteCategoryDetection(
-            browserPackageName = packageName,
-            detectionResult = detectionResult
-        )
+        val msg = "$browserPackage: BLOCKED website '$domain'"
+        Log.d(CAPTURE_LOG_TAG, msg)
+        CaptureDebugLogger.log(this, msg)
+
+        try {
+            val intent = Intent(this, BlockedAppActivity::class.java)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            intent.putExtra("blocked_domain", domain)
+            startActivity(intent)
+            RestrictionLogger.recordOutcome(this, domain, "blocked", now)
+        } catch (_: Exception) {
+            RestrictionLogger.recordOutcome(this, domain, "failed_exception", now)
+        }
     }
 
     override fun onInterrupt() {
-        // No active interruption handling is needed.
+        // Required override.
     }
 
-    private fun handleAppEnforcementIfNeeded(packageName: String) {
-        val currentTime = System.currentTimeMillis()
-        val rules = getRestrictionRules()
-        val blockReason = getAppBlockReason(
-            packageName = packageName,
-            rules = rules,
-            currentTime = currentTime
-        ) ?: return
-
-        val isSameRecentBlock =
-            packageName == lastBlockedPackageName &&
-                currentTime - lastBlockedAppTime < APP_BLOCK_DEBOUNCE_MS
-
-        if (isSameRecentBlock) {
-            return
-        }
-
-        lastBlockedPackageName = packageName
-        lastBlockedAppTime = currentTime
-
-        val appName = getReadableAppName(packageName)
-        val cooldownEndAtMillis = getOrStartCooldownEndAt(
-            packageName = packageName,
-            blockReason = blockReason,
-            rules = rules,
-            currentTime = currentTime
-        )
-        val cooldownEnabled =
-            rules.cooldownTimerEnabled && cooldownEndAtMillis > currentTime
-
-        val attemptCount = recordBlockedAppOpenAttempt(
-            packageName = packageName,
-            appName = appName,
-            reason = blockReason,
-            cooldownEndAtMillis = cooldownEndAtMillis,
-            attemptedAt = currentTime
-        )
-
-        sendSmsBackupAlertIfNeeded(
-            alertKey = "blocked_app_$packageName",
-            title = "App blocked",
-            message = "WellScreen alert: $appName was blocked on the child device. Reason: ${getBlockReasonLabel(blockReason)}. Open attempts: $attemptCount.",
-            currentTime = currentTime
-        )
-
-        val blockIntent = Intent(this, BlockedAppActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            putExtra(BlockedAppActivity.EXTRA_APP_NAME, appName)
-            putExtra(BlockedAppActivity.EXTRA_PACKAGE_NAME, packageName)
-            putExtra(BlockedAppActivity.EXTRA_ATTEMPT_COUNT, attemptCount)
-            putExtra(
-                BlockedAppActivity.EXTRA_BLOCK_REASON_LABEL,
-                getBlockReasonLabel(blockReason)
-            )
-            putExtra(BlockedAppActivity.EXTRA_COOLDOWN_ENABLED, cooldownEnabled)
-            putExtra(
-                BlockedAppActivity.EXTRA_COOLDOWN_END_AT_MILLIS,
-                cooldownEndAtMillis
-            )
-        }
+    /**
+     * Attempts to read the current URL out of [currentPackage]'s address
+     * bar (only does anything for the known-browser packages listed in
+     * BrowserUrlExtractor) and records it via BrowsingLogger if it's a new
+     * domain since the last time this ran for that package.
+     *
+     * Called from two different event branches in [onAccessibilityEvent]:
+     * TYPE_WINDOW_STATE_CHANGED/TYPE_WINDOWS_CHANGED (switching into a
+     * browser, or a new tab/window) and TYPE_WINDOW_CONTENT_CHANGED
+     * (navigating to a new URL while already inside an open browser -
+     * typing an address and hitting Go doesn't change the window itself,
+     * so it never fires the first two on its own). An earlier version of
+     * this only listened to the first two, on the reasoning that adding
+     * content-changed - which fires constantly across every app - wasn't
+     * worth the noise; in practice that meant capture only ever saw
+     * whatever page a browser happened to already be showing at the
+     * moment it became the foreground window, and silently missed every
+     * navigation after that, which is a much bigger gap than the
+     * originally-scoped "misses some single-page-app route changes." The
+     * dedup check below (lastCapturedDomain) plus restricting the
+     * content-changed branch to known-browser packages only (see that
+     * branch's comment) keeps the added event volume bounded.
+     */
+    private fun maybeCaptureBrowserUrl(currentPackage: String) {
+        if (!BrowserUrlExtractor.isKnownBrowser(currentPackage)) return
 
         try {
-            startActivity(blockIntent)
-
-            Log.d(
-                LOG_TAG,
-                "Blocked app: app=$appName, package=$packageName, " +
-                    "reason=${getBlockReasonLabel(blockReason)}, " +
-                    "cooldownEndAtMillis=$cooldownEndAtMillis, " +
-                    "attemptCount=$attemptCount"
-            )
-        } catch (exception: Exception) {
-            Log.e(LOG_TAG, "Failed to open blocked app screen.", exception)
-        }
-    }
-
-    private fun getAppBlockReason(
-        packageName: String,
-        rules: RestrictionRules,
-        currentTime: Long
-    ): String? {
-        if (isEssentialOrAllowedApp(packageName)) {
-            return null
-        }
-
-        if (isSupportedBrowser(packageName)) {
-            return null
-        }
-
-        if (isEmergencyAccessActive(rules, currentTime)) {
-            return null
-        }
-
-        if (
-            rules.scheduledLockEnabled &&
-            isScheduledLockActive(currentTime) &&
-            isScheduledLockTargetApp(packageName)
-        ) {
-            return BLOCK_REASON_SCHEDULED_LOCK
-        }
-
-        if (
-            rules.cooldownTimerEnabled &&
-            isCooldownActive(packageName, currentTime)
-        ) {
-            return BLOCK_REASON_COOLDOWN
-        }
-
-        if (rules.focusModeEnabled && distractingAppPackages.contains(packageName)) {
-            return BLOCK_REASON_FOCUS_MODE
-        }
-
-        if (rules.appBlockingEnabled && restrictedAppPackages.contains(packageName)) {
-            return BLOCK_REASON_APP_BLOCKING
-        }
-
-        return null
-    }
-
-    private fun isEmergencyAccessActive(
-        rules: RestrictionRules,
-        currentTime: Long
-    ): Boolean {
-        return rules.emergencyAccessEnabled &&
-            rules.emergencyAccessApproved &&
-            rules.emergencyAccessApprovedUntilMillis > currentTime
-    }
-
-    private fun isScheduledLockActive(currentTime: Long): Boolean {
-        val calendar = Calendar.getInstance().apply {
-            timeInMillis = currentTime
-        }
-
-        val hour = calendar.get(Calendar.HOUR_OF_DAY)
-
-        return hour >= SCHEDULED_LOCK_START_HOUR ||
-            hour < SCHEDULED_LOCK_END_HOUR
-    }
-
-    private fun isScheduledLockTargetApp(packageName: String): Boolean {
-        return restrictedAppPackages.contains(packageName) ||
-            distractingAppPackages.contains(packageName)
-    }
-
-    private fun getOrStartCooldownEndAt(
-        packageName: String,
-        blockReason: String,
-        rules: RestrictionRules,
-        currentTime: Long
-    ): Long {
-        if (!rules.cooldownTimerEnabled) {
-            return 0L
-        }
-
-        val existingCooldownEndAt = getCooldownEndAt(packageName)
-
-        if (existingCooldownEndAt > currentTime) {
-            return existingCooldownEndAt
-        }
-
-        if (
-            blockReason == BLOCK_REASON_APP_BLOCKING ||
-            blockReason == BLOCK_REASON_FOCUS_MODE ||
-            blockReason == BLOCK_REASON_SCHEDULED_LOCK
-        ) {
-            return startCooldown(packageName, currentTime)
-        }
-
-        return existingCooldownEndAt
-    }
-
-    private fun startCooldown(packageName: String, currentTime: Long): Long {
-        val cooldownEndAtMillis = currentTime + COOLDOWN_DURATION_MS
-
-        val preferences = getSharedPreferences(
-            BLOCKED_APP_ATTEMPT_PREFERENCES,
-            MODE_PRIVATE
-        )
-
-        preferences.edit()
-            .putLong("cooldownEndAt_$packageName", cooldownEndAtMillis)
-            .putString("lastCooldownPackageName", packageName)
-            .putLong("lastCooldownStartedAt", currentTime)
-            .putLong("lastCooldownEndAt", cooldownEndAtMillis)
-            .apply()
-
-        return cooldownEndAtMillis
-    }
-
-    private fun isCooldownActive(packageName: String, currentTime: Long): Boolean {
-        return getCooldownEndAt(packageName) > currentTime
-    }
-
-    private fun getCooldownEndAt(packageName: String): Long {
-        val preferences = getSharedPreferences(
-            BLOCKED_APP_ATTEMPT_PREFERENCES,
-            MODE_PRIVATE
-        )
-
-        return preferences.getLong("cooldownEndAt_$packageName", 0L)
-    }
-
-    private fun isEssentialOrAllowedApp(packageName: String): Boolean {
-        if (packageName == applicationContext.packageName) {
-            return true
-        }
-
-        if (essentialAllowedPackages.contains(packageName)) {
-            return true
-        }
-
-        return packageName.contains("launcher", ignoreCase = true)
-    }
-
-    private fun recordBlockedAppOpenAttempt(
-        packageName: String,
-        appName: String,
-        reason: String,
-        cooldownEndAtMillis: Long,
-        attemptedAt: Long
-    ): Int {
-        val preferences = getSharedPreferences(
-            BLOCKED_APP_ATTEMPT_PREFERENCES,
-            MODE_PRIVATE
-        )
-
-        val attemptKey = "attemptCount_$packageName"
-        val attemptCount = preferences.getInt(attemptKey, 0) + 1
-
-        preferences.edit()
-            .putInt(attemptKey, attemptCount)
-            .putString("lastBlockedAppName", appName)
-            .putString("lastBlockedPackageName", packageName)
-            .putString("lastBlockedReason", reason)
-            .putString("lastBlockedReasonLabel", getBlockReasonLabel(reason))
-            .putInt("lastBlockedAttemptCount", attemptCount)
-            .putLong("lastBlockedAttemptAt", attemptedAt)
-            .putLong("lastCooldownEndAtMillis", cooldownEndAtMillis)
-            .apply()
-
-        return attemptCount
-    }
-
-    private fun getReadableAppName(packageName: String): String {
-        return try {
-            val applicationInfo = packageManager.getApplicationInfo(
-                packageName,
-                PackageManager.GET_META_DATA
-            )
-
-            packageManager.getApplicationLabel(applicationInfo).toString()
-        } catch (exception: Exception) {
-            packageName
-                .substringAfterLast(".")
-                .replaceFirstChar { firstChar ->
-                    if (firstChar.isLowerCase()) {
-                        firstChar.titlecase()
-                    } else {
-                        firstChar.toString()
-                    }
-                }
-        }
-    }
-
-    private fun isSupportedBrowser(packageName: String): Boolean {
-        return supportedBrowserPackages.contains(packageName)
-    }
-
-    private fun isSupportedEvent(eventType: Int): Boolean {
-        return eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
-            eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED ||
-            eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED ||
-            eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED ||
-            eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED
-    }
-
-    private fun collectVisibleText(
-        node: AccessibilityNodeInfo?,
-        output: MutableList<String>,
-        depth: Int = 0
-    ) {
-        if (node == null) {
-            return
-        }
-
-        if (depth > MAX_NODE_DEPTH || output.size >= MAX_TEXT_ITEMS) {
-            return
-        }
-
-        val nodeText = node.text?.toString()?.trim()
-        val nodeDescription = node.contentDescription?.toString()?.trim()
-
-        if (!nodeText.isNullOrEmpty()) {
-            output.add(nodeText)
-        }
-
-        if (!nodeDescription.isNullOrEmpty()) {
-            output.add(nodeDescription)
-        }
-
-        for (index in 0 until node.childCount) {
-            if (output.size >= MAX_TEXT_ITEMS) {
-                break
+            val root = rootInActiveWindow
+            if (root == null) {
+                val msg = "$currentPackage: rootInActiveWindow is null, skipping"
+                Log.d(CAPTURE_LOG_TAG, msg)
+                CaptureDebugLogger.log(this, msg)
+                return
             }
 
-            collectVisibleText(
-                node = node.getChild(index),
-                output = output,
-                depth = depth + 1
-            )
+            val domain = BrowserUrlExtractor.extractDomain(root, currentPackage, this)
+            if (domain == null) {
+                val msg = "$currentPackage: extractDomain found nothing (address bar view " +
+                    "not found, or its text wasn't URL-shaped)"
+                Log.d(CAPTURE_LOG_TAG, msg)
+                CaptureDebugLogger.log(this, msg)
+                return
+            }
+
+            // Block BEFORE the dedup below - a still-loaded blocked page must be
+            // re-blocked after the child dismisses the block screen.
+            if (SiteBlocker.isBlocked(this, domain)) {
+                blockWebsite(currentPackage, domain)
+                return
+            }
+
+            if (lastCapturedDomain[currentPackage] == domain) {
+                val msg = "$currentPackage: '$domain' same as last capture, skipping"
+                Log.d(CAPTURE_LOG_TAG, msg)
+                CaptureDebugLogger.log(this, msg)
+                return
+            }
+
+            lastCapturedDomain[currentPackage] = domain
+            val msg = "$currentPackage: recording visit to '$domain'"
+            Log.d(CAPTURE_LOG_TAG, msg)
+            CaptureDebugLogger.log(this, msg)
+            BrowsingLogger.recordVisit(this, currentPackage, domain)
+        } catch (e: Exception) {
+            val msg = "$currentPackage: capture threw ${e.javaClass.simpleName}: ${e.message}"
+            Log.d(CAPTURE_LOG_TAG, msg)
+            CaptureDebugLogger.log(this, msg)
+            // Best-effort capture only - never let this interfere with the
+            // restricted-app blocking logic below.
         }
     }
 
-    private fun handleWebsiteCategoryDetection(
-        browserPackageName: String,
-        detectionResult: WebsiteCategoryDetectionResult
-    ) {
-        val currentTime = System.currentTimeMillis()
-
-        val isSameRecentDetection =
-            detectionResult.domain == lastDetectedDomain &&
-                detectionResult.category == lastDetectedCategory &&
-                currentTime - lastDetectedTime < DETECTION_DEBOUNCE_MS
-
-        if (isSameRecentDetection) {
-            return
-        }
-
-        lastDetectedDomain = detectionResult.domain
-        lastDetectedCategory = detectionResult.category
-        lastDetectedTime = currentTime
-
-        saveLatestWebsiteDetection(
-            browserPackageName = browserPackageName,
-            detectionResult = detectionResult,
-            detectedAt = currentTime
-        )
-
-        Log.d(
-            LOG_TAG,
-            "Detected website category: domain=${detectionResult.domain}, " +
-                "category=${detectionResult.category}, " +
-                "harmful=${detectionResult.isHarmful}, " +
-                "browser=$browserPackageName"
-        )
-
-        blockHarmfulWebsiteIfNeeded(
-            detectionResult = detectionResult,
-            detectedAt = currentTime
-        )
-    }
-
-    private fun blockHarmfulWebsiteIfNeeded(
-        detectionResult: WebsiteCategoryDetectionResult,
-        detectedAt: Long
-    ) {
-        if (!detectionResult.isHarmful) {
-            return
-        }
-
-        if (!getRestrictionRules().categoryRestrictionEnabled) {
-            return
-        }
-
-        val isSameRecentBlock =
-            detectionResult.domain == lastBlockedDomain &&
-                detectedAt - lastBlockedWebsiteTime < WEBSITE_BLOCK_DEBOUNCE_MS
-
-        if (isSameRecentBlock) {
-            return
-        }
-
-        lastBlockedDomain = detectionResult.domain
-        lastBlockedWebsiteTime = detectedAt
-
-        sendSmsBackupAlertIfNeeded(
-            alertKey = "blocked_website_${detectionResult.domain}",
-            title = "Website blocked",
-            message = "WellScreen alert: A harmful website was blocked on the child device. Domain: ${detectionResult.domain}. Category: ${detectionResult.category}.",
-            currentTime = detectedAt
-        )
-
-        val blockIntent = Intent(this, BlockedWebsiteActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            putExtra(BlockedWebsiteActivity.EXTRA_DOMAIN, detectionResult.domain)
-            putExtra(BlockedWebsiteActivity.EXTRA_CATEGORY, detectionResult.category)
-        }
-
-        try {
-            startActivity(blockIntent)
-
-            Log.d(
-                LOG_TAG,
-                "Blocked harmful website: domain=${detectionResult.domain}, " +
-                    "category=${detectionResult.category}"
-            )
-        } catch (exception: Exception) {
-            Log.e(LOG_TAG, "Failed to open blocked website screen.", exception)
+    /**
+     * True when the parent has approved a still-unexpired Emergency Access
+     * request. EmergencyAccessService.syncGrantedUntilLocally (Dart side)
+     * mirrors the approval's expiry timestamp from Firestore into this same
+     * local key on every status update, the same "Firestore is the source
+     * of truth, SharedPreferences is the native side's local mirror of it"
+     * pattern getRestrictedPackages() below already uses for rules.
+     */
+    private fun isEmergencyAccessActive(now: Long): Boolean {
+        return try {
+            val prefs = getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
+            val grantedUntil = prefs.getLong("flutter.emergency_access_granted_until_ms", 0L)
+            grantedUntil > now
+        } catch (_: Exception) {
+            false
         }
     }
 
-    private fun sendSmsBackupAlertIfNeeded(
-        alertKey: String,
-        title: String,
-        message: String,
-        currentTime: Long
-    ) {
-        val preferences = getSharedPreferences(
-            RESTRICTION_RULE_PREFERENCES,
-            MODE_PRIVATE
-        )
+    private fun getRestrictedPackages(): Set<String> {
+        return try {
+            val prefs = getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
 
-        if (!preferences.getBoolean("smsBackupAlertsEnabled", false)) {
-            return
-        }
+            // Flutter shared_preferences stores string keys with "flutter." prefix on Android.
+            val raw = prefs.getString("flutter.restricted_packages_json", "[]") ?: "[]"
 
-        val guardianPhoneNumber =
-            preferences.getString("guardianPhoneNumber", "")?.trim().orEmpty()
+            val jsonArray = JSONArray(raw)
+            val result = mutableSetOf<String>()
 
-        if (guardianPhoneNumber.isEmpty()) {
-            Log.d(LOG_TAG, "SMS backup alert skipped: guardian phone number is empty.")
-            return
-        }
+            for (i in 0 until jsonArray.length()) {
+                result.add(jsonArray.getString(i))
+            }
 
-        if (!isSmsPermissionGranted()) {
-            Log.d(LOG_TAG, "SMS backup alert skipped: SEND_SMS permission is not granted.")
-            return
-        }
-
-        val lastAlertKey = "lastSmsAlertAt_$alertKey"
-        val lastAlertAt = preferences.getLong(lastAlertKey, 0L)
-
-        if (currentTime - lastAlertAt < SMS_BACKUP_ALERT_DEBOUNCE_MS) {
-            return
-        }
-
-        try {
-            SmsManager.getDefault().sendTextMessage(
-                guardianPhoneNumber,
-                null,
-                message.take(MAX_SMS_MESSAGE_LENGTH),
-                null,
-                null
-            )
-
-            preferences.edit()
-                .putLong(lastAlertKey, currentTime)
-                .putString("lastSmsAlertTitle", title)
-                .putString("lastSmsAlertMessage", message)
-                .putLong("lastSmsAlertAt", currentTime)
-                .apply()
-
-            Log.d(LOG_TAG, "SMS backup alert sent: $title")
-        } catch (exception: Exception) {
-            Log.e(LOG_TAG, "Failed to send SMS backup alert.", exception)
+            result
+        } catch (_: Exception) {
+            emptySet()
         }
     }
 
-    private fun isSmsPermissionGranted(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            checkSelfPermission(Manifest.permission.SEND_SMS) ==
-                PackageManager.PERMISSION_GRANTED
-        } else {
-            true
+    private fun getAppLabel(packageName: String): String {
+        return try {
+            val info = packageManager.getApplicationInfo(packageName, 0)
+            packageManager.getApplicationLabel(info).toString()
+        } catch (_: Exception) {
+            packageName
         }
     }
 
-    private fun saveLatestWebsiteDetection(
-        browserPackageName: String,
-        detectionResult: WebsiteCategoryDetectionResult,
-        detectedAt: Long
-    ) {
-        val preferences = getSharedPreferences(
-            WEBSITE_DETECTION_PREFERENCES,
-            MODE_PRIVATE
-        )
-
-        preferences.edit()
-            .putString("lastBrowserPackage", browserPackageName)
-            .putString("lastDomain", detectionResult.domain)
-            .putString("lastCategory", detectionResult.category)
-            .putBoolean("lastIsHarmful", detectionResult.isHarmful)
-            .putString("lastMatchedValue", detectionResult.matchedValue)
-            .putLong("lastDetectedAt", detectedAt)
-            .apply()
-    }
-
-    private fun getRestrictionRules(): RestrictionRules {
-        val preferences = getSharedPreferences(
-            RESTRICTION_RULE_PREFERENCES,
-            MODE_PRIVATE
-        )
-
-        return RestrictionRules(
-            appBlockingEnabled = preferences.getBoolean(
-                "appBlockingEnabled",
-                true
-            ),
-            focusModeEnabled = preferences.getBoolean(
-                "focusModeEnabled",
-                false
-            ),
-            cooldownTimerEnabled = preferences.getBoolean(
-                "cooldownTimerEnabled",
-                true
-            ),
-            scheduledLockEnabled = preferences.getBoolean(
-                "scheduledLockEnabled",
-                false
-            ),
-            categoryRestrictionEnabled = preferences.getBoolean(
-                "categoryRestrictionEnabled",
-                true
-            ),
-            emergencyAccessEnabled = preferences.getBoolean(
-                "emergencyAccessEnabled",
-                true
-            ),
-            emergencyAccessApproved = preferences.getBoolean(
-                "emergencyAccessApproved",
-                false
-            ),
-            emergencyAccessApprovedUntilMillis = preferences.getLong(
-                "emergencyAccessApprovedUntilMillis",
-                0L
-            )
-        )
-    }
-
-    private fun getBlockReasonLabel(reason: String): String {
-        return when (reason) {
-            BLOCK_REASON_SCHEDULED_LOCK -> "Scheduled Lock"
-            BLOCK_REASON_COOLDOWN -> "Cooldown Timer"
-            BLOCK_REASON_FOCUS_MODE -> "Focus Mode"
-            BLOCK_REASON_APP_BLOCKING -> "App Blocking"
-            else -> "Restriction"
-        }
-    }
-
-    private data class RestrictionRules(
-        val appBlockingEnabled: Boolean,
-        val focusModeEnabled: Boolean,
-        val cooldownTimerEnabled: Boolean,
-        val scheduledLockEnabled: Boolean,
-        val categoryRestrictionEnabled: Boolean,
-        val emergencyAccessEnabled: Boolean,
-        val emergencyAccessApproved: Boolean,
-        val emergencyAccessApprovedUntilMillis: Long
-    )
-
-    companion object {
-        private const val LOG_TAG = "WellScreenEnforcement"
-
-        private const val WEBSITE_DETECTION_PREFERENCES =
-            "wellscreen_website_detection"
-        private const val BLOCKED_APP_ATTEMPT_PREFERENCES =
-            "wellscreen_restricted_app_attempts"
-        private const val RESTRICTION_RULE_PREFERENCES =
-            "wellscreen_restriction_rules"
-
-        private const val BLOCK_REASON_APP_BLOCKING = "app_blocking"
-        private const val BLOCK_REASON_FOCUS_MODE = "focus_mode"
-        private const val BLOCK_REASON_COOLDOWN = "cooldown_timer"
-        private const val BLOCK_REASON_SCHEDULED_LOCK = "scheduled_lock"
-
-        private const val DETECTION_DEBOUNCE_MS = 3000L
-        private const val WEBSITE_BLOCK_DEBOUNCE_MS = 5000L
-        private const val APP_BLOCK_DEBOUNCE_MS = 3000L
-        private const val COOLDOWN_DURATION_MS = 60000L
-        private const val SMS_BACKUP_ALERT_DEBOUNCE_MS = 600000L
-        private const val MAX_SMS_MESSAGE_LENGTH = 150
-
-        private const val SCHEDULED_LOCK_START_HOUR = 22
-        private const val SCHEDULED_LOCK_END_HOUR = 5
-
-        private const val MAX_NODE_DEPTH = 8
-        private const val MAX_TEXT_ITEMS = 120
-
-        private val supportedBrowserPackages = setOf(
-            "com.android.chrome",
-            "com.chrome.beta",
-            "com.chrome.dev",
-            "com.google.android.googlequicksearchbox",
-            "org.mozilla.firefox",
-            "org.mozilla.firefox_beta",
-            "com.microsoft.emmx",
-            "com.brave.browser",
-            "com.opera.browser",
-            "com.opera.mini.native",
-            "com.sec.android.app.sbrowser",
-            "com.duckduckgo.mobile.android"
-        )
-
-        private val essentialAllowedPackages = setOf(
-            "android",
-            "com.android.systemui",
-            "com.android.settings",
-            "com.google.android.permissioncontroller",
-            "com.android.permissioncontroller",
-            "com.google.android.packageinstaller",
-            "com.android.packageinstaller",
-            "com.google.android.dialer",
-            "com.android.dialer",
-            "com.google.android.contacts",
-            "com.android.contacts",
-            "com.google.android.gms"
-        )
-
-        private val restrictedAppPackages = setOf(
-            "com.google.android.youtube",
-            "com.zhiliaoapp.musically",
-            "com.instagram.android",
-            "com.facebook.katana",
-            "com.facebook.orca",
-            "com.roblox.client",
-            "com.netflix.mediaclient",
-            "com.mobile.legends",
-            "com.tencent.ig",
-            "com.garena.game.codm"
-        )
-
-        private val distractingAppPackages = setOf(
-            "com.google.android.youtube",
-            "com.google.android.apps.youtube.kids",
-            "com.zhiliaoapp.musically",
-            "com.instagram.android",
-            "com.facebook.katana",
-            "com.facebook.orca",
-            "com.twitter.android",
-            "com.reddit.frontpage",
-            "com.snapchat.android",
-            "com.discord",
-            "com.roblox.client",
-            "com.netflix.mediaclient",
-            "tv.twitch.android.app",
-            "com.mobile.legends",
-            "com.tencent.ig",
-            "com.garena.game.codm"
-        )
+    private fun openBlockedScreen(blockedPackage: String) {
+        val intent = Intent(this, BlockedAppActivity::class.java)
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        intent.putExtra("blocked_package", blockedPackage)
+        startActivity(intent)
     }
 }

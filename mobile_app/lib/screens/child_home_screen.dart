@@ -1,18 +1,44 @@
-﻿import 'dart:async';
+import 'dart:async';
+import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-import '../services/accessibility_service_status_service.dart';
-import '../services/firestore_usage_report_sync_service.dart';
-import '../services/location_tracking_service.dart';
-import '../services/native_restriction_rules_service.dart';
-import '../services/notification_service.dart';
+import '../models/app_rule.dart';
+import '../models/app_usage_summary.dart';
+import '../models/usage_report.dart';
+import '../services/alert_notification_client.dart';
+import '../services/app_rules_service.dart';
+import '../services/daily_screen_time_limit_service.dart';
+import '../services/emergency_access_service.dart';
+import '../services/ml_risk_classifier_service.dart';
+import '../services/site_category_service.dart';
+import '../services/sync_status_service.dart';
+import '../services/usage_dashboard_controller_service.dart';
 import '../services/usage_tracking_service.dart';
+import '../theme/app_theme.dart';
+import '../widgets/wellscreen_bottom_nav.dart';
+import 'capture_debug_screen.dart';
 import 'login_screen.dart';
+import 'profile_settings_screen.dart';
+import 'qr_scan_screen.dart';
+
+/// Thrown by [_ChildHomeScreenState._getCurrentPositionOrThrow] specifically
+/// when Android's device-wide location services (GPS) are off - as opposed
+/// to a permission problem, which is a separate, differently-handled case.
+/// Its own type (rather than a generic Exception matched by string) lets
+/// both the manual share flow and the periodic auto-share flow react to
+/// this one case distinctly: the manual flow prompts to open Settings, the
+/// silent auto flow only raises the passive banner in _gpsCard() instead of
+/// interrupting whatever the user is doing.
+class LocationServicesDisabledException implements Exception {
+  @override
+  String toString() => 'Location services are turned off on this device.';
+}
 
 class ChildHomeScreen extends StatefulWidget {
   const ChildHomeScreen({super.key});
@@ -23,549 +49,1207 @@ class ChildHomeScreen extends StatefulWidget {
 
 class _ChildHomeScreenState extends State<ChildHomeScreen>
     with WidgetsBindingObserver {
-  static const Color purple = Color(0xFF5B2BBF);
-  static const Color darkText = Color(0xFF111827);
-  static const Color grayText = Color(0xFF4B5563);
-  static const Color softPurple = Color(0xFFF4F0FF);
+  // Aliased onto the shared AppColors palette (theme/app_theme.dart) - see
+  // the matching comment in parent_dashboard_screen.dart. softRed has no
+  // AppColors equivalent for "red but softer than dangerBg", so it stays a
+  // local literal for now (used in exactly one place - the SMS failure
+  // banner below).
+  static const Color purple = AppColors.primary;
+  static const Color deepPurple = AppColors.primaryDark;
+  static const Color teal = AppColors.accent;
+  static const Color darkText = AppColors.textPrimary;
+  static const Color grayText = AppColors.textSecondary;
+  static const Color pageBg = AppColors.background;
+  static const Color softGreen = AppColors.successBg;
+  static const Color softBlue = AppColors.infoBg;
+  static const Color softRed = Color(0xFFFFEFEF);
 
-  final TextEditingController pairingCodeController = TextEditingController();
+  // Used by handleBottomNavTap to scroll to real, already-rendered sections
+  // of this same page instead of the two "Pairing"/"Reports" tabs
+  // previously just showing a dead-end SnackBar. There's no separate
+  // pairing or reports screen on the child side (by design - a child
+  // shouldn't see the parent-facing alert/detection log about their own
+  // browsing), so scrolling to the relevant section already on this page
+  // is the honest fix rather than inventing new screens with nothing real
+  // to show.
+  final ScrollController _scrollController = ScrollController();
+  final GlobalKey _pairingSectionKey = GlobalKey();
+  final GlobalKey _reportsSectionKey = GlobalKey();
 
-  final FirestoreUsageReportSyncService _usageReportSyncService =
-      FirestoreUsageReportSyncService();
-
+  final AppRulesService _rulesService = AppRulesService();
   final UsageTrackingService _usageTrackingService = UsageTrackingService();
+  final AlertNotificationClient _alertNotificationClient =
+      AlertNotificationClient();
+  final UsageDashboardControllerService _usageDashboardController =
+      UsageDashboardControllerService();
+  final SyncStatusService _syncStatusService = SyncStatusService();
+  final MlRiskClassifierService _mlRiskClassifierService =
+      MlRiskClassifierService();
+  final SiteCategoryService _siteCategoryService = SiteCategoryService();
+  final DailyScreenTimeLimitService _dailyScreenTimeLimitService =
+      DailyScreenTimeLimitService();
+  final EmergencyAccessService _emergencyAccessService =
+      EmergencyAccessService();
+  final pairingCodeController = TextEditingController();
+  final emergencyReasonController = TextEditingController();
+  StreamSubscription<bool>? _connectivitySubscription;
 
-  final AccessibilityServiceStatusService _accessibilityStatusService =
-      AccessibilityServiceStatusService();
-
-  final LocationTrackingService _locationTrackingService =
-      LocationTrackingService();
-
-  final Connectivity _connectivity = Connectivity();
-
-  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
-  bool? _lastKnownNetworkAvailable;
-
+  int currentIndex = 0;
   bool isPairing = false;
+  bool isSharingLocation = false;
+  bool isSyncingUsage = false;
+  bool isRequestingEmergencyAccess = false;
 
-  bool isSyncingUsageReport = false;
-  String? lastSyncStatusMessage;
+  // Real local usage data loaded via UsageDashboardControllerService, which
+  // wraps UsageTrackingService (Android UsageStats), PatternDetectionService
+  // and ScreenTimeGoalService. This layer already existed in the codebase
+  // (usage_dashboard_controller_service.dart etc.) but nothing imported it
+  // from any screen, so this card was showing hardcoded "4h 25m" / "Low
+  // Risk" / "32/100" placeholders instead. See BRANCH_REAUDIT for details.
+  UsageDashboardControllerState? _usageDashboardState;
+  bool _loadingUsageDashboard = true;
 
-  bool _isAutomaticUsageCatchUpRunning = false;
+  // SMS backup-alert status (see SmsAlertSender.kt). The actual sending
+  // happens natively in WellScreenAccessibilityService when a restricted
+  // app is blocked - this state is just what the Flutter UI needs to show
+  // whether that's actually wired up (permission granted + a parent phone
+  // number cached) and a log of what's happened so far.
+  bool _smsPermissionGranted = false;
+  String? _cachedParentPhoneNumber;
+  List<Map<String, dynamic>> _smsAlertLog = [];
+  String? _syncedParentIdForPhoneNumber;
 
-  bool? hasUsageAccess;
-  bool isCheckingUsageAccess = false;
+  // Synchronization status (see SyncStatusService / _attemptFirestoreSync
+  // below). cloud_firestore's set()/update() Futures hang indefinitely when
+  // offline instead of throwing (firebase/flutterfire#17643) - this state
+  // tracks real online/offline status and a log of what actually happened
+  // on each sync attempt (synced / queued_offline / failed_timeout), not
+  // just whether the sync button was tapped.
+  bool _isOnline = true;
+  List<Map<String, dynamic>> _syncLog = [];
 
-  bool? hasAccessibilityAccess;
-  bool isCheckingAccessibilityAccess = false;
+  // Automatic periodic GPS sharing (as opposed to the manual "Share GPS"
+  // button, which still exists and still works the same way). This is a
+  // plain Dart Timer.periodic, NOT a native Android background service /
+  // WorkManager job - it only runs while this app's process is alive
+  // (foreground, or backgrounded-but-not-killed by the OS). If Android
+  // kills the process (common on stricter OEM battery managers), periodic
+  // sharing stops until the app is reopened, same as every other in-app
+  // timer this codebase uses. A true kill-proof background tracker would
+  // need a native foreground service with its own persistent notification
+  // - bigger scope, not built here, flagged as real follow-up work rather
+  // than silently pretending this covers the "even when closed" case.
+  static const Duration _locationAutoShareInterval = Duration(minutes: 15);
+  Timer? _locationAutoShareTimer;
 
-  LocationPermissionStatus? locationPermissionStatus;
-  bool isCheckingLocationPermission = false;
+  // Latest snapshot of the child's own users/{uid} doc, cached from the
+  // StreamBuilder in build() below so _autoShareLocation() has
+  // pairedParentId/pairedChildProfileId to work with even though a
+  // Timer callback has no BuildContext of its own.
+  Map<String, dynamic>? _cachedUserData;
 
-  bool isSyncingLocation = false;
-  String? lastLocationSyncMessage;
-
-  int selectedTabIndex = 0;
-  bool showRulesPage = false;
+  // True once an automatic (or manual) GPS attempt has detected that
+  // Android's location services (GPS) are turned off device-wide. Drives
+  // the warning banner in _gpsCard() so this is surfaced passively next
+  // time the user actually looks at the app, instead of a periodic
+  // background timer popping an interruptive dialog with no warning.
+  bool _locationServicesDisabled = false;
 
   @override
   void initState() {
     super.initState();
-
     WidgetsBinding.instance.addObserver(this);
-
-    _checkUsagePermission();
-    _checkAccessibilityPermission();
-    _checkLocationPermission();
-
-    unawaited(_startConnectivityMonitoring());
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_attemptAutomaticUsageCatchUp());
-    });
-
-    unawaited(
-      NotificationService.instance.initializeForCurrentUser(
-        contextLabel: 'child_home',
-      ),
+    _loadUsageDashboard();
+    _refreshSmsAlertStatus();
+    _refreshSyncStatus();
+    _connectivitySubscription =
+        _syncStatusService.onlineStatusChanges.listen(_handleConnectivityChange);
+    _locationAutoShareTimer = Timer.periodic(
+      _locationAutoShareInterval,
+      (_) => _autoShareLocation(),
+    );
+    _usageAutoSyncTimer = Timer.periodic(
+      _usageAutoSyncInterval,
+      (_) => _autoSyncUsage(),
     );
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _connectivitySubscription?.cancel();
     pairingCodeController.dispose();
+    emergencyReasonController.dispose();
+    _connectivitySubscription?.cancel();
+    _locationAutoShareTimer?.cancel();
+    _usageAutoSyncTimer?.cancel();
+    _scrollController.dispose();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Android's "Usage Access" permission is granted from system Settings,
+    // outside the app, so there's no in-app callback for it. Re-check when
+    // the user comes back to the app (e.g. after granting the permission)
+    // instead of requiring a manual refresh every time.
     if (state == AppLifecycleState.resumed) {
-      _checkUsagePermission();
-      _checkAccessibilityPermission();
-      _checkLocationPermission();
-
-      unawaited(_attemptAutomaticUsageCatchUp());
+      _loadUsageDashboard();
+      _refreshSmsAlertStatus();
+      _refreshSyncStatus();
     }
   }
 
-  Future<void> _startConnectivityMonitoring() async {
-    _connectivitySubscription = _connectivity.onConnectivityChanged.listen(
-      _handleConnectivityChanged,
-    );
+  /// Caches the paired parent's phone number locally (SharedPreferences),
+  /// because WellScreenAccessibilityService.kt / SmsAlertSender.kt run in
+  /// native Kotlin with no Firestore access of their own - they read the
+  /// same "FlutterSharedPreferences" file the Flutter app writes to, the
+  /// same pattern app_rules_service.dart already uses for restricted-app
+  /// package lists. The number itself lives on users/{parentId}.phoneNumber
+  /// (ProfileSettingsScreen), set by the parent on their own device.
+  Future<void> _maybeSyncParentPhoneNumber(Map<String, dynamic> data) async {
+    final parentId = (data['pairedParentId'] ?? '').toString();
 
-    try {
-      final initialResults = await _connectivity.checkConnectivity();
-      _lastKnownNetworkAvailable = _hasNetworkConnection(initialResults);
-    } catch (_) {
-      // Connectivity monitoring is only a retry trigger.
-      // Startup/resume catch-up still works if this check fails.
-    }
-  }
-
-  void _handleConnectivityChanged(List<ConnectivityResult> results) {
-    final networkAvailable = _hasNetworkConnection(results);
-    final wasNetworkAvailable = _lastKnownNetworkAvailable;
-
-    _lastKnownNetworkAvailable = networkAvailable;
-
-    if (wasNetworkAvailable == false && networkAvailable) {
-      unawaited(_attemptAutomaticUsageCatchUp());
-    }
-  }
-
-  bool _hasNetworkConnection(List<ConnectivityResult> results) {
-    return results.isNotEmpty &&
-        results.any((result) => result != ConnectivityResult.none);
-  }
-
-  Future<void> _refreshEverything() async {
-    await Future.wait([
-      _checkUsagePermission(),
-      _checkAccessibilityPermission(),
-      _checkLocationPermission(),
-    ]);
-  }
-
-  Future<void> _checkUsagePermission() async {
-    if (mounted) {
-      setState(() {
-        isCheckingUsageAccess = true;
-      });
-    }
-
-    try {
-      final granted = await _usageTrackingService.hasUsagePermission();
-
-      if (!mounted) return;
-
-      setState(() {
-        hasUsageAccess = granted;
-        isCheckingUsageAccess = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-
-      setState(() {
-        isCheckingUsageAccess = false;
-      });
-    }
-  }
-
-  Future<void> _checkAccessibilityPermission() async {
-    if (mounted) {
-      setState(() {
-        isCheckingAccessibilityAccess = true;
-      });
-    }
-
-    try {
-      final granted = await _accessibilityStatusService
-          .isAccessibilityServiceEnabled();
-
-      if (!mounted) return;
-
-      setState(() {
-        hasAccessibilityAccess = granted;
-        isCheckingAccessibilityAccess = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-
-      setState(() {
-        isCheckingAccessibilityAccess = false;
-      });
-    }
-  }
-
-  Future<void> _checkLocationPermission() async {
-    if (mounted) {
-      setState(() {
-        isCheckingLocationPermission = true;
-      });
-    }
-
-    try {
-      final status = await _locationTrackingService.checkPermissionStatus();
-
-      if (!mounted) return;
-
-      setState(() {
-        locationPermissionStatus = status;
-        isCheckingLocationPermission = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-
-      setState(() {
-        isCheckingLocationPermission = false;
-      });
-    }
-  }
-
-  Future<void> _requestLocationPermission() async {
-    setState(() {
-      isCheckingLocationPermission = true;
-    });
-
-    try {
-      final status = await _locationTrackingService.requestPermission();
-
-      if (!mounted) return;
-
-      setState(() {
-        locationPermissionStatus = status;
-        isCheckingLocationPermission = false;
-      });
-
-      if (status == LocationPermissionStatus.granted) {
-        showMessage('Location permission granted.');
-      } else if (status == LocationPermissionStatus.serviceDisabled) {
-        showMessage('Turn on device location services first.');
-      } else {
-        showMessage('Location permission is needed for GPS tracking.');
-      }
-    } catch (e) {
-      if (!mounted) return;
-
-      setState(() {
-        isCheckingLocationPermission = false;
-      });
-
-      showMessage(_cleanErrorMessage(e));
-    }
-  }
-
-  Future<void> _openLocationSettings() async {
-    try {
-      await _locationTrackingService.openLocationSettings();
-
-      showMessage('Turn on Location, then return to WellScreen.');
-    } catch (e) {
-      showMessage(_cleanErrorMessage(e));
-    }
-  }
-
-  Future<void> openUsageAccessSettings() async {
-    try {
-      await _usageTrackingService.openUsageAccessSettings();
-
-      showMessage(
-        'Enable Usage Access for WellScreen, then return to the app.',
-      );
-    } catch (e) {
-      showMessage(_cleanErrorMessage(e));
-    }
-  }
-
-  Future<void> openAccessibilitySettings() async {
-    try {
-      await _accessibilityStatusService.openAccessibilitySettings();
-
-      showMessage(
-        'Enable WellScreen under Accessibility settings, then return to the app.',
-      );
-    } catch (e) {
-      showMessage(_cleanErrorMessage(e));
-    }
-  }
-
-  Future<void> pairChildDevice() async {
-    final user = FirebaseAuth.instance.currentUser;
-
-    if (user == null) {
-      showMessage('Please log in again before pairing.');
+    if (parentId.isEmpty || parentId == _syncedParentIdForPhoneNumber) {
       return;
     }
 
-    final code = pairingCodeController.text.trim();
+    _syncedParentIdForPhoneNumber = parentId;
+
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(parentId)
+          .get();
+
+      final phoneNumber = (doc.data()?['phoneNumber'] ?? '').toString().trim();
+      final prefs = await SharedPreferences.getInstance();
+
+      if (phoneNumber.isEmpty) {
+        await prefs.remove('parent_phone_number');
+      } else {
+        await prefs.setString('parent_phone_number', phoneNumber);
+      }
+
+      await _refreshSmsAlertStatus();
+    } catch (_) {
+      // Best-effort - if this fails, SmsAlertSender simply has no cached
+      // number yet and skips sending, same as the "no number yet" state.
+    }
+  }
+
+  Future<void> _refreshSmsAlertStatus() async {
+    final status = await Permission.sms.status;
+    final prefs = await SharedPreferences.getInstance();
+    final phoneNumber = prefs.getString('parent_phone_number');
+    final log = _decodeJsonList(prefs.getString('sms_alert_log_json'));
+
+    if (!mounted) return;
+
+    setState(() {
+      _smsPermissionGranted = status.isGranted;
+      _cachedParentPhoneNumber =
+          (phoneNumber != null && phoneNumber.isNotEmpty) ? phoneNumber : null;
+      _smsAlertLog = log;
+    });
+  }
+
+  List<Map<String, dynamic>> _decodeJsonList(String? raw) {
+    if (raw == null || raw.isEmpty) return [];
+
+    try {
+      final decoded = jsonDecode(raw);
+
+      if (decoded is! List) return [];
+
+      return decoded
+          .whereType<Map>()
+          .map((entry) => Map<String, dynamic>.from(entry))
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /// Fires once per actual online<->offline transition (see
+  /// SyncStatusService.onlineStatusChanges). On regaining connectivity,
+  /// flushes whatever was cached by _queuePendingSync while offline - this
+  /// is the "automatic retry after reconnecting" half of the offline-sync
+  /// story; syncUsageReport()'s manual button press is the other half.
+  Future<void> _handleConnectivityChange(bool isOnline) async {
+    if (mounted) {
+      setState(() => _isOnline = isOnline);
+    }
+
+    if (!isOnline) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final pendingRaw = prefs.getString('pending_sync_payload_json');
+    if (pendingRaw == null) return;
+
+    try {
+      final pending = jsonDecode(pendingRaw);
+      if (pending is! Map) {
+        await prefs.remove('pending_sync_payload_json');
+        return;
+      }
+
+      final childProfileId = (pending['childProfileId'] ?? '').toString();
+      final payload = pending['payload'];
+      final queuedAtMs = pending['queuedAtMs'];
+
+      if (childProfileId.isEmpty || payload is! Map) {
+        await prefs.remove('pending_sync_payload_json');
+        return;
+      }
+
+      await _attemptFirestoreSync(
+        childProfileId: childProfileId,
+        payload: Map<String, dynamic>.from(payload),
+        trigger: 'auto_reconnect',
+        queuedAtMs: queuedAtMs is int ? queuedAtMs : null,
+      );
+    } catch (_) {
+      // Malformed cache entry - drop it rather than retry forever.
+      await prefs.remove('pending_sync_payload_json');
+    }
+  }
+
+  Future<void> _queuePendingSync(
+    String childProfileId,
+    Map<String, dynamic> payload,
+    int queuedAtMs,
+  ) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      'pending_sync_payload_json',
+      jsonEncode({
+        'childProfileId': childProfileId,
+        'payload': payload,
+        'queuedAtMs': queuedAtMs,
+      }),
+    );
+  }
+
+  Future<void> _clearPendingSync() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('pending_sync_payload_json');
+  }
+
+  Future<void> _recordSyncOutcome({
+    required String outcome,
+    required String trigger,
+    int? responseTimeMs,
+    int? recoveryTimeMs,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    final log = _decodeJsonList(prefs.getString('sync_log_json'));
+
+    log.add({
+      'outcome': outcome,
+      'trigger': trigger,
+      'responseTimeMs': ?responseTimeMs,
+      'recoveryTimeMs': ?recoveryTimeMs,
+      'timestampMs': DateTime.now().millisecondsSinceEpoch,
+    });
+
+    final trimmed = log.length > 50 ? log.sublist(log.length - 50) : log;
+    await prefs.setString('sync_log_json', jsonEncode(trimmed));
+  }
+
+  Future<void> _refreshSyncStatus() async {
+    final prefs = await SharedPreferences.getInstance();
+    final log = _decodeJsonList(prefs.getString('sync_log_json'));
+    final online = await _syncStatusService.isOnline();
+
+    if (!mounted) return;
+    setState(() {
+      _syncLog = log;
+      _isOnline = online;
+    });
+  }
+
+  /// Single choke point for writing the usage/SMS/restriction snapshot to
+  /// child_profiles/{childProfileId} - used by both syncUsageReport()'s
+  /// manual button and _handleConnectivityChange()'s automatic
+  /// reconnect flush above.
+  ///
+  /// Always caches the payload locally BEFORE attempting the write (cleared
+  /// only on confirmed success), and wraps the write in a timeout, because
+  /// cloud_firestore's set() hangs forever offline instead of throwing
+  /// (firebase/flutterfire#17643) - without this, a sync attempted while
+  /// offline would spin the loading indicator forever with no error and no
+  /// way to recover except restarting the app.
+  ///
+  /// [payload] must not contain FieldValue sentinels (e.g.
+  /// FieldValue.serverTimestamp()) - those aren't JSON-encodable for the
+  /// local cache; the server timestamp is added here, right before the
+  /// real Firestore write.
+  Future<bool> _attemptFirestoreSync({
+    required String childProfileId,
+    required Map<String, dynamic> payload,
+    required String trigger,
+    int? queuedAtMs,
+  }) async {
+    final stopwatch = Stopwatch()..start();
+    final attemptStartMs = DateTime.now().millisecondsSinceEpoch;
+    final effectiveQueuedAtMs = queuedAtMs ?? attemptStartMs;
+    String outcome;
+
+    await _queuePendingSync(childProfileId, payload, effectiveQueuedAtMs);
+
+    try {
+      final online = await _syncStatusService.isOnline();
+
+      if (!online) {
+        outcome = 'queued_offline';
+      } else {
+        await FirebaseFirestore.instance
+            .collection('child_profiles')
+            .doc(childProfileId)
+            .set({
+              ...payload,
+              'usageReportUpdatedAt': FieldValue.serverTimestamp(),
+            }, SetOptions(merge: true))
+            .timeout(const Duration(seconds: 10));
+
+        await _clearPendingSync();
+        outcome = 'synced';
+      }
+    } on TimeoutException {
+      outcome = 'failed_timeout';
+    } catch (_) {
+      outcome = 'failed_exception';
+    }
+
+    stopwatch.stop();
+
+    final recoveryTimeMs = (outcome == 'synced' && queuedAtMs != null)
+        ? DateTime.now().millisecondsSinceEpoch - queuedAtMs
+        : null;
+
+    await _recordSyncOutcome(
+      outcome: outcome,
+      trigger: trigger,
+      responseTimeMs: stopwatch.elapsedMilliseconds,
+      recoveryTimeMs: recoveryTimeMs,
+    );
+
+    if (!mounted) return outcome == 'synced';
+
+    if (outcome == 'synced') {
+      if (trigger == 'auto_reconnect') {
+        showMessage(
+          'Usage data synced automatically now that you\'re back online.',
+        );
+        await _loadUsageDashboard();
+        await _refreshSmsAlertStatus();
+      }
+    } else if (outcome == 'queued_offline') {
+      showMessage(
+        'You\'re offline - this data is saved on your device and will '
+        'sync automatically once you\'re back online.',
+      );
+    } else if (outcome == 'failed_timeout') {
+      showMessage(
+        'Sync is taking too long - your data is saved locally and will '
+        'retry automatically when the connection improves.',
+      );
+    } else {
+      showMessage(
+        'Sync failed. Your data is saved locally - try again shortly.',
+      );
+    }
+
+    await _refreshSyncStatus();
+
+    return outcome == 'synced';
+  }
+
+  Future<void> _requestSmsPermission() async {
+    final status = await Permission.sms.request();
+
+    if (!mounted) return;
+
+    setState(() => _smsPermissionGranted = status.isGranted);
+
+    showMessage(
+      status.isGranted
+          ? 'SMS backup alerts enabled.'
+          : 'SMS permission was not granted. Backup alerts will stay off '
+              'until it\'s allowed.',
+    );
+  }
+
+  String _maskPhoneNumber(String phone) {
+    if (phone.length <= 4) return phone;
+    return '${'*' * (phone.length - 4)}${phone.substring(phone.length - 4)}';
+  }
+
+  Future<void> _loadUsageDashboard() async {
+    if (!mounted) return;
+    setState(() => _loadingUsageDashboard = true);
+
+    try {
+      final state = await _usageDashboardController.loadTodayDashboardState();
+      if (!mounted) return;
+      setState(() {
+        _usageDashboardState = state;
+        _loadingUsageDashboard = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loadingUsageDashboard = false);
+    }
+  }
+
+  Future<void> pairWithParent() async {
+    final code = pairingCodeController.text.trim().replaceAll(' ', '');
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      showMessage('Please log in again.');
+      return;
+    }
 
     if (code.length != 6) {
       showMessage('Please enter a valid 6-digit pairing code.');
       return;
     }
 
-    setState(() {
-      isPairing = true;
-    });
+    setState(() => isPairing = true);
 
     try {
-      final pairingRef = FirebaseFirestore.instance
-          .collection('pairing_codes')
-          .doc(code);
+      final firestore = FirebaseFirestore.instance;
 
-      await FirebaseFirestore.instance.runTransaction((transaction) async {
-        final pairingSnapshot = await transaction.get(pairingRef);
+      final codeRef = firestore.collection('pairing_codes').doc(code);
+      final userRef = firestore.collection('users').doc(user.uid);
 
-        if (!pairingSnapshot.exists) {
-          throw Exception('Invalid pairing code.');
+      await firestore.runTransaction((transaction) async {
+        final codeSnapshot = await transaction.get(codeRef);
+
+        if (!codeSnapshot.exists) {
+          throw Exception('Pairing code not found.');
         }
 
-        final data = pairingSnapshot.data();
+        final codeData = codeSnapshot.data() ?? <String, dynamic>{};
 
-        if (data == null) {
-          throw Exception('Pairing code data is missing.');
-        }
-
-        final status = data['status'] as String? ?? 'inactive';
-
-        final isPaired = data['isPaired'] as bool? ?? false;
-
-        final expiresAt = data['expiresAt'];
+        final status = (codeData['status'] ?? '').toString();
+        final parentId = (codeData['parentId'] ?? '').toString();
+        final childProfileId = (codeData['childId'] ?? '').toString();
+        final expiresAt = codeData['expiresAt'];
 
         if (status != 'active') {
           throw Exception('This pairing code is no longer active.');
         }
 
-        if (isPaired) {
-          throw Exception('This pairing code is already paired.');
+        if (parentId.isEmpty || childProfileId.isEmpty) {
+          throw Exception('Invalid pairing code data.');
         }
 
-        if (expiresAt is Timestamp &&
-            expiresAt.toDate().isBefore(DateTime.now())) {
-          throw Exception('This pairing code has expired.');
+        if (expiresAt is Timestamp) {
+          final expiryDate = expiresAt.toDate();
+
+          if (DateTime.now().isAfter(expiryDate)) {
+            throw Exception('This pairing code has expired.');
+          }
         }
 
-        final childId = data['childId'] as String?;
-
-        final parentId = data['parentId'] as String?;
-
-        final parentNameValue = data['parentName'];
-
-        final parentName =
-            parentNameValue is String && parentNameValue.trim().isNotEmpty
-            ? parentNameValue.trim()
-            : null;
-
-        if (childId == null || parentId == null) {
-          throw Exception('Pairing record is incomplete.');
-        }
-
-        final childProfileRef = FirebaseFirestore.instance
+        final childProfileRef = firestore
             .collection('child_profiles')
-            .doc(childId);
+            .doc(childProfileId);
 
-        final childDeviceRef = FirebaseFirestore.instance
-            .collection('child_devices')
-            .doc(user.uid);
-
-        transaction.set(pairingRef, {
-          'status': 'paired',
-          'isPaired': true,
-          'childUserId': user.uid,
-          'childEmail': user.email,
-          'deviceName': 'Android Child Device',
+        transaction.set(userRef, {
+          'uid': user.uid,
+          'email': user.email,
+          'fullName': user.displayName ?? 'Student User',
+          'role': 'child',
+          'pairingStatus': 'connected',
+          'pairedParentId': parentId,
+          'pairedChildProfileId': childProfileId,
+          'pairingCode': code,
           'pairedAt': FieldValue.serverTimestamp(),
-          'updatedAt': FieldValue.serverTimestamp(),
+          'lastLoginAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+
+        transaction.set(codeRef, {
+          'status': 'connected',
+          'childAccountId': user.uid,
+          'childEmail': user.email,
+          'connectedAt': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));
 
         transaction.set(childProfileRef, {
-          'childId': childId,
-          'parentId': parentId,
-          'parentName': ?parentName,
-          'childUserId': user.uid,
+          'childAccountId': user.uid,
           'childEmail': user.email,
-          'pairingCode': code,
-          'pairingStatus': 'paired',
-          'deviceStatus': 'connected',
-          'deviceName': 'Android Child Device',
-          'pairedAt': FieldValue.serverTimestamp(),
-          'updatedAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
-
-        transaction.set(childDeviceRef, {
-          'childUserId': user.uid,
-          'childEmail': user.email,
-          'parentId': parentId,
-          'parentName': ?parentName,
-          'childId': childId,
-          'pairingCode': code,
-          'deviceName': 'Android Child Device',
-          'deviceStatus': 'connected',
-          'pairingStatus': 'paired',
-          'lastOpenedAt': FieldValue.serverTimestamp(),
-          'updatedAt': FieldValue.serverTimestamp(),
+          'pairingStatus': 'connected',
+          'connectedAt': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));
       });
 
       pairingCodeController.clear();
 
-      showMessage('Device paired successfully.');
+      if (!mounted) return;
+
+      showConnectedSuccessDialog();
     } catch (e) {
-      showMessage(_cleanErrorMessage(e));
+      final message = e.toString().replaceFirst('Exception: ', '');
+      showMessage(message);
     } finally {
       if (mounted) {
-        setState(() {
-          isPairing = false;
-        });
+        setState(() => isPairing = false);
       }
     }
   }
 
-  Future<void> _attemptAutomaticUsageCatchUp() async {
-    if (_isAutomaticUsageCatchUpRunning) {
+  /// Opens [QrScanScreen] and, if a code was scanned, fills it into
+  /// [pairingCodeController] and immediately runs it through the same
+  /// [pairWithParent] validation/submit path used for manual entry - QR is
+  /// only a faster way to fill in the code, not a separate pairing route.
+  Future<void> scanQrCode() async {
+    final scannedCode = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(builder: (_) => const QrScanScreen()),
+    );
+
+    if (scannedCode == null || !mounted) return;
+
+    pairingCodeController.text = scannedCode;
+    await pairWithParent();
+  }
+
+  /// Requests the device's real GPS position via [Geolocator] and shares it
+  /// to the parent dashboard. Replaces the previous shareDemoLocation, which
+  /// wrote a hardcoded constant coordinate regardless of the device's actual
+  /// position - see the WellScreen re-audit notes for why that was a
+  /// data-integrity problem, not just a missing feature.
+  Future<void> shareCurrentLocation(Map<String, dynamic> data) async {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      showMessage('Please log in again.');
       return;
     }
+
+    final childProfileId = (data['pairedChildProfileId'] ?? '').toString();
+
+    if (childProfileId.isEmpty) {
+      showMessage('Pair this device first before sharing GPS location.');
+      return;
+    }
+
+    setState(() => isSharingLocation = true);
+
+    try {
+      final position = await _getCurrentPositionOrThrow();
+
+      if (mounted && _locationServicesDisabled) {
+        setState(() => _locationServicesDisabled = false);
+      }
+
+      await _writeSharedLocation(
+        userUid: user.uid,
+        childProfileId: childProfileId,
+        position: position,
+      );
+
+      if (!mounted) return;
+
+      showMessage('Current GPS location shared to parent dashboard.');
+
+      final parentId = (data['pairedParentId'] ?? '').toString();
+      unawaited(
+        _alertNotificationClient.notifyParent(
+          parentUid: parentId,
+          title: 'New location shared',
+          body: 'Your child\'s device just shared its current location.',
+          alertType: 'location_shared',
+          childProfileId: childProfileId,
+        ),
+      );
+    } on LocationServicesDisabledException {
+      if (!mounted) return;
+      setState(() => _locationServicesDisabled = true);
+      _showEnableLocationServicesDialog();
+    } on TimeoutException {
+      if (!mounted) return;
+      showMessage(
+        'Sharing location is taking too long - check your connection and '
+        'try again.',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      showMessage(e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) {
+        setState(() => isSharingLocation = false);
+      }
+    }
+  }
+
+  /// Silent, periodic counterpart to [shareCurrentLocation], fired every
+  /// [_locationAutoShareInterval] by the Timer.periodic started in
+  /// initState(). Deliberately does NOT show any snackbar on success (would
+  /// be noisy every 15 minutes) and does NOT send the paired parent a
+  /// "New location shared" push notification on every automatic cycle
+  /// (would spam the parent's phone all day) - that notification stays
+  /// exclusive to the manual "Share GPS" button, an explicit user action
+  /// worth telling the parent about. It also never pops a dialog: a
+  /// background timer interrupting whatever screen the user is currently
+  /// on would be bad UX, so on a services-disabled failure it only raises
+  /// the passive _locationServicesDisabled banner (see _gpsCard()) for the
+  /// user to notice and act on next time they open the app. Any other
+  /// failure (no permission, paired but offline, no fix within the
+  /// timeout, not paired yet) is swallowed silently and simply retried on
+  /// the next tick - there is no user-facing error path for a background
+  /// process the user didn't directly trigger.
+  Future<void> _autoShareLocation() async {
+    if (!mounted) return;
+
+    final user = FirebaseAuth.instance.currentUser;
+    final data = _cachedUserData;
+
+    if (user == null || data == null) return;
+
+    final childProfileId = (data['pairedChildProfileId'] ?? '').toString();
+
+    if (childProfileId.isEmpty) return;
+
+    try {
+      final position = await _getCurrentPositionOrThrow();
+
+      if (mounted && _locationServicesDisabled) {
+        setState(() => _locationServicesDisabled = false);
+      }
+
+      await _writeSharedLocation(
+        userUid: user.uid,
+        childProfileId: childProfileId,
+        position: position,
+      );
+    } on LocationServicesDisabledException {
+      if (!mounted) return;
+      setState(() => _locationServicesDisabled = true);
+    } catch (_) {
+      // Silent by design - see doc comment above.
+    }
+  }
+
+  /// Shared Firestore write used by both the manual button
+  /// (shareCurrentLocation) and the periodic background timer
+  /// (_autoShareLocation), so the mergeFields fix (see the comment inside)
+  /// only has to be correct in one place.
+  Future<void> _writeSharedLocation({
+    required String userUid,
+    required String childProfileId,
+    required Position position,
+  }) async {
+    final firestore = FirebaseFirestore.instance;
+    final userRef = firestore.collection('users').doc(userUid);
+    final childProfileRef = firestore
+        .collection('child_profiles')
+        .doc(childProfileId);
+
+    final sharedLocation = {
+      'latitude': position.latitude,
+      'longitude': position.longitude,
+      'accuracyMeters': position.accuracy,
+      'capturedAt': position.timestamp.toIso8601String(),
+    };
+
+    // Location isn't queued/auto-retried like usage data (see
+    // _attemptFirestoreSync) - a stale GPS fix replayed automatically
+    // after reconnecting would show the parent an outdated position
+    // without saying so, which is worse than just failing visibly. It
+    // still gets a timeout instead of hanging forever, though - same
+    // underlying cloud_firestore bug (set()/runTransaction() never
+    // complete offline: firebase/flutterfire#17643) applies here too.
+    // Deliberately NOT SetOptions(merge: true) here. Firestore's plain
+    // merge:true does a RECURSIVE merge on nested map fields - it only
+    // overwrites the keys actually sent (latitude/longitude/etc.) and
+    // silently keeps any other existing keys already inside
+    // latestLocation untouched. That's exactly why a leftover 'label'
+    // field from the old, removed shareDemoLocation() function
+    // ("Mandaue City, Cebu demo location") kept winning over real GPS
+    // coordinates forever, even after a real share succeeded -
+    // locationText() prefers 'label' when present. mergeFields tells
+    // Firestore to fully REPLACE the latestLocation/locationUpdatedAt
+    // fields wholesale (while leaving every other field on the document
+    // alone), so a real share now actually clears any stale label.
+    await firestore
+        .runTransaction((transaction) async {
+          transaction.set(
+            userRef,
+            {
+              'latestLocation': sharedLocation,
+              'locationUpdatedAt': FieldValue.serverTimestamp(),
+            },
+            SetOptions(mergeFields: ['latestLocation', 'locationUpdatedAt']),
+          );
+
+          transaction.set(
+            childProfileRef,
+            {
+              'latestLocation': sharedLocation,
+              'locationUpdatedAt': FieldValue.serverTimestamp(),
+            },
+            SetOptions(mergeFields: ['latestLocation', 'locationUpdatedAt']),
+          );
+        })
+        .timeout(const Duration(seconds: 10));
+  }
+
+  /// Shown only from the manual "Share GPS" flow (the periodic auto-share
+  /// never interrupts the user - see _autoShareLocation's doc comment).
+  /// Offers a direct path into Android's location-services settings via
+  /// Geolocator.openLocationSettings() instead of just telling the user to
+  /// go find the toggle themselves.
+  void _showEnableLocationServicesDialog() {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Turn on location services'),
+          content: const Text(
+            'Location services (GPS) are turned off on this device. '
+            'WellScreen needs them on to share your location with your '
+            'parent.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                Navigator.pop(dialogContext);
+                await Geolocator.openLocationSettings();
+              },
+              child: const Text('Open Settings'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// Walks the full geolocator permission/service flow and returns a real
+  /// device [Position], or throws a user-readable Exception describing
+  /// exactly which step failed (services off, permission denied, permission
+  /// permanently denied, or a timeout getting a fix).
+  ///
+  /// NOT verified on a physical device or emulator - this sandbox has no
+  /// Android runtime to test against. The permission flow and API calls
+  /// follow the documented geolocator ^14.x contract, but this needs a real
+  /// on-device pass (indoors AND outdoors, and with location services
+  /// toggled off) before this row can honestly move to "Done" in the
+  /// tracker.
+  Future<Position> _getCurrentPositionOrThrow() async {
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+
+    if (!serviceEnabled) {
+      throw LocationServicesDisabledException();
+    }
+
+    var permission = await Geolocator.checkPermission();
+
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+
+    if (permission == LocationPermission.denied) {
+      throw Exception(
+        'Location permission was denied. Allow location access for WellScreen and try again.',
+      );
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      throw Exception(
+        'Location permission is permanently denied. Enable it from this device\'s App Settings > Permissions.',
+      );
+    }
+
+    return Geolocator.getCurrentPosition(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        timeLimit: Duration(seconds: 20),
+      ),
+    );
+  }
+
+  /// Builds the 7-feature input vector for MlRiskClassifierService, using
+  /// only data the app can genuinely compute today - see
+  /// ml/generate_dataset.py's doc comment for which of the manuscript's
+  /// Table 6 indicators are included and which are still deferred
+  /// (harmful-category real-time detection isn't built yet, so it's not
+  /// faked here).
+  Map<String, num> _buildMlFeatures({
+    required UsageReport report,
+    required List<AppUsageSummary> summaries,
+    required List<Map<String, dynamic>> restrictionLog,
+    required int dailyLimitMinutes,
+    required int maxAppOpensToday,
+  }) {
+    var lateNightMinutes = 0;
+    var longestSessionMinutes = 0;
+
+    for (final app in summaries) {
+      final minutes = app.usageDuration.inMinutes;
+
+      if (minutes > longestSessionMinutes) {
+        longestSessionMinutes = minutes;
+      }
+
+      final lastUsed = app.lastTimeUsed;
+      if (lastUsed != null && (lastUsed.hour >= 22 || lastUsed.hour < 5)) {
+        // Best-effort proxy: AppUsageSummary only exposes a last-used
+        // timestamp, not a minute-by-minute breakdown, so an app last
+        // touched in the late-night window has its whole usage duration
+        // counted toward late-night minutes. Same underlying signal
+        // PatternDetectionService._hasLateNightUsage already uses (a
+        // last-used-hour check), just summed into a duration instead of
+        // left as a boolean.
+        lateNightMinutes += minutes;
+      }
+    }
+
+    final now = DateTime.now();
+    final startOfDay = DateTime(now.year, now.month, now.day);
+    final sevenDaysAgo = now.subtract(const Duration(days: 7));
+
+    var attemptsToday = 0;
+    var violations7d = 0;
+
+    for (final entry in restrictionLog) {
+      if (entry['outcome'] != 'blocked') continue;
+
+      final timestampMs = entry['timestampMs'];
+      if (timestampMs is! int) continue;
+
+      final eventTime = DateTime.fromMillisecondsSinceEpoch(timestampMs);
+
+      if (!eventTime.isBefore(startOfDay)) {
+        attemptsToday++;
+      }
+      if (eventTime.isAfter(sevenDaysAgo)) {
+        violations7d++;
+      }
+    }
+
+    return {
+      'total_screen_time_minutes': report.totalUsageDuration.inMinutes,
+      'daily_limit_minutes': dailyLimitMinutes,
+      'late_night_minutes': lateNightMinutes,
+      'longest_session_minutes': longestSessionMinutes,
+      'restricted_app_attempts_today': attemptsToday,
+      'rule_violations_7d': violations7d,
+      'frequent_app_opens_today': maxAppOpensToday,
+    };
+  }
+
+  /// Syncs today's real on-device usage data to
+  /// child_profiles/{childProfileId}.latestUsageReport, so the parent
+  /// dashboard (ParentDashboardScreen's Screen Time/Usage Pattern/Top Apps
+  /// cards and UsageSummaryScreen) can display it. Mirrors the
+  /// shareCurrentLocation pattern above - same childProfileId lookup, same
+  /// Firestore transaction shape.
+  ///
+  /// Requires Android's special "Usage Access" permission, which can only
+  /// be granted from system Settings (not a normal runtime permission
+  /// dialog). If it isn't granted yet, this opens that settings screen and
+  /// asks the user to come back and tap again - didChangeAppLifecycleState
+  /// above will also silently refresh the local dashboard when they return.
+  ///
+  /// [silent] is set by [_autoSyncUsage]'s periodic timer below - a
+  /// background sync should never interrupt the user with a SnackBar, and
+  /// absolutely must never spontaneously open the Usage Access settings
+  /// screen out from under them (that's only acceptable as a direct
+  /// response to a manual tap). The guard/error-log/success-message
+  /// behavior for the manual "Sync Usage" button tap is unchanged.
+  Future<void> syncUsageReport(
+    Map<String, dynamic> data, {
+    bool silent = false,
+  }) async {
+    // Guards against the periodic auto-sync timer firing on top of an
+    // already-in-progress sync (manual or auto) - without this, a slow
+    // sync plus a short auto-sync interval could stack overlapping
+    // Firestore writes.
+    if (isSyncingUsage) return;
 
     final user = FirebaseAuth.instance.currentUser;
 
     if (user == null) {
+      if (!silent) showMessage('Please log in again.');
       return;
     }
 
-    _isAutomaticUsageCatchUpRunning = true;
+    final childProfileId = (data['pairedChildProfileId'] ?? '').toString();
+
+    if (childProfileId.isEmpty) {
+      if (!silent) {
+        showMessage('Pair this device first before syncing usage data.');
+      }
+      return;
+    }
+
+    setState(() => isSyncingUsage = true);
 
     try {
-      final result = await _usageReportSyncService
-          .syncPendingAndCatchUpUsageReports();
+      final hasPermission = await _usageTrackingService.hasUsagePermission();
 
-      if (!mounted) {
+      if (!hasPermission) {
+        if (silent) return;
+        await _usageTrackingService.openUsageAccessSettings();
+        if (!mounted) return;
+        showMessage(
+          'Grant "WellScreen" access under Usage Access in Settings, then '
+          'come back and tap Sync Usage again.',
+        );
         return;
       }
 
-      if (result.syncedCount > 0) {
-        final latestReport = result.syncedReports.last;
+      final summaries = await _usageTrackingService.getTodayUsage();
+      final report = await _usageTrackingService.getTodayUsageReport();
 
-        setState(() {
-          lastSyncStatusMessage =
-              'Automatic usage sync completed.\n'
-              '${result.syncedCount} report'
-              '${result.syncedCount == 1 ? '' : 's'} updated.\n'
-              'Latest: ${latestReport.reportDate} - '
-              '${latestReport.report.totalUsageLabel}';
+      final topApps = summaries
+          .map(
+            (AppUsageSummary app) => {
+              'packageName': app.packageName,
+              'displayName': app.displayName,
+              'usageDurationMs': app.usageDuration.inMilliseconds,
+              'lastTimeUsed': app.lastTimeUsed?.toIso8601String(),
+            },
+          )
+          .toList();
+
+      final usageReportData = {
+        'totalUsageDurationMs': report.totalUsageDuration.inMilliseconds,
+        'topApps': topApps,
+        'unhealthyAppCount': report.unhealthyAppCount,
+        'patternStatus': report.patternStatus.name,
+        'recommendationMessage': report.recommendationMessage,
+        'capturedAt': report.generatedAt.toIso8601String(),
+      };
+
+      // Also push the local SMS backup-alert log (written natively by
+      // SmsSentReceiver/SmsDeliveredReceiver), the restriction enforcement
+      // log (written natively by RestrictionLogger when
+      // WellScreenAccessibilityService blocks a restricted app), and this
+      // device's own sync-attempt log (see _recordSyncOutcome) so the
+      // parent can see real sent/delivered/failed, blocked/failed, and
+      // synced/queued-offline/failed outcomes with response times, not
+      // just whether the features are turned on. Reuses this same sync
+      // button rather than adding separate ones.
+      final prefs = await SharedPreferences.getInstance();
+      final smsAlertLog = _decodeJsonList(
+        prefs.getString('sms_alert_log_json'),
+      );
+      final restrictionLog = _decodeJsonList(
+        prefs.getString('restriction_log_json'),
+      );
+      final syncLog = _decodeJsonList(prefs.getString('sync_log_json'));
+
+      // Browsed domains captured natively by BrowserUrlExtractor /
+      // BrowsingLogger (see WellScreenAccessibilityService.kt), then
+      // classified here against the real, cleaned UT1 dataset via
+      // SiteCategoryService (see data_cleaned/site_categories/ and
+      // ml/site_category/README.md). This tags each entry with a category
+      // (gambling/drugs/dangerous_material) when it matches, and alerts the
+      // parent below when one does - it does NOT block the page from
+      // loading, since that would need this same check running natively,
+      // before the page renders, which isn't built yet.
+      final browsingLog = _decodeJsonList(
+        prefs.getString('browsing_log_json'),
+      );
+      // Only alert for harmful entries newer than the last one already
+      // alerted on - without this watermark, every sync would re-scan the
+      // whole rolling (up to 50-entry) log and re-fire a push for the same
+      // old visit every time "Sync Usage" is pressed, which would falsely
+      // read as "this just happened again."
+      final lastAlertedMs =
+          prefs.getInt('last_browsing_alert_timestamp_ms') ?? 0;
+      var newestAlertedMs = lastAlertedMs;
+
+      final categorizedBrowsingLog = <Map<String, dynamic>>[];
+      String? mostRecentHarmfulCategory;
+      String? mostRecentHarmfulDomain;
+      for (final entry in browsingLog) {
+        final domain = (entry['domain'] ?? '').toString();
+        final timestampMs = entry['timestampMs'];
+        SiteCategoryMatch? match;
+        if (domain.isNotEmpty) {
+          try {
+            match = await _siteCategoryService.classify(domain);
+          } catch (_) {
+            // Best-effort - a classification failure just leaves this one
+            // entry uncategorized, it never blocks the real sync.
+          }
+        }
+        // 'detectionSource' ('lookup' vs 'keyword' vs 'ml') and
+        // 'mlConfidence' let the parent-facing UI show which mechanism
+        // actually caught this one - see alerts_reports_screen.dart's
+        // browsing activity list. A 'lookup' match is exact (the domain is
+        // literally in the real dataset); a 'keyword' match is
+        // AdultKeywordDetector catching a pornography-related substring
+        // (the technique our manuscript describes for that category, see
+        // that class's doc comment); an 'ml' match is the live classifier
+        // generalizing to a domain the dataset has never seen, already
+        // filtered to only the 'gambling' predictions it's actually
+        // reliable at (see SiteCategoryMlClassifier's doc comment for
+        // the measured reasoning behind that restriction, including why
+        // 'drugs' was tested and deliberately held back).
+        categorizedBrowsingLog.add({
+          ...entry,
+          'category': ?match?.category,
+          'detectionSource': ?match?.source,
+          'mlConfidence': ?match?.confidence,
         });
+        if (match != null &&
+            timestampMs is num &&
+            timestampMs > lastAlertedMs) {
+          mostRecentHarmfulCategory = match.category;
+          mostRecentHarmfulDomain = domain;
+          if (timestampMs > newestAlertedMs) {
+            newestAlertedMs = timestampMs.toInt();
+          }
+        }
       }
 
-      if (result.hasPendingDates) {
-        setState(() {
-          lastSyncStatusMessage =
-              '${lastSyncStatusMessage ?? 'Automatic usage sync attempted.'}\n'
-              '${result.pendingDates.length} report'
-              '${result.pendingDates.length == 1 ? '' : 's'} '
-              'still waiting to sync.';
-        });
+      // Proposed ML Extension (manuscript Ch. 3) - a real, trained,
+      // evaluated Random Forest classifier (see ml/train_model.py and
+      // ml/output/evaluation_report.txt), run on-device via
+      // MlRiskClassifierService. Supplements PatternDetectionService's
+      // rule-based status above; doesn't replace it. Best-effort: a
+      // classification failure (e.g. the asset failing to load) should
+      // never block the real sync.
+      Map<String, dynamic>? mlRiskAssessmentData;
+      try {
+        final dailyLimit = await _dailyScreenTimeLimitService.getDailyLimit();
+        final maxAppOpensToday =
+            await _usageTrackingService.getTodayMaxAppOpenCount();
+        final mlFeatures = _buildMlFeatures(
+          report: report,
+          summaries: summaries,
+          restrictionLog: restrictionLog,
+          dailyLimitMinutes: dailyLimit.inMinutes,
+          maxAppOpensToday: maxAppOpensToday,
+        );
+        final assessment = await _mlRiskClassifierService.classify(
+          mlFeatures,
+        );
+
+        mlRiskAssessmentData = {
+          'label': assessment.label,
+          'confidence': assessment.confidence,
+          'classProbabilities': assessment.classProbabilities,
+          'modelVersion': assessment.modelVersion,
+          'inputFeatures': mlFeatures,
+          'timestampMs': DateTime.now().millisecondsSinceEpoch,
+        };
+      } catch (_) {
+        // Best-effort - see above. The rule-based status still syncs.
       }
-    } catch (_) {
-      // Being offline is expected. UsageStats keeps recording locally, and
-      // WellScreen will retry when the app starts, resumes, or reconnects.
-    } finally {
-      _isAutomaticUsageCatchUpRunning = false;
-    }
-  }
 
-  Future<void> syncTodayUsageReport() async {
-    final user = FirebaseAuth.instance.currentUser;
-
-    if (user == null) {
-      showMessage('Please log in again before syncing usage reports.');
-      return;
-    }
-
-    setState(() {
-      isSyncingUsageReport = true;
-      lastSyncStatusMessage = 'Syncing today\'s usage report...';
-    });
-
-    try {
-      final result = await _usageReportSyncService.syncTodayUsageReport();
-
-      final message =
-          'Usage report synced: '
-          '${result.report.totalUsageLabel} '
-          'for ${result.reportDate}.';
+      // _attemptFirestoreSync handles offline detection, the write timeout
+      // (cloud_firestore's set() hangs forever offline instead of throwing
+      // - firebase/flutterfire#17643), local queuing for automatic retry on
+      // reconnect, and outcome logging - see its doc comment above.
+      final synced = await _attemptFirestoreSync(
+        childProfileId: childProfileId,
+        payload: {
+          'latestUsageReport': usageReportData,
+          if (smsAlertLog.isNotEmpty) 'smsAlertLog': smsAlertLog,
+          if (restrictionLog.isNotEmpty) 'restrictionLog': restrictionLog,
+          if (syncLog.isNotEmpty) 'syncLog': syncLog,
+          if (categorizedBrowsingLog.isNotEmpty)
+            'browsingLog': categorizedBrowsingLog,
+          'mlRiskAssessment': ?mlRiskAssessmentData,
+        },
+        trigger: 'manual',
+      );
 
       if (!mounted) return;
 
-      setState(() {
-        lastSyncStatusMessage =
-            '$message\n'
-            'Saved to: ${result.reportPath}';
-      });
+      if (synced) {
+        if (!silent) {
+          showMessage('Today\'s usage report synced to the parent dashboard.');
+        }
+        await _loadUsageDashboard();
+        await _refreshSmsAlertStatus();
+      }
 
-      showMessage(message);
+      // Push a real notification only for the pattern that actually
+      // matters to a parent (unhealthy) rather than on every sync - a
+      // healthy-usage push every time would just be noise. Fired regardless
+      // of whether the Firestore sync above succeeded - it's an
+      // independent, best-effort channel (see AlertNotificationClient).
+      if (report.patternStatus.name == 'unhealthy') {
+        final parentId = (data['pairedParentId'] ?? '').toString();
+        unawaited(
+          _alertNotificationClient.notifyParent(
+            parentUid: parentId,
+            title: 'Unhealthy usage pattern detected',
+            body: report.recommendationMessage,
+            alertType: 'unhealthy_usage',
+            childProfileId: childProfileId,
+          ),
+        );
+      }
+
+      // Same reasoning as the unhealthy-pattern push above, for a harmful
+      // site category found by SiteCategoryService just now. This is an
+      // after-the-fact alert (the page was already viewed - see
+      // SiteCategoryService's doc comment on why this doesn't block in real
+      // time yet), not a prevention, and that's said plainly in the alert
+      // body rather than implied.
+      if (mostRecentHarmfulCategory != null) {
+        final parentId = (data['pairedParentId'] ?? '').toString();
+        unawaited(
+          _alertNotificationClient.notifyParent(
+            parentUid: parentId,
+            title: 'Harmful site category detected',
+            body: 'Visited a site categorized as '
+                '$mostRecentHarmfulCategory'
+                '${mostRecentHarmfulDomain != null && mostRecentHarmfulDomain.isNotEmpty ? ' ($mostRecentHarmfulDomain)' : ''}.',
+            alertType: 'harmful_site_category',
+            childProfileId: childProfileId,
+          ),
+        );
+        await prefs.setInt('last_browsing_alert_timestamp_ms', newestAlertedMs);
+      }
     } catch (e) {
-      final message = _cleanErrorMessage(e);
-
       if (!mounted) return;
-
-      setState(() {
-        lastSyncStatusMessage = message;
-      });
-
-      showMessage(message);
+      if (!silent) showMessage(e.toString().replaceFirst('Exception: ', ''));
     } finally {
       if (mounted) {
-        setState(() {
-          isSyncingUsageReport = false;
-        });
+        setState(() => isSyncingUsage = false);
       }
     }
   }
 
-  Future<void> _syncCurrentLocation() async {
-    setState(() {
-      isSyncingLocation = true;
-      lastLocationSyncMessage = 'Capturing current GPS location...';
-    });
+  /// Periodic automatic sync - the "why do I have to press Sync Usage
+  /// every time" fix. Same Timer.periodic pattern and same honest
+  /// limitation as [_autoShareLocation]/[_locationAutoShareTimer]: this
+  /// only runs while the app's process is alive (foreground, or
+  /// backgrounded-but-not-yet-killed by the OS), not a true kill-proof
+  /// background service. Deliberately calls the same [syncUsageReport]
+  /// the manual button uses (not a separate code path) so both stay in
+  /// sync with each other by construction - just with [silent] set so it
+  /// never pops a SnackBar or a Settings screen on its own.
+  ///
+  /// 5 minutes, not 15 like location - browsing/category detection is a
+  /// safety-relevant alert, not a passive status update, so a parent
+  /// finding out sooner rather than later matters more here than it does
+  /// for "where is my kid right now."
+  static const Duration _usageAutoSyncInterval = Duration(minutes: 5);
+  Timer? _usageAutoSyncTimer;
 
-    try {
-      final result = await _locationTrackingService
-          .captureAndSyncCurrentLocation();
-
-      if (!mounted) return;
-
-      setState(() {
-        lastLocationSyncMessage =
-            'Location synced at '
-            '${result.capturedAtLabel}.\n'
-            'Coordinates: '
-            '${result.coordinateLabel}\n'
-            '${result.accuracyLabel}\n'
-            '${result.geoFenceLabel}';
-      });
-
-      showMessage('Current GPS location synced.');
-    } catch (e) {
-      final message = _cleanErrorMessage(e);
-
-      if (!mounted) return;
-
-      setState(() {
-        lastLocationSyncMessage = message;
-      });
-
-      showMessage(message);
-    } finally {
-      if (mounted) {
-        setState(() {
-          isSyncingLocation = false;
-        });
-      }
-    }
+  Future<void> _autoSyncUsage() async {
+    final data = _cachedUserData;
+    if (data == null) return;
+    await syncUsageReport(data, silent: true);
   }
 
-  Future<void> _logout() async {
+  Future<void> logout() async {
     await FirebaseAuth.instance.signOut();
 
     if (!mounted) return;
@@ -577,72 +1261,84 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     );
   }
 
-  Future<void> _contactParent(Map<String, dynamic> deviceData) async {
-    final user = FirebaseAuth.instance.currentUser;
-
-    final parentId = deviceData['parentId'] as String?;
-    final childId = deviceData['childId'] as String?;
-
-    final parentNameValue = deviceData['parentName'];
-
-    final parentName =
-        parentNameValue is String && parentNameValue.trim().isNotEmpty
-        ? parentNameValue.trim()
-        : 'Parent';
-
-    if (user == null || parentId == null || parentId.isEmpty) {
-      showMessage('Parent account information is unavailable.');
+  void handleBottomNavTap(int index) {
+    if (index == 0) {
+      setState(() => currentIndex = 0);
       return;
     }
 
-    final message = await showDialog<String>(
-      context: context,
-      builder: (_) {
-        return ContactParentDialog(parentName: parentName);
-      },
-    );
-
-    if (message == null || message.trim().isEmpty) {
-      return;
-    }
-
-    try {
-      await NotificationService.instance.createInAppAlert(
-        recipientUserId: parentId,
-        parentId: parentId,
-        childId: childId,
-        title: 'Message from Child',
-        message: message.trim(),
-        triggerType: 'child_contact_parent',
-        priority: 'medium',
-        extraData: {'childUserId': user.uid, 'childEmail': user.email},
+    if (index == 1) {
+      final data = _cachedUserData;
+      if (data != null && isConnected(data)) {
+        // Already paired - there's no separate "pairing" destination once
+        // connected, so surface the same connection-status dialog shown
+        // right after pairing succeeds rather than a dead-end message.
+        showConnectedSuccessDialog();
+      } else {
+        _scrollToSection(_pairingSectionKey);
+      }
+    } else if (index == 2) {
+      _scrollToSection(_reportsSectionKey);
+    } else if (index == 3) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const ProfileSettingsScreen()),
       );
-
-      showMessage('Message sent to $parentName.');
-    } catch (e) {
-      showMessage('Unable to contact parent: ${_cleanErrorMessage(e)}');
     }
   }
 
-  void _openNotifications() {
-    final user = FirebaseAuth.instance.currentUser;
-
-    if (user == null) {
-      return;
-    }
-
-    showModalBottomSheet<void>(
+  void showConnectedSuccessDialog() {
+    showDialog(
       context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
       builder: (_) {
-        return ChildNotificationsPanel(childUserId: user.uid);
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(26),
+          ),
+          title: const Text(
+            'Device Connected',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: darkText, fontWeight: FontWeight.w900),
+          ),
+          content: const Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircleAvatar(
+                radius: 42,
+                backgroundColor: softGreen,
+                child: Icon(Icons.verified_rounded, color: teal, size: 55),
+              ),
+              SizedBox(height: 16),
+              Text(
+                'This student device is now connected to the parent dashboard.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: grayText,
+                  height: 1.35,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          actionsAlignment: MainAxisAlignment.center,
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(context),
+              style: FilledButton.styleFrom(
+                backgroundColor: purple,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+              ),
+              child: const Text(
+                'Continue',
+                style: TextStyle(fontWeight: FontWeight.w900),
+              ),
+            ),
+          ],
+        );
       },
     );
-  }
-
-  String _cleanErrorMessage(Object error) {
-    return error.toString().replaceFirst('Exception: ', '');
   }
 
   void showMessage(String message) {
@@ -653,506 +1349,123 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Widget _buildUnpairedScreen() {
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 30, 20, 30),
-      children: [
-        const SizedBox(height: 30),
+  void _scrollToSection(GlobalKey key) {
+    final sectionContext = key.currentContext;
+    if (sectionContext == null) return;
 
-        const Icon(Icons.phone_android_rounded, color: purple, size: 74),
-
-        const SizedBox(height: 18),
-
-        const Text(
-          'Connect This Device',
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            color: darkText,
-            fontSize: 27,
-            fontWeight: FontWeight.w900,
-          ),
-        ),
-
-        const SizedBox(height: 8),
-
-        const Text(
-          'Enter the 6-digit pairing code provided by your parent or guardian.',
-          textAlign: TextAlign.center,
-          style: TextStyle(color: grayText, height: 1.4),
-        ),
-
-        const SizedBox(height: 28),
-
-        Container(
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: softPurple,
-            borderRadius: BorderRadius.circular(22),
-          ),
-          child: Column(
-            children: [
-              TextField(
-                controller: pairingCodeController,
-                keyboardType: TextInputType.number,
-                textAlign: TextAlign.center,
-                maxLength: 6,
-                inputFormatters: [
-                  FilteringTextInputFormatter.digitsOnly,
-                  LengthLimitingTextInputFormatter(6),
-                ],
-                style: const TextStyle(
-                  fontSize: 28,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 8,
-                ),
-                decoration: InputDecoration(
-                  counterText: '',
-                  hintText: '------',
-                  filled: true,
-                  fillColor: Colors.white,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              SizedBox(
-                width: double.infinity,
-                height: 52,
-                child: FilledButton.icon(
-                  onPressed: isPairing ? null : pairChildDevice,
-                  style: FilledButton.styleFrom(
-                    backgroundColor: purple,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                  ),
-                  icon: const Icon(Icons.link_rounded),
-                  label: Text(
-                    isPairing ? 'Connecting...' : 'Connect to Parent',
-                    style: const TextStyle(fontWeight: FontWeight.w800),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
+    Scrollable.ensureVisible(
+      sectionContext,
+      duration: const Duration(milliseconds: 400),
+      curve: Curves.easeInOut,
+      alignment: 0.05,
     );
   }
 
-  Widget _buildHomeTab(Map<String, dynamic> data) {
-    final pairingStatus = data['pairingStatus'] as String? ?? 'waiting';
-
-    final deviceStatus = data['deviceStatus'] as String? ?? 'not_connected';
-
-    final parentNameValue = data['parentName'];
-
-    final parentName =
-        parentNameValue is String && parentNameValue.trim().isNotEmpty
-        ? parentNameValue.trim()
-        : 'Parent / Guardian';
-
-    final isConnected =
-        pairingStatus == 'paired' || deviceStatus == 'connected';
-
-    final monitoringReady =
-        isConnected && hasUsageAccess == true && hasAccessibilityAccess == true;
-
-    final updatedAt = data['updatedAt'];
-
-    final updatedDate = updatedAt is Timestamp ? updatedAt.toDate() : null;
-
-    return RefreshIndicator(
-      onRefresh: _refreshEverything,
-      child: ListView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(20, 24, 20, 30),
-        children: [
-          ProtectedStatusCard(isProtected: monitoringReady),
-
-          const SizedBox(height: 20),
-
-          Card(
-            elevation: 1.5,
-            shadowColor: Colors.black12,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(18),
-              child: Column(
-                children: [
-                  ChildInfoRow(
-                    icon: Icons.person_outline_rounded,
-                    label: 'Parent',
-                    value: parentName,
-                  ),
-
-                  ChildInfoRow(
-                    icon: Icons.shield_outlined,
-                    label: 'Status',
-                    value: monitoringReady ? 'Protected' : 'Setup Needed',
-                    valueColor: monitoringReady ? Colors.green : Colors.orange,
-                  ),
-
-                  ChildInfoRow(
-                    icon: Icons.sync_rounded,
-                    label: 'Connection',
-                    value: isConnected ? 'Active' : 'Offline',
-                    valueColor: isConnected ? Colors.green : Colors.orange,
-                  ),
-
-                  ChildInfoRow(
-                    icon: Icons.schedule_rounded,
-                    label: 'Last Update',
-                    value: _formatLastUpdate(updatedDate),
-                    isLast: true,
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          const SizedBox(height: 22),
-
-          ChildActionTile(
-            icon: Icons.fact_check_outlined,
-            title: 'View Rules',
-            subtitle: 'See current rules and limits',
-            onTap: () {
-              setState(() {
-                showRulesPage = true;
-              });
-            },
-          ),
-
-          ChildActionTile(
-            icon: Icons.chat_bubble_outline_rounded,
-            title: 'Contact Parent',
-            subtitle: 'Send a message to $parentName',
-            onTap: () {
-              _contactParent(data);
-            },
-          ),
-
-          ChildActionTile(
-            icon: Icons.notifications_none_rounded,
-            title: 'Notifications',
-            subtitle: 'View messages and alerts',
-            onTap: _openNotifications,
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPermissionsTab() {
-    return RefreshIndicator(
-      onRefresh: _refreshEverything,
-      child: ListView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(20, 26, 20, 30),
-        children: [
-          const Text(
-            'Device Permissions',
-            style: TextStyle(
-              color: darkText,
-              fontSize: 27,
-              fontWeight: FontWeight.w900,
-            ),
-          ),
-
-          const SizedBox(height: 7),
-
-          const Text(
-            'WellScreen needs these permissions to monitor the device and apply parent rules.',
-            style: TextStyle(color: grayText, height: 1.4),
-          ),
-
-          const SizedBox(height: 22),
-
-          PermissionOverviewCard(
-            hasUsageAccess: hasUsageAccess,
-            hasAccessibilityAccess: hasAccessibilityAccess,
-            locationStatus: locationPermissionStatus,
-          ),
-
-          const SizedBox(height: 14),
-
-          UsageAccessStatusCard(
-            hasUsageAccess: hasUsageAccess,
-            isChecking: isCheckingUsageAccess,
-            onRecheck: _checkUsagePermission,
-            onOpenSettings: openUsageAccessSettings,
-          ),
-
-          AccessibilityServiceStatusCard(
-            hasAccessibilityAccess: hasAccessibilityAccess,
-            isChecking: isCheckingAccessibilityAccess,
-            onRecheck: _checkAccessibilityPermission,
-            onOpenSettings: openAccessibilitySettings,
-          ),
-
-          LocationPermissionStatusCard(
-            status: locationPermissionStatus,
-            isChecking: isCheckingLocationPermission,
-            onRecheck: _checkLocationPermission,
-            onRequestPermission: _requestLocationPermission,
-            onOpenLocationSettings: _openLocationSettings,
-          ),
-
-          const SmsBackupPermissionSection(),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildServiceTab(Map<String, dynamic> data) {
-    final parentId = data['parentId'] as String?;
-
-    final childId = data['childId'] as String?;
-
-    final childEmail =
-        data['childEmail'] as String? ??
-        FirebaseAuth.instance.currentUser?.email ??
-        'Child';
-
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 26, 20, 30),
-      children: [
-        const Text(
-          'Device Service',
-          style: TextStyle(
-            color: darkText,
-            fontSize: 27,
-            fontWeight: FontWeight.w900,
-          ),
-        ),
-
-        const SizedBox(height: 7),
-
-        const Text(
-          'Sync monitoring information and access safety features.',
-          style: TextStyle(color: grayText, height: 1.4),
-        ),
-
-        const SizedBox(height: 22),
-
-        UsageSyncCard(
-          isSyncing: isSyncingUsageReport,
-          lastSyncMessage: lastSyncStatusMessage,
-          onSync: syncTodayUsageReport,
-          onOpenUsageAccess: openUsageAccessSettings,
-        ),
-
-        LocationSyncCard(
-          isSyncing: isSyncingLocation,
-          lastSyncMessage: lastLocationSyncMessage,
-          onSync: _syncCurrentLocation,
-        ),
-
-        const SizedBox(height: 10),
-
-        const ChildSectionHeader(
-          title: 'Emergency Access',
-          subtitle:
-              'Request temporary access for an urgent or essential reason.',
-        ),
-
-        const SizedBox(height: 12),
-
-        EmergencyAccessRequestSection(
-          parentId: parentId,
-          childId: childId,
-          childEmail: childEmail,
-        ),
-      ],
-    );
-  }
-
-  Widget _buildSettingsTab(Map<String, dynamic> data) {
-    final user = FirebaseAuth.instance.currentUser;
-
-    final connected =
-        data['deviceStatus'] == 'connected' ||
-        data['pairingStatus'] == 'paired';
-
-    final parentNameValue = data['parentName'];
-
-    final parentName =
-        parentNameValue is String && parentNameValue.trim().isNotEmpty
-        ? parentNameValue.trim()
-        : 'Parent / Guardian';
-
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 26, 20, 30),
-      children: [
-        const Text(
-          'Settings',
-          style: TextStyle(
-            color: darkText,
-            fontSize: 27,
-            fontWeight: FontWeight.w900,
-          ),
-        ),
-
-        const SizedBox(height: 20),
-
-        Container(
-          padding: const EdgeInsets.all(18),
-          decoration: BoxDecoration(
-            color: softPurple,
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Row(
-            children: [
-              const CircleAvatar(
-                radius: 27,
-                backgroundColor: Colors.white,
-                child: Icon(Icons.person_rounded, color: purple, size: 30),
-              ),
-
-              const SizedBox(width: 14),
-
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Child Account',
-                      style: TextStyle(
-                        color: darkText,
-                        fontSize: 17,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-
-                    const SizedBox(height: 4),
-
-                    Text(
-                      user?.email ?? 'No email available',
-                      style: const TextStyle(color: grayText),
-                    ),
-
-                    const SizedBox(height: 5),
-
-                    Text(
-                      connected ? 'Connected to $parentName' : 'Not connected',
-                      style: TextStyle(
-                        color: connected ? Colors.green : Colors.orange,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-
-        const SizedBox(height: 18),
-
-        const ChildStatusCard(
-          icon: Icons.info_outline_rounded,
-          iconColor: purple,
-          title: 'About WellScreen',
-          subtitle:
-              'WellScreen helps parents and children build healthier digital habits through screen-time monitoring, safety rules, and device wellness features.',
-        ),
-
-        const SizedBox(height: 10),
-
-        SizedBox(
-          height: 52,
-          child: OutlinedButton.icon(
-            onPressed: _logout,
-            style: OutlinedButton.styleFrom(
-              foregroundColor: Colors.red,
-              side: const BorderSide(color: Colors.redAccent),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14),
-              ),
-            ),
-            icon: const Icon(Icons.logout_rounded),
-            label: const Text(
-              'Logout',
-              style: TextStyle(fontWeight: FontWeight.w800),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildRulesPage(Map<String, dynamic> data) {
-    final parentId = data['parentId'] as String?;
-
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 24, 20, 30),
-      children: [
-        const Text(
-          'Rules',
-          style: TextStyle(
-            color: darkText,
-            fontSize: 29,
-            fontWeight: FontWeight.w900,
-          ),
-        ),
-
-        const SizedBox(height: 6),
-
-        const Text(
-          'These rules are set by your parent or guardian.',
-          style: TextStyle(color: grayText, height: 1.4),
-        ),
-
-        const SizedBox(height: 22),
-
-        ParentRulesSection(parentId: parentId),
-
-        const SizedBox(height: 12),
-
-        const Center(
-          child: Padding(
-            padding: EdgeInsets.symmetric(horizontal: 25),
-            child: Text(
-              'These rules are set by your parent to help you build healthy digital habits.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: purple,
-                fontWeight: FontWeight.w800,
-                height: 1.4,
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  String _formatLastUpdate(DateTime? value) {
-    if (value == null) {
-      return 'Not available';
+  String formatDate(dynamic value) {
+    if (value is Timestamp) {
+      final date = value.toDate();
+      final month = date.month.toString().padLeft(2, '0');
+      final day = date.day.toString().padLeft(2, '0');
+      final year = date.year.toString();
+      final hour = date.hour.toString().padLeft(2, '0');
+      final minute = date.minute.toString().padLeft(2, '0');
+
+      return '$month/$day/$year $hour:$minute';
     }
 
-    final difference = DateTime.now().difference(value);
+    return 'Not available';
+  }
 
-    if (difference.inMinutes < 1) {
-      return 'Just now';
+  String locationText(Map<String, dynamic> data) {
+    final latestLocation = data['latestLocation'];
+
+    if (latestLocation is Map) {
+      final label = latestLocation['label'];
+      final latitude = latestLocation['latitude'];
+      final longitude = latestLocation['longitude'];
+
+      if (label != null && label.toString().isNotEmpty) {
+        return label.toString();
+      }
+
+      if (latitude != null && longitude != null) {
+        return '${formatCoordinate(latitude)}, ${formatCoordinate(longitude)}';
+      }
     }
 
-    if (difference.inMinutes < 60) {
-      return '${difference.inMinutes} min ago';
+    return 'Not shared yet';
+  }
+
+  String locationUpdatedText(Map<String, dynamic> data) {
+    final updatedAt = data['locationUpdatedAt'];
+
+    if (updatedAt is Timestamp) {
+      return formatDate(updatedAt);
     }
 
-    if (difference.inHours < 24) {
-      return '${difference.inHours}h ago';
+    return 'Waiting for update';
+  }
+
+  String formatCoordinate(dynamic value) {
+    if (value is num) {
+      return value.toStringAsFixed(5);
     }
 
-    return '${difference.inDays}d ago';
+    return value.toString();
+  }
+
+  bool isConnected(Map<String, dynamic> data) {
+    final pairingStatus = (data['pairingStatus'] ?? '').toString();
+
+    return pairingStatus == 'connected' ||
+        data['pairedParentId'] != null ||
+        data['pairedChildProfileId'] != null;
+  }
+
+  String appTitle(AppRule rule) {
+    final name = rule.appName.trim();
+
+    if (name.isNotEmpty) {
+      return name;
+    }
+
+    return rule.packageName.trim().isNotEmpty
+        ? rule.packageName
+        : 'Unknown App';
+  }
+
+  IconData appIconForName(String name) {
+    final lower = name.toLowerCase();
+
+    if (lower.contains('youtube')) {
+      return Icons.play_arrow_rounded;
+    }
+
+    if (lower.contains('tiktok') || lower.contains('music')) {
+      return Icons.music_note_rounded;
+    }
+
+    if (lower.contains('facebook') || lower.contains('meta')) {
+      return Icons.public_rounded;
+    }
+
+    if (lower.contains('game') ||
+        lower.contains('mobile legends') ||
+        lower.contains('roblox')) {
+      return Icons.sports_esports_rounded;
+    }
+
+    if (lower.contains('chrome') ||
+        lower.contains('browser') ||
+        lower.contains('google')) {
+      return Icons.language_rounded;
+    }
+
+    if (lower.contains('message') || lower.contains('chat')) {
+      return Icons.chat_bubble_rounded;
+    }
+
+    return Icons.apps_rounded;
   }
 
   @override
@@ -1161,209 +1474,1393 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
 
     if (user == null) {
       return Scaffold(
+        backgroundColor: Colors.white,
         body: Center(
           child: FilledButton(
-            onPressed: _logout,
+            onPressed: () {
+              Navigator.pushAndRemoveUntil(
+                context,
+                MaterialPageRoute(builder: (_) => const LoginScreen()),
+                (route) => false,
+              );
+            },
             child: const Text('Return to Login'),
           ),
         ),
       );
     }
 
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
-          .collection('child_devices')
-          .doc(user.uid)
-          .snapshots(),
-      builder: (context, snapshot) {
-        final deviceData = snapshot.data?.data();
+    return Scaffold(
+      backgroundColor: pageBg,
+      body: SafeArea(
+        child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+          stream: FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid)
+              .snapshots(),
+          builder: (context, snapshot) {
+            // Deliberately does NOT block on ConnectionState.waiting the
+            // way reports_screen.dart/parent_dashboard_screen.dart do -
+            // this screen's ongoing background work (auto-location-share
+            // timer, parent-phone-number sync below) depends on
+            // _cachedUserData being kept current every time this builder
+            // runs, so gating the whole subtree on "waiting" would delay
+            // that. A genuine read failure is still surfaced rather than
+            // silently rendering as an empty/unpaired profile.
+            if (snapshot.hasError) {
+              return Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(AppSpacing.lg),
+                  child: AppErrorState(
+                    title: 'Could Not Load Profile',
+                    message: 'Something went wrong loading your '
+                        'profile.\n\n${snapshot.error}',
+                  ),
+                ),
+              );
+            }
 
-        final isPaired =
-            deviceData != null &&
-            (deviceData['pairingStatus'] == 'paired' ||
-                deviceData['deviceStatus'] == 'connected');
+            final data = snapshot.data?.data() ?? <String, dynamic>{};
+            final connected = isConnected(data);
 
-        return Scaffold(
-          backgroundColor: Colors.white,
+            // Cached outside of build so _autoShareLocation() (fired by a
+            // Timer.periodic with no widget context of its own) always has
+            // the latest pairedParentId/pairedChildProfileId without
+            // depending on this StreamBuilder being on-screen at the exact
+            // moment the timer fires.
+            _cachedUserData = data;
 
-          appBar: AppBar(
-            automaticallyImplyLeading: false,
-            backgroundColor: purple,
-            foregroundColor: Colors.white,
-            elevation: 0,
-            titleSpacing: 16,
-            leading: showRulesPage && isPaired
-                ? IconButton(
-                    onPressed: () {
-                      setState(() {
-                        showRulesPage = false;
-                      });
-                    },
-                    icon: const Icon(Icons.arrow_back_rounded),
-                  )
-                : null,
-            title: Row(
+            if (connected) {
+              _maybeSyncParentPhoneNumber(data);
+            }
+
+            return ListView(
+              controller: _scrollController,
+              padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
               children: [
-                Container(
-                  width: 36,
-                  height: 36,
-                  padding: const EdgeInsets.all(4),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(11),
-                  ),
-                  child: Image.asset(
-                    'assets/icons/wellscreen_icon.png',
-                    fit: BoxFit.contain,
-                  ),
+                _topBar(),
+                const SizedBox(height: 18),
+                _studentProfileCard(data, connected),
+                const SizedBox(height: 22),
+                if (!connected)
+                  KeyedSubtree(key: _pairingSectionKey, child: _pairingCard()),
+                if (!connected) const SizedBox(height: 22),
+                _screenTimeAndRiskSection(),
+                const SizedBox(height: 18),
+                _gpsCard(data, connected),
+                if (connected) const SizedBox(height: 22),
+                if (connected) _smsAlertsCard(),
+                if (connected) const SizedBox(height: 22),
+                if (connected) _activeRulesCard(data),
+                if (connected) const SizedBox(height: 22),
+                if (connected) _emergencyAccessCard(data),
+                const SizedBox(height: 22),
+                KeyedSubtree(
+                  key: _reportsSectionKey,
+                  child: _topAppsSection(),
                 ),
-
-                const SizedBox(width: 10),
-
-                Text(
-                  showRulesPage ? 'Rules' : 'WellScreen Child',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w900,
-                    fontSize: 19,
-                  ),
-                ),
+                const SizedBox(height: 22),
+                _weeklyTrendSection(),
               ],
-            ),
-            actions: [
-              if (isPaired)
-                UnreadNotificationBadgeButton(
-                  userId: user.uid,
-                  tooltip: 'Notifications',
-                  onPressed: _openNotifications,
-                ),
-            ],
-          ),
+            );
+          },
+        ),
+      ),
+      bottomNavigationBar: WellScreenBottomNav(
+        currentIndex: currentIndex,
+        items: const [
+          WellScreenNavItem(icon: Icons.home_rounded, label: 'Home'),
+          WellScreenNavItem(icon: Icons.link_rounded, label: 'Pairing'),
+          WellScreenNavItem(icon: Icons.analytics_rounded, label: 'Reports'),
+          WellScreenNavItem(icon: Icons.settings_rounded, label: 'Settings'),
+        ],
+        onTap: handleBottomNavTap,
+      ),
+    );
+  }
 
-          body: snapshot.connectionState == ConnectionState.waiting
-              ? const Center(child: CircularProgressIndicator())
-              : snapshot.hasError
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Text(
-                      snapshot.error.toString(),
-                      textAlign: TextAlign.center,
+  Widget _topBar() {
+    return Container(
+      height: 88,
+      padding: const EdgeInsets.symmetric(horizontal: 18),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [purple, deepPurple],
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+        ),
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x22000000),
+            blurRadius: 14,
+            offset: Offset(0, 7),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          // Long-press (not a visible button) opens the raw capture debug
+          // log - this screen is rendered on the CHILD's device, and that
+          // log is the child's own monitored browsing/usage data, so it
+          // must not be one visible tap away from the child themselves.
+          // Kept reachable at all (rather than deleted outright) only
+          // because a researcher/parent doing hands-on troubleshooting may
+          // still need it; a plain button here previously made it visible
+          // to the monitored child during ordinary use, which defeats the
+          // point of parental monitoring.
+          GestureDetector(
+            onLongPress: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const CaptureDebugScreen(),
+                ),
+              );
+            },
+            child: _logoBox(),
+          ),
+          const SizedBox(width: 14),
+          const Expanded(
+            child: Text(
+              'WellScreen',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 27,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Profile',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const ProfileSettingsScreen(),
+                ),
+              );
+            },
+            icon: const Icon(
+              Icons.account_circle_rounded,
+              color: Colors.white,
+              size: 34,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _logoBox() {
+    return Container(
+      width: 62,
+      height: 62,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(31),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(31),
+        child: Image.asset(
+          'assets/icons/wellscreen_icon.png',
+          fit: BoxFit.cover,
+          errorBuilder: (context, error, stackTrace) {
+            return const Icon(
+              Icons.health_and_safety_rounded,
+              color: purple,
+              size: 38,
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _studentProfileCard(Map<String, dynamic> data, bool connected) {
+    final user = FirebaseAuth.instance.currentUser;
+
+    final fullName = (data['fullName'] ?? user?.displayName ?? 'Student User')
+        .toString();
+
+    final email = (data['email'] ?? user?.email ?? '').toString();
+
+    final photoUrl = (data['profilePhotoUrl'] ?? user?.photoURL ?? '')
+        .toString();
+
+    return _whiteCard(
+      padding: const EdgeInsets.all(18),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact = constraints.maxWidth < 430;
+
+          final profileRow = Row(
+            children: [
+              _profileAvatar(photoUrl, connected),
+              const SizedBox(width: 14),
+              Expanded(
+                child: _profileInfo(
+                  fullName: fullName,
+                  email: email,
+                  connected: connected,
+                ),
+              ),
+            ],
+          );
+
+          final buttons = Column(
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: _smallPurpleButton(
+                      label: connected ? 'Share GPS' : 'Pair Device',
+                      onTap: () {
+                        if (connected) {
+                          shareCurrentLocation(data);
+                        } else {
+                          showMessage('Enter the pairing code below.');
+                        }
+                      },
                     ),
                   ),
-                )
-              : !isPaired
-              ? _buildUnpairedScreen()
-              : showRulesPage
-              ? _buildRulesPage(deviceData)
-              : switch (selectedTabIndex) {
-                  0 => _buildHomeTab(deviceData),
-                  1 => _buildPermissionsTab(),
-                  2 => _buildServiceTab(deviceData),
-                  _ => _buildSettingsTab(deviceData),
-                },
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _smallPurpleButton(
+                      label: 'Profile',
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const ProfileSettingsScreen(),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+              if (connected) ...[
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  child: _smallPurpleButton(
+                    label: isSyncingUsage ? 'Syncing...' : 'Sync Usage',
+                    onTap: isSyncingUsage ? null : () => syncUsageReport(data),
+                  ),
+                ),
+                _syncStatusIndicator(),
+              ],
+            ],
+          );
 
-          bottomNavigationBar: isPaired && !showRulesPage
-              ? NavigationBar(
-                  selectedIndex: selectedTabIndex,
-                  onDestinationSelected: (index) {
-                    setState(() {
-                      selectedTabIndex = index;
-                    });
-                  },
-                  indicatorColor: softPurple,
-                  backgroundColor: const Color(0xFFF3F4F6),
-                  destinations: const [
-                    NavigationDestination(
-                      icon: Icon(Icons.home_outlined),
-                      selectedIcon: Icon(Icons.home_rounded, color: purple),
-                      label: 'Home',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.security_outlined),
-                      selectedIcon: Icon(Icons.security_rounded, color: purple),
-                      label: 'Permissions',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.health_and_safety_outlined),
-                      selectedIcon: Icon(
-                        Icons.health_and_safety_rounded,
-                        color: purple,
+          if (compact) {
+            return Column(
+              children: [profileRow, const SizedBox(height: 14), buttons],
+            );
+          }
+
+          return Row(
+            children: [
+              Expanded(child: profileRow),
+              const SizedBox(width: 14),
+              SizedBox(width: 250, child: buttons),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _profileAvatar(String photoUrl, bool connected) {
+    if (photoUrl.isNotEmpty) {
+      return CircleAvatar(
+        radius: 40,
+        backgroundColor: connected ? softGreen : softBlue,
+        child: ClipOval(
+          child: Image.network(
+            photoUrl,
+            width: 76,
+            height: 76,
+            fit: BoxFit.cover,
+            errorBuilder: (context, error, stackTrace) {
+              return Icon(
+                connected ? Icons.person_rounded : Icons.person_add_alt_rounded,
+                color: connected ? teal : purple,
+                size: 45,
+              );
+            },
+          ),
+        ),
+      );
+    }
+
+    return CircleAvatar(
+      radius: 40,
+      backgroundColor: connected ? softGreen : softBlue,
+      child: Icon(
+        connected ? Icons.person_rounded : Icons.person_add_alt_rounded,
+        color: connected ? teal : purple,
+        size: 45,
+      ),
+    );
+  }
+
+  Widget _profileInfo({
+    required String fullName,
+    required String email,
+    required bool connected,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          "$fullName's Phone",
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            color: darkText,
+            fontSize: 24,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            Container(
+              width: 11,
+              height: 11,
+              decoration: BoxDecoration(
+                color: connected ? teal : Colors.orange,
+                borderRadius: BorderRadius.circular(20),
+              ),
+            ),
+            const SizedBox(width: 7),
+            Expanded(
+              child: Text(
+                connected ? 'Online - $email' : 'Waiting for parent pairing',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: grayText,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _smallPurpleButton({
+    required String label,
+    required VoidCallback? onTap,
+  }) {
+    return SizedBox(
+      height: 40,
+      child: FilledButton(
+        onPressed: onTap,
+        style: FilledButton.styleFrom(
+          backgroundColor: purple,
+          padding: EdgeInsets.zero,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+        ),
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Text(
+            label,
+            style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 13),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _pairingCard() {
+    return _whiteCard(
+      child: Column(
+        children: [
+          const Icon(Icons.link_rounded, color: purple, size: 62),
+          const SizedBox(height: 12),
+          const Text(
+            'Connect to Parent Dashboard',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: darkText,
+              fontSize: 22,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Enter the 6-digit pairing code generated from the parent account.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: grayText,
+              height: 1.35,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 18),
+          TextField(
+            controller: pairingCodeController,
+            keyboardType: TextInputType.number,
+            maxLength: 6,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 26,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 7,
+            ),
+            decoration: InputDecoration(
+              counterText: '',
+              hintText: '000000',
+              filled: true,
+              fillColor: pageBg,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+                borderSide: const BorderSide(color: purple, width: 2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 18),
+          SizedBox(
+            height: 54,
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: isPairing ? null : pairWithParent,
+              style: FilledButton.styleFrom(
+                backgroundColor: purple,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              ),
+              icon: const Icon(Icons.verified_rounded),
+              label: Text(
+                isPairing ? 'Connecting...' : 'Pair Student Device',
+                style: const TextStyle(fontWeight: FontWeight.w900),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 50,
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: isPairing ? null : scanQrCode,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: purple,
+                side: const BorderSide(color: purple, width: 1.4),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              ),
+              icon: const Icon(Icons.qr_code_scanner_rounded),
+              label: const Text(
+                'Scan QR Code Instead',
+                style: TextStyle(fontWeight: FontWeight.w900),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _durationLabel(Duration duration) {
+    final hours = duration.inHours;
+    final minutes = duration.inMinutes.remainder(60);
+
+    if (hours > 0) return '${hours}h ${minutes}m';
+    if (minutes > 0) return '${minutes}m';
+    return '${duration.inSeconds}s';
+  }
+
+  Widget _screenTimeAndRiskSection() {
+    if (_loadingUsageDashboard) {
+      return const SizedBox(
+        height: 170,
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    final state = _usageDashboardState;
+
+    if (state == null || !state.viewModel.hasUsagePermission) {
+      return _usageAccessPrompt(state);
+    }
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(child: _screenTimeCard(state)),
+        const SizedBox(width: 14),
+        Expanded(child: _riskCard(state)),
+      ],
+    );
+  }
+
+  /// Shown when Android's "Usage Access" permission (a special permission
+  /// only grantable from system Settings, not a normal runtime dialog)
+  /// hasn't been granted yet - real device usage stats can't be read
+  /// without it. loadTodayDashboardState() (usage_dashboard_service.dart)
+  /// already falls back to a cached report when this happens; if there's
+  /// no cache either, this prompts the child to grant access.
+  Widget _usageAccessPrompt(UsageDashboardControllerState? state) {
+    return _whiteCard(
+      child: Column(
+        children: [
+          const Icon(Icons.bar_chart_rounded, color: purple, size: 42),
+          const SizedBox(height: 10),
+          Text(
+            state?.viewModel.errorMessage ??
+                'Usage access permission is required to show real screen '
+                    'time data.',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: grayText, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 12),
+          _smallPurpleButton(
+            label: 'Grant Usage Access',
+            onTap: () async {
+              await _usageTrackingService.openUsageAccessSettings();
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _screenTimeCard(UsageDashboardControllerState state) {
+    final goal = state.screenTimeGoalResult;
+    final totalLabel = state.viewModel.totalUsageLabel;
+    final limitLabel = _durationLabel(state.dailyScreenTimeLimit);
+    final progress = (goal?.progressPercent ?? 0).clamp(0.0, 1.0);
+
+    return _whiteCard(
+      child: SizedBox(
+        height: 170,
+        child: Column(
+          children: [
+            const Text(
+              'Screen Time\nToday',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: darkText,
+                fontSize: 18,
+                fontWeight: FontWeight.w900,
+                height: 1.25,
+              ),
+            ),
+            const Spacer(),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                totalLabel,
+                style: const TextStyle(
+                  fontSize: 34,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Daily Limit: $limitLabel',
+              style: const TextStyle(color: grayText, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 10),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(20),
+              child: LinearProgressIndicator(
+                value: progress,
+                minHeight: 7,
+                color: purple,
+                backgroundColor: AppColors.track,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _riskCard(UsageDashboardControllerState state) {
+    final status = state.viewModel.statusLabel;
+
+    Color statusColor;
+    IconData statusIcon;
+
+    switch (status) {
+      case 'Unhealthy':
+        statusColor = AppColors.danger;
+        statusIcon = Icons.warning_rounded;
+        break;
+      case 'Warning':
+        statusColor = AppColors.warning;
+        statusIcon = Icons.shield_moon_rounded;
+        break;
+      default:
+        statusColor = teal;
+        statusIcon = Icons.shield_rounded;
+    }
+
+    return _whiteCard(
+      child: SizedBox(
+        height: 170,
+        child: Column(
+          children: [
+            const Text(
+              'Usage Pattern',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: darkText,
+                fontSize: 18,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            const Spacer(),
+            Icon(statusIcon, color: statusColor, size: 62),
+            const SizedBox(height: 6),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                status,
+                style: TextStyle(
+                  color: statusColor,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
+            const SizedBox(height: 2),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                state.viewModel.unhealthyAppCountLabel,
+                style: const TextStyle(
+                  color: darkText,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _gpsCard(Map<String, dynamic> data, bool connected) {
+    final location = locationText(data);
+    final updated = locationUpdatedText(data);
+
+    return _whiteCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 58,
+                height: 58,
+                decoration: BoxDecoration(
+                  color: connected ? softGreen : softRed,
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: Icon(
+                  connected
+                      ? Icons.location_on_rounded
+                      : Icons.location_off_rounded,
+                  color: connected ? teal : Colors.redAccent,
+                  size: 34,
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'GPS Location',
+                      style: TextStyle(
+                        color: darkText,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 18,
                       ),
-                      label: 'Service',
                     ),
-                    NavigationDestination(
-                      icon: Icon(Icons.settings_outlined),
-                      selectedIcon: Icon(Icons.settings_rounded, color: purple),
-                      label: 'Settings',
+                    const SizedBox(height: 5),
+                    Text(
+                      connected ? location : 'Pair device first',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: grayText,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      connected
+                          ? 'Updated: $updated'
+                          : 'Location sharing becomes available after pairing.',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: grayText, fontSize: 12),
                     ),
                   ],
-                )
-              : null,
+                ),
+              ),
+              IconButton(
+                onPressed: connected && !isSharingLocation
+                    ? () => shareCurrentLocation(data)
+                    : null,
+                icon: Icon(
+                  isSharingLocation
+                      ? Icons.sync_rounded
+                      : Icons.my_location_rounded,
+                  color: connected ? purple : grayText,
+                  size: 30,
+                ),
+              ),
+            ],
+          ),
+          // Passive nudge set by either the manual "Share GPS" button or
+          // the periodic background auto-share timer detecting Android's
+          // location services are off device-wide - see
+          // _autoShareLocation()'s doc comment for why the background path
+          // never pops an interruptive dialog on its own and relies on this
+          // banner being visible whenever the user next opens the app.
+          if (connected && _locationServicesDisabled) ...[
+            const SizedBox(height: 12),
+            InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: _showEnableLocationServicesDialog,
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppColors.warningBg,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.warning_amber_rounded,
+                      color: AppColors.warning,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text(
+                        'Location services are off - tap to enable GPS.',
+                        style: TextStyle(
+                          color: darkText,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// Compact real online/offline + last-sync-outcome line shown right under
+  /// the Sync Usage button, sourced from SyncStatusService (_isOnline) and
+  /// _recordSyncOutcome's local log (_syncLog) - not a decorative always-on
+  /// indicator. Full history with response/recovery times lives on
+  /// ReportsScreen's Alerts tab (Synchronization Status card).
+  Widget _syncStatusIndicator() {
+    final lastOutcome =
+        _syncLog.isNotEmpty ? _syncLog.last['outcome']?.toString() : null;
+
+    String label;
+    if (!_isOnline) {
+      label = 'Offline - usage data will sync automatically once '
+          'reconnected.';
+    } else if (lastOutcome == 'synced') {
+      label = 'Online - last sync succeeded. Also auto-syncs every '
+          '${_usageAutoSyncInterval.inMinutes} min.';
+    } else if (lastOutcome == 'queued_offline' ||
+        lastOutcome == 'failed_timeout') {
+      label = 'Online - retrying a queued sync from earlier...';
+    } else if (lastOutcome != null) {
+      label = 'Online - last sync failed. Tap Sync Usage to retry.';
+    } else {
+      label = 'Online - auto-syncs every '
+          '${_usageAutoSyncInterval.inMinutes} min, or tap Sync Usage now.';
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(
+        children: [
+          Icon(
+            Icons.circle,
+            size: 8,
+            color: _isOnline ? teal : Colors.redAccent,
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              label,
+              style: const TextStyle(color: grayText, fontSize: 11),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Backup SMS alert status. The actual send happens natively (see
+  /// SmsAlertSender.kt, triggered from WellScreenAccessibilityService when
+  /// a restricted app is blocked) so it keeps working even if this Flutter
+  /// screen isn't open - this card only shows whether it's actually able to
+  /// fire (permission + a cached parent phone number) and a running tally
+  /// from the real local delivery log.
+  Widget _smsAlertsCard() {
+    final hasPhoneNumber = _cachedParentPhoneNumber != null;
+    final sentCount = _smsAlertLog
+        .where((entry) =>
+            entry['outcome'] == 'sent' || entry['outcome'] == 'delivered')
+        .length;
+    final failedCount = _smsAlertLog
+        .where((entry) => (entry['outcome'] as String? ?? '').startsWith('failed'))
+        .length;
+
+    return _whiteCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.sms_rounded, color: purple, size: 26),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'SMS Backup Alerts',
+                  style: TextStyle(
+                    color: darkText,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            !_smsPermissionGranted
+                ? 'Off. Grant SMS permission so a backup text alert can '
+                    'reach your parent even without internet, when a '
+                    'restricted app is opened.'
+                : hasPhoneNumber
+                    ? 'Enabled. Blocked-app alerts will text '
+                        '${_maskPhoneNumber(_cachedParentPhoneNumber!)}.'
+                    : 'Permission granted, but your parent hasn\'t added a '
+                        'phone number yet in their Profile Settings.',
+            style: const TextStyle(
+              color: grayText,
+              fontWeight: FontWeight.w600,
+              height: 1.35,
+            ),
+          ),
+          if (!_smsPermissionGranted) ...[
+            const SizedBox(height: 12),
+            _smallPurpleButton(
+              label: 'Enable SMS Alerts',
+              onTap: _requestSmsPermission,
+            ),
+          ],
+          if (_smsAlertLog.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Text(
+              'Recent attempts: $sentCount sent, $failedCount failed',
+              style: const TextStyle(
+                color: darkText,
+                fontWeight: FontWeight.w800,
+                fontSize: 13,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// Child-requests-temporary-bypass card (EmergencyAccessService). Only
+  /// shown once paired - a request needs a parent to notify and a
+  /// child_profiles doc to write the status onto, same precondition as
+  /// _activeRulesCard right below.
+  Widget _emergencyAccessCard(Map<String, dynamic> data) {
+    final parentId = (data['pairedParentId'] ?? '').toString();
+    final childProfileId = (data['pairedChildProfileId'] ?? '').toString();
+
+    if (parentId.isEmpty || childProfileId.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return StreamBuilder<Map<String, dynamic>>(
+      stream: _emergencyAccessService.watchStatus(childProfileId),
+      builder: (context, snapshot) {
+        final status = (snapshot.data?['status'] ?? 'none').toString();
+
+        return _whiteCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 52,
+                    height: 52,
+                    decoration: BoxDecoration(
+                      color: softRed,
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                    child: const Icon(
+                      Icons.lock_open_rounded,
+                      color: AppColors.danger,
+                      size: 29,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  const Expanded(
+                    child: Text(
+                      'Emergency Access',
+                      style: TextStyle(
+                        color: darkText,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 17,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              _emergencyAccessBody(
+                status,
+                snapshot.data ?? const {},
+                childProfileId,
+                parentId,
+              ),
+            ],
+          ),
         );
       },
     );
   }
-}
 
-class ProtectedStatusCard extends StatelessWidget {
-  const ProtectedStatusCard({super.key, required this.isProtected});
+  Widget _emergencyAccessBody(
+    String status,
+    Map<String, dynamic> statusData,
+    String childProfileId,
+    String parentId,
+  ) {
+    switch (status) {
+      case 'requested':
+        return const Row(
+          children: [
+            SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2.5, color: purple),
+            ),
+            SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Waiting for your parent to respond to your request...',
+                style: TextStyle(
+                  color: grayText,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                ),
+              ),
+            ),
+          ],
+        );
+      case 'approved':
+        final grantedUntil = statusData['grantedUntil'];
+        final until = grantedUntil is Timestamp ? grantedUntil.toDate() : null;
+        final stillActive = until != null && until.isAfter(DateTime.now());
 
-  final bool isProtected;
+        if (stillActive) {
+          final hh = until.hour.toString().padLeft(2, '0');
+          final mm = until.minute.toString().padLeft(2, '0');
+          return Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: softGreen,
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.check_circle_rounded,
+                  color: AppColors.success,
+                  size: 22,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Approved - restrictions are lifted until $hh:$mm.',
+                    style: const TextStyle(
+                      color: darkText,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
 
-  @override
-  Widget build(BuildContext context) {
-    final color = isProtected ? Colors.green : Colors.orange;
+        return _emergencyAccessRequestForm(childProfileId, parentId);
+      case 'denied':
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: softRed,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.cancel_rounded, color: AppColors.danger, size: 22),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Your parent denied your last request.',
+                      style: TextStyle(
+                        color: darkText,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            _emergencyAccessRequestForm(childProfileId, parentId),
+          ],
+        );
+      case 'none':
+      default:
+        return _emergencyAccessRequestForm(childProfileId, parentId);
+    }
+  }
 
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF9FAFB),
-        borderRadius: BorderRadius.circular(20),
-      ),
+  Widget _emergencyAccessRequestForm(String childProfileId, String parentId) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Need a restricted app for something urgent? Ask your parent to '
+          'temporarily lift restrictions.',
+          style: TextStyle(color: grayText, fontWeight: FontWeight.w600, fontSize: 13),
+        ),
+        const SizedBox(height: 10),
+        TextField(
+          controller: emergencyReasonController,
+          maxLength: 140,
+          decoration: InputDecoration(
+            hintText: 'Reason (optional) - e.g. "need calculator app"',
+            isDense: true,
+            filled: true,
+            fillColor: pageBg,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide.none,
+            ),
+            counterText: '',
+          ),
+        ),
+        const SizedBox(height: 6),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+            onPressed: isRequestingEmergencyAccess
+                ? null
+                : () => requestEmergencyAccess(childProfileId, parentId),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.danger,
+              padding: const EdgeInsets.symmetric(vertical: 13),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+            ),
+            icon: isRequestingEmergencyAccess
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.5,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Icon(Icons.lock_open_rounded, size: 19),
+            label: Text(
+              isRequestingEmergencyAccess ? 'Sending...' : 'Request Access',
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> requestEmergencyAccess(
+    String childProfileId,
+    String parentId,
+  ) async {
+    setState(() => isRequestingEmergencyAccess = true);
+
+    try {
+      await _emergencyAccessService.requestAccess(
+        childProfileId: childProfileId,
+        parentId: parentId,
+        reason: emergencyReasonController.text,
+      );
+      emergencyReasonController.clear();
+      showMessage('Request sent - your parent has been notified.');
+    } catch (e) {
+      showMessage('Could not send request: $e');
+    } finally {
+      if (mounted) {
+        setState(() => isRequestingEmergencyAccess = false);
+      }
+    }
+  }
+
+  Widget _activeRulesCard(Map<String, dynamic> data) {
+    final parentId = (data['pairedParentId'] ?? '').toString();
+
+    if (parentId.isEmpty) {
+      return _rulesMessageCard(
+        icon: Icons.sync_problem_rounded,
+        title: 'Rules Sync Waiting',
+        message:
+            'The parent account is connected, but the rule source is not ready yet.',
+      );
+    }
+
+    return StreamBuilder<List<AppRule>>(
+      stream: _rulesService.watchRulesForParent(parentId),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return _rulesMessageCard(
+            icon: Icons.warning_rounded,
+            title: 'Rules Sync Error',
+            message: 'Unable to load monitored and restricted apps right now.',
+          );
+        }
+
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return _whiteCard(
+            child: const Row(
+              children: [
+                SizedBox(
+                  width: 34,
+                  height: 34,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 3,
+                    color: purple,
+                  ),
+                ),
+                SizedBox(width: 14),
+                Expanded(
+                  child: Text(
+                    'Loading parent app rules...',
+                    style: TextStyle(
+                      color: grayText,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+
+        final rules = snapshot.data ?? <AppRule>[];
+
+        final activeRules =
+            rules
+                .where((rule) => rule.monitorEnabled || rule.restrictEnabled)
+                .toList()
+              ..sort(
+                (a, b) => appTitle(
+                  a,
+                ).toLowerCase().compareTo(appTitle(b).toLowerCase()),
+              );
+
+        final monitoredCount = activeRules
+            .where((rule) => rule.monitorEnabled)
+            .length;
+
+        final restrictedCount = activeRules
+            .where((rule) => rule.restrictEnabled)
+            .length;
+
+        final restrictedRules = activeRules
+            .where((rule) => rule.restrictEnabled)
+            .toList();
+
+        final monitoredOnlyRules = activeRules
+            .where((rule) => rule.monitorEnabled && !rule.restrictEnabled)
+            .toList();
+
+        if (activeRules.isEmpty) {
+          return _rulesMessageCard(
+            icon: Icons.rule_folder_rounded,
+            title: 'No Active App Rules',
+            message:
+                'When the parent selects Monitor or Restrict in View Rules, the apps will appear here.',
+          );
+        }
+
+        return _whiteCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 52,
+                    height: 52,
+                    decoration: BoxDecoration(
+                      color: softBlue,
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                    child: const Icon(
+                      Icons.admin_panel_settings_rounded,
+                      color: purple,
+                      size: 31,
+                    ),
+                  ),
+                  const SizedBox(width: 13),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Parent App Rules',
+                          style: TextStyle(
+                            color: darkText,
+                            fontSize: 19,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        SizedBox(height: 3),
+                        Text(
+                          'Synced from parent dashboard',
+                          style: TextStyle(
+                            color: grayText,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: _ruleCountBadge(
+                      label: 'Monitored',
+                      count: monitoredCount,
+                      icon: Icons.visibility_rounded,
+                      color: AppColors.info,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _ruleCountBadge(
+                      label: 'Restricted',
+                      count: restrictedCount,
+                      icon: Icons.block_rounded,
+                      color: AppColors.danger,
+                    ),
+                  ),
+                ],
+              ),
+              if (restrictedRules.isNotEmpty) const SizedBox(height: 18),
+              if (restrictedRules.isNotEmpty)
+                _appRuleGroup(
+                  title: 'Restricted Apps',
+                  rules: restrictedRules,
+                  color: AppColors.danger,
+                  icon: Icons.block_rounded,
+                ),
+              if (monitoredOnlyRules.isNotEmpty) const SizedBox(height: 18),
+              if (monitoredOnlyRules.isNotEmpty)
+                _appRuleGroup(
+                  title: 'Monitored Apps',
+                  rules: monitoredOnlyRules,
+                  color: AppColors.info,
+                  icon: Icons.visibility_rounded,
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _rulesMessageCard({
+    required IconData icon,
+    required String title,
+    required String message,
+  }) {
+    return _whiteCard(
       child: Row(
         children: [
           Container(
-            width: 70,
-            height: 70,
+            width: 54,
+            height: 54,
             decoration: BoxDecoration(
-              color: isProtected
-                  ? const Color(0xFFE8F7EE)
-                  : const Color(0xFFFFF4E5),
-              borderRadius: BorderRadius.circular(20),
+              color: softBlue,
+              borderRadius: BorderRadius.circular(18),
             ),
-            child: Icon(
-              isProtected
-                  ? Icons.verified_user_rounded
-                  : Icons.warning_amber_rounded,
-              color: color,
-              size: 44,
-            ),
+            child: Icon(icon, color: purple, size: 31),
           ),
-
-          const SizedBox(width: 16),
-
+          const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  isProtected ? 'You are protected' : 'Setup needed',
+                  title,
                   style: const TextStyle(
-                    color: Color(0xFF111827),
-                    fontSize: 21,
+                    color: darkText,
+                    fontSize: 18,
                     fontWeight: FontWeight.w900,
                   ),
                 ),
-
-                const SizedBox(height: 5),
-
+                const SizedBox(height: 4),
                 Text(
-                  isProtected
-                      ? 'WellScreen is active and currently monitoring your device.'
-                      : 'Enable the required permissions so WellScreen can fully monitor this device.',
+                  message,
                   style: const TextStyle(
-                    color: Color(0xFF4B5563),
-                    height: 1.4,
+                    color: grayText,
+                    height: 1.35,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -1374,1523 +2871,342 @@ class ProtectedStatusCard extends StatelessWidget {
       ),
     );
   }
-}
 
-class ChildInfoRow extends StatelessWidget {
-  const ChildInfoRow({
-    super.key,
-    required this.icon,
-    required this.label,
-    required this.value,
-    this.valueColor,
-    this.isLast = false,
-  });
-
-  final IconData icon;
-  final String label;
-  final String value;
-  final Color? valueColor;
-  final bool isLast;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.only(bottom: isLast ? 0 : 18),
+  Widget _ruleCountBadge({
+    required String label,
+    required int count,
+    required IconData icon,
+    required Color color,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 13),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: color.withValues(alpha: 0.18)),
+      ),
       child: Row(
         children: [
-          Icon(icon, color: const Color(0xFF111827), size: 25),
-
-          const SizedBox(width: 13),
-
+          Icon(icon, color: color, size: 23),
+          const SizedBox(width: 8),
           Expanded(
             child: Text(
-              label,
-              style: const TextStyle(
-                color: Color(0xFF111827),
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-          ),
-
-          Flexible(
-            child: Text(
-              value,
-              textAlign: TextAlign.right,
-              style: TextStyle(
-                color: valueColor ?? const Color(0xFF4B5563),
-                fontWeight: FontWeight.w800,
-              ),
+              '$count $label',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: color, fontWeight: FontWeight.w900),
             ),
           ),
         ],
       ),
     );
   }
-}
 
-class ChildActionTile extends StatelessWidget {
-  const ChildActionTile({
-    super.key,
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      elevation: 0,
-      margin: const EdgeInsets.only(bottom: 10),
-      child: ListTile(
-        onTap: onTap,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-        leading: Container(
-          width: 48,
-          height: 48,
-          decoration: BoxDecoration(
-            color: const Color(0xFFF4F0FF),
-            borderRadius: BorderRadius.circular(13),
-          ),
-          child: Icon(icon, color: const Color(0xFF5B2BBF)),
-        ),
-        title: Text(
-          title,
-          style: const TextStyle(
-            color: Color(0xFF5B2BBF),
-            fontWeight: FontWeight.w900,
-            fontSize: 16,
-          ),
-        ),
-        subtitle: Padding(
-          padding: const EdgeInsets.only(top: 4),
-          child: Text(
-            subtitle,
-            style: const TextStyle(
-              color: Color(0xFF4B5563),
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
-        trailing: const Icon(
-          Icons.chevron_right_rounded,
-          color: Color(0xFF5B2BBF),
-          size: 30,
-        ),
-      ),
-    );
-  }
-}
-
-class ContactParentDialog extends StatefulWidget {
-  const ContactParentDialog({super.key, required this.parentName});
-
-  final String parentName;
-
-  @override
-  State<ContactParentDialog> createState() => _ContactParentDialogState();
-}
-
-class _ContactParentDialogState extends State<ContactParentDialog> {
-  static const Color purple = Color(0xFF5B2BBF);
-
-  final TextEditingController messageController = TextEditingController();
-
-  String selectedQuickMessage = 'Please contact me when you can.';
-
-  @override
-  void initState() {
-    super.initState();
-    messageController.text = selectedQuickMessage;
-  }
-
-  @override
-  void dispose() {
-    messageController.dispose();
-    super.dispose();
-  }
-
-  void selectQuickMessage(String message) {
-    setState(() {
-      selectedQuickMessage = message;
-      messageController.text = message;
-      messageController.selection = TextSelection.collapsed(
-        offset: messageController.text.length,
-      );
-    });
-  }
-
-  void sendMessage() {
-    final message = messageController.text.trim();
-
-    if (message.isEmpty) {
-      return;
-    }
-
-    Navigator.of(context).pop(message);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    const quickMessages = [
-      'Please contact me when you can.',
-      'I need help.',
-      'Please call me.',
-    ];
-
-    return AlertDialog(
-      title: Text(
-        'Contact ${widget.parentName}',
-        style: const TextStyle(fontWeight: FontWeight.w900),
-      ),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _appRuleGroup({
+    required String title,
+    required List<AppRule> rules,
+    required Color color,
+    required IconData icon,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
           children: [
-            const Text('Choose a quick message or write your own.'),
-            const SizedBox(height: 16),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: quickMessages.map((message) {
-                return ChoiceChip(
-                  label: Text(message),
-                  selected: selectedQuickMessage == message,
-                  onSelected: (_) {
-                    selectQuickMessage(message);
-                  },
-                );
-              }).toList(),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: messageController,
-              maxLines: 3,
-              decoration: InputDecoration(
-                labelText: 'Message',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
+            Icon(icon, color: color, size: 23),
+            const SizedBox(width: 7),
+            Text(
+              title,
+              style: TextStyle(
+                color: color,
+                fontSize: 17,
+                fontWeight: FontWeight.w900,
               ),
             ),
           ],
         ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () {
-            Navigator.of(context).pop();
-          },
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: sendMessage,
-          style: FilledButton.styleFrom(backgroundColor: purple),
-          child: const Text('Send'),
-        ),
+        const SizedBox(height: 10),
+        ...rules.map((rule) => _appRuleRow(rule)),
       ],
     );
   }
-}
 
-class ChildNotificationsPanel extends StatelessWidget {
-  const ChildNotificationsPanel({super.key, required this.childUserId});
+  Widget _appRuleRow(AppRule rule) {
+    final name = appTitle(rule);
+    final restricted = rule.restrictEnabled;
+    final color = restricted ? AppColors.danger : AppColors.info;
 
-  final String childUserId;
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: SizedBox(
-        height: MediaQuery.sizeOf(context).height * 0.7,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Notifications',
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900),
-              ),
-
-              const SizedBox(height: 14),
-
-              Expanded(
-                child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: FirebaseFirestore.instance
-                      .collection('in_app_alerts')
-                      .where('recipientUserId', isEqualTo: childUserId)
-                      .limit(20)
-                      .snapshots(),
-                  builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
-                      return const Center(child: CircularProgressIndicator());
-                    }
-
-                    if (snapshot.hasError) {
-                      return Center(
-                        child: Text(
-                          snapshot.error.toString(),
-                          textAlign: TextAlign.center,
-                        ),
-                      );
-                    }
-
-                    final docs = [...?snapshot.data?.docs];
-
-                    docs.sort((a, b) {
-                      final aTime = a.data()['createdAt'];
-
-                      final bTime = b.data()['createdAt'];
-
-                      if (aTime is Timestamp && bTime is Timestamp) {
-                        return bTime.compareTo(aTime);
-                      }
-
-                      return 0;
-                    });
-
-                    if (docs.isEmpty) {
-                      return const Center(
-                        child: Text(
-                          'No notifications yet.',
-                          style: TextStyle(color: Color(0xFF4B5563)),
-                        ),
-                      );
-                    }
-
-                    return ListView.builder(
-                      itemCount: docs.length,
-                      itemBuilder: (context, index) {
-                        final doc = docs[index];
-
-                        final data = doc.data();
-
-                        final title = data['title'] as String? ?? 'WellScreen';
-
-                        final message = data['message'] as String? ?? '';
-
-                        final isRead = data['isRead'] as bool? ?? false;
-
-                        return Card(
-                          color: isRead
-                              ? Colors.white
-                              : const Color(0xFFF4F0FF),
-                          child: ListTile(
-                            onTap: () async {
-                              await doc.reference.set({
-                                'isRead': true,
-                                'readAt': FieldValue.serverTimestamp(),
-                              }, SetOptions(merge: true));
-                            },
-                            leading: Icon(
-                              isRead
-                                  ? Icons.notifications_none_rounded
-                                  : Icons.notifications_active_rounded,
-                              color: const Color(0xFF5B2BBF),
-                            ),
-                            title: Text(
-                              title,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                            subtitle: Text(message),
-                          ),
-                        );
-                      },
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class ChildSectionHeader extends StatelessWidget {
-  const ChildSectionHeader({super.key, required this.title, this.subtitle});
-
-  final String title;
-  final String? subtitle;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          title,
-          style: const TextStyle(
-            color: Color(0xFF111827),
-            fontSize: 20,
-            fontWeight: FontWeight.w900,
-          ),
-        ),
-
-        if (subtitle != null) ...[
-          const SizedBox(height: 4),
-
-          Text(
-            subtitle!,
-            style: const TextStyle(
-              color: Color(0xFF4B5563),
-              height: 1.35,
-              fontSize: 13,
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-}
-
-class PermissionOverviewCard extends StatelessWidget {
-  const PermissionOverviewCard({
-    super.key,
-    required this.hasUsageAccess,
-    required this.hasAccessibilityAccess,
-    required this.locationStatus,
-  });
-
-  final bool? hasUsageAccess;
-  final bool? hasAccessibilityAccess;
-
-  final LocationPermissionStatus? locationStatus;
-
-  @override
-  Widget build(BuildContext context) {
-    final locationGranted = locationStatus == LocationPermissionStatus.granted;
-
-    final enabledCount = [
-      hasUsageAccess == true,
-      hasAccessibilityAccess == true,
-      locationGranted,
-    ].where((value) => value).length;
+    final status = restricted
+        ? rule.monitorEnabled
+              ? 'Blocked + Monitored'
+              : 'Blocked'
+        : 'Monitored';
 
     return Container(
-      padding: const EdgeInsets.all(18),
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(13),
       decoration: BoxDecoration(
-        color: const Color(0xFFF4F0FF),
+        color: pageBg,
         borderRadius: BorderRadius.circular(18),
       ),
       child: Row(
         children: [
-          const CircleAvatar(
-            radius: 26,
-            backgroundColor: Colors.white,
-            child: Icon(
-              Icons.security_rounded,
-              color: Color(0xFF5B2BBF),
-              size: 29,
-            ),
+          CircleAvatar(
+            radius: 23,
+            backgroundColor: color,
+            child: Icon(appIconForName(name), color: Colors.white, size: 26),
           ),
-
-          const SizedBox(width: 14),
-
+          const SizedBox(width: 13),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'Permission Status',
-                  style: TextStyle(
-                    color: Color(0xFF111827),
-                    fontSize: 16,
+                Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: darkText,
                     fontWeight: FontWeight.w900,
                   ),
                 ),
-
                 const SizedBox(height: 4),
-
                 Text(
-                  '$enabledCount of 3 main monitoring permissions enabled',
+                  rule.packageName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                    color: Color(0xFF4B5563),
-                    fontWeight: FontWeight.w700,
+                    color: grayText,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ],
             ),
           ),
-
-          Text(
-            '$enabledCount/3',
-            style: const TextStyle(
-              color: Color(0xFF5B2BBF),
-              fontSize: 22,
-              fontWeight: FontWeight.w900,
+          const SizedBox(width: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(30),
+            ),
+            child: Text(
+              status,
+              style: TextStyle(
+                color: color,
+                fontSize: 11,
+                fontWeight: FontWeight.w900,
+              ),
             ),
           ),
         ],
       ),
     );
   }
-}
 
-class UsageAccessStatusCard extends StatelessWidget {
-  const UsageAccessStatusCard({
-    super.key,
-    required this.hasUsageAccess,
-    required this.isChecking,
-    required this.onRecheck,
-    required this.onOpenSettings,
-  });
+  /// Was explicitly labeled "Demo Data" with four hardcoded rows - honest
+  /// about being fake, but still fake. Now reads
+  /// UsageDashboardControllerState.appUsageList, the real top-10
+  /// UsageStats-backed list loaded in _loadUsageDashboard().
+  Widget _topAppsSection() {
+    final apps = (_usageDashboardState?.appUsageList ?? []).take(4).toList();
+    final maxDurationMs = apps
+        .map((app) => app.usageDuration.inMilliseconds)
+        .fold<int>(0, (highest, value) => value > highest ? value : highest);
 
-  final bool? hasUsageAccess;
-  final bool isChecking;
-
-  final Future<void> Function() onRecheck;
-
-  final Future<void> Function() onOpenSettings;
-
-  @override
-  Widget build(BuildContext context) {
-    final granted = hasUsageAccess == true;
-
-    return PermissionCard(
-      icon: Icons.bar_chart_rounded,
-      title: 'Usage Access',
-      subtitle: 'Track screen time and app usage.',
-      granted: granted,
-      isChecking: isChecking,
-      onRecheck: onRecheck,
-      onEnable: onOpenSettings,
-      buttonText: 'Open Usage Access Settings',
-    );
-  }
-}
-
-class AccessibilityServiceStatusCard extends StatelessWidget {
-  const AccessibilityServiceStatusCard({
-    super.key,
-    required this.hasAccessibilityAccess,
-    required this.isChecking,
-    required this.onRecheck,
-    required this.onOpenSettings,
-  });
-
-  final bool? hasAccessibilityAccess;
-
-  final bool isChecking;
-
-  final Future<void> Function() onRecheck;
-
-  final Future<void> Function() onOpenSettings;
-
-  @override
-  Widget build(BuildContext context) {
-    return PermissionCard(
-      icon: Icons.accessibility_new_rounded,
-      title: 'Accessibility Service',
-      subtitle: 'Detect blocked apps and enforce parent rules.',
-      granted: hasAccessibilityAccess == true,
-      isChecking: isChecking,
-      onRecheck: onRecheck,
-      onEnable: onOpenSettings,
-      buttonText: 'Open Accessibility Settings',
-    );
-  }
-}
-
-class LocationPermissionStatusCard extends StatelessWidget {
-  const LocationPermissionStatusCard({
-    super.key,
-    required this.status,
-    required this.isChecking,
-    required this.onRecheck,
-    required this.onRequestPermission,
-    required this.onOpenLocationSettings,
-  });
-
-  final LocationPermissionStatus? status;
-
-  final bool isChecking;
-
-  final Future<void> Function() onRecheck;
-
-  final Future<void> Function() onRequestPermission;
-
-  final Future<void> Function() onOpenLocationSettings;
-
-  @override
-  Widget build(BuildContext context) {
-    final granted = status == LocationPermissionStatus.granted;
-
-    return PermissionCard(
-      icon: Icons.location_on_rounded,
-      title: 'Location Permission',
-      subtitle: 'Share safety location information with the parent account.',
-      granted: granted,
-      isChecking: isChecking,
-      onRecheck: onRecheck,
-      onEnable: status == LocationPermissionStatus.serviceDisabled
-          ? onOpenLocationSettings
-          : onRequestPermission,
-      buttonText: status == LocationPermissionStatus.serviceDisabled
-          ? 'Open Location Settings'
-          : 'Allow Location Permission',
-    );
-  }
-}
-
-class PermissionCard extends StatelessWidget {
-  const PermissionCard({
-    super.key,
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.granted,
-    required this.isChecking,
-    required this.onRecheck,
-    required this.onEnable,
-    required this.buttonText,
-  });
-
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final bool granted;
-  final bool isChecking;
-
-  final Future<void> Function() onRecheck;
-
-  final Future<void> Function() onEnable;
-
-  final String buttonText;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      elevation: 1.5,
-      shadowColor: Colors.black12,
-      margin: const EdgeInsets.only(bottom: 12),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          children: [
-            Row(
-              children: [
-                Container(
-                  width: 48,
-                  height: 48,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF4F0FF),
-                    borderRadius: BorderRadius.circular(13),
-                  ),
-                  child: Icon(
-                    icon,
-                    color: granted ? Colors.green : const Color(0xFF5B2BBF),
-                  ),
-                ),
-
-                const SizedBox(width: 14),
-
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w900,
-                          color: Color(0xFF111827),
-                        ),
-                      ),
-
-                      const SizedBox(height: 5),
-
-                      Text(
-                        subtitle,
-                        style: const TextStyle(
-                          color: Color(0xFF4B5563),
-                          height: 1.35,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-                IconButton(
-                  onPressed: isChecking ? null : () => onRecheck(),
-                  icon: isChecking
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : Icon(
-                          granted
-                              ? Icons.check_circle_rounded
-                              : Icons.refresh_rounded,
-                          color: granted ? Colors.green : null,
-                        ),
-                ),
-              ],
-            ),
-
-            if (!granted) ...[
-              const SizedBox(height: 12),
-
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: isChecking ? null : () => onEnable(),
-                  icon: const Icon(Icons.settings_rounded),
-                  label: Text(
-                    buttonText,
-                    style: const TextStyle(fontWeight: FontWeight.w800),
-                  ),
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class UsageSyncCard extends StatelessWidget {
-  const UsageSyncCard({
-    super.key,
-    required this.isSyncing,
-    required this.lastSyncMessage,
-    required this.onSync,
-    required this.onOpenUsageAccess,
-  });
-
-  final bool isSyncing;
-  final String? lastSyncMessage;
-
-  final Future<void> Function() onSync;
-
-  final Future<void> Function() onOpenUsageAccess;
-
-  @override
-  Widget build(BuildContext context) {
-    return ServiceCard(
-      icon: Icons.cloud_upload_rounded,
-      title: 'Usage Report Sync',
-      description:
-          lastSyncMessage ??
-          'Send today\'s usage information to the parent account.',
-      isWorking: isSyncing,
-      buttonText: isSyncing ? 'Syncing...' : 'Sync Usage Report',
-      onPressed: isSyncing ? null : onSync,
-    );
-  }
-}
-
-class LocationSyncCard extends StatelessWidget {
-  const LocationSyncCard({
-    super.key,
-    required this.isSyncing,
-    required this.lastSyncMessage,
-    required this.onSync,
-  });
-
-  final bool isSyncing;
-  final String? lastSyncMessage;
-
-  final Future<void> Function() onSync;
-
-  @override
-  Widget build(BuildContext context) {
-    return ServiceCard(
-      icon: Icons.gps_fixed_rounded,
-      title: 'Location Sync',
-      description:
-          lastSyncMessage ??
-          'Send the latest GPS location to the parent account.',
-      isWorking: isSyncing,
-      buttonText: isSyncing ? 'Syncing...' : 'Sync Current Location',
-      onPressed: isSyncing ? null : onSync,
-    );
-  }
-}
-
-class ServiceCard extends StatelessWidget {
-  const ServiceCard({
-    super.key,
-    required this.icon,
-    required this.title,
-    required this.description,
-    required this.isWorking,
-    required this.buttonText,
-    required this.onPressed,
-  });
-
-  final IconData icon;
-  final String title;
-  final String description;
-  final bool isWorking;
-  final String buttonText;
-
-  final Future<void> Function()? onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      elevation: 1.5,
-      shadowColor: Colors.black12,
-      margin: const EdgeInsets.only(bottom: 12),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(icon, color: const Color(0xFF5B2BBF), size: 32),
-
-                const SizedBox(width: 12),
-
-                Text(
-                  title,
-                  style: const TextStyle(
-                    color: Color(0xFF111827),
-                    fontSize: 16,
+    return _whiteCard(
+      child: Column(
+        children: [
+          const Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Top Apps Today',
+                  style: TextStyle(
+                    color: darkText,
+                    fontSize: 19,
                     fontWeight: FontWeight.w900,
                   ),
                 ),
-              ],
-            ),
-
-            const SizedBox(height: 10),
-
-            Text(
-              description,
-              style: const TextStyle(color: Color(0xFF4B5563), height: 1.4),
-            ),
-
-            const SizedBox(height: 14),
-
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                onPressed: onPressed == null ? null : () => onPressed!(),
-                style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFF5B2BBF),
-                ),
-                icon: isWorking
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
-                        ),
-                      )
-                    : const Icon(Icons.sync_rounded),
-                label: Text(
-                  buttonText,
-                  style: const TextStyle(fontWeight: FontWeight.w800),
-                ),
               ),
-            ),
-          ],
-        ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          if (_loadingUsageDashboard)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Center(child: CircularProgressIndicator()),
+            )
+          else if (apps.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text(
+                'No app usage recorded yet today.',
+                style: TextStyle(color: grayText, fontWeight: FontWeight.w600),
+              ),
+            )
+          else
+            ...apps.map((app) {
+              final ratio = maxDurationMs > 0
+                  ? app.usageDuration.inMilliseconds / maxDurationMs
+                  : 0.0;
+
+              return _appUsageRow(
+                icon: _iconForAppName(app.displayName),
+                iconColor: purple,
+                appName: app.displayName,
+                time: app.usageLabel,
+                value: ratio.clamp(0.0, 1.0),
+              );
+            }),
+        ],
       ),
     );
   }
-}
 
-class ParentRulesSection extends StatelessWidget {
-  const ParentRulesSection({super.key, required this.parentId});
+  IconData _iconForAppName(String name) {
+    final lower = name.toLowerCase();
 
-  final String? parentId;
-
-  static const Color purple = Color(0xFF5B2BBF);
-
-  @override
-  Widget build(BuildContext context) {
-    if (parentId == null || parentId!.isEmpty) {
-      return const ChildStatusCard(
-        icon: Icons.rule_rounded,
-        iconColor: Colors.orange,
-        title: 'Parent Rules Unavailable',
-        subtitle: 'The linked parent account could not be found.',
-      );
+    if (lower.contains('youtube') || lower.contains('video')) {
+      return Icons.play_arrow_rounded;
+    }
+    if (lower.contains('tiktok') || lower.contains('music')) {
+      return Icons.music_note_rounded;
+    }
+    if (lower.contains('facebook') ||
+        lower.contains('chrome') ||
+        lower.contains('browser')) {
+      return Icons.public_rounded;
+    }
+    if (lower.contains('game') ||
+        lower.contains('legends') ||
+        lower.contains('pubg')) {
+      return Icons.sports_esports_rounded;
     }
 
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
-          .collection('restriction_settings')
-          .doc(parentId)
-          .snapshots(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const ChildStatusCard(
-            icon: Icons.hourglass_top_rounded,
-            iconColor: purple,
-            title: 'Loading Parent Rules',
-            subtitle: 'Preparing restrictions from the parent account...',
-          );
-        }
-
-        if (snapshot.hasError) {
-          return ChildStatusCard(
-            icon: Icons.error_outline_rounded,
-            iconColor: Colors.red,
-            title: 'Unable to Load Parent Rules',
-            subtitle: snapshot.error.toString(),
-          );
-        }
-
-        final data = snapshot.data?.data();
-
-        if (data == null) {
-          return const ChildStatusCard(
-            icon: Icons.rule_rounded,
-            iconColor: Colors.orange,
-            title: 'No Rules Saved Yet',
-            subtitle:
-                'Rules will appear after the parent saves restriction settings.',
-          );
-        }
-
-        final limitValue = data['limitMinutes'];
-
-        final limitMinutes = limitValue is num ? limitValue.toInt() : 120;
-
-        final appBlocking = _readBool(data, 'appBlocking', true);
-
-        final focusMode = _readBool(data, 'focusMode', true);
-
-        final cooldownTimer = _readBool(data, 'cooldownTimer', true);
-
-        final scheduledLock = _readBool(data, 'scheduledLock', false);
-
-        final categoryRestriction = _readBool(
-          data,
-          'categoryRestriction',
-          true,
-        );
-
-        final emergencyAccess = _readBool(data, 'emergencyAccess', true);
-
-        unawaited(
-          const NativeRestrictionRulesService()
-              .saveRules(
-                limitMinutes: limitMinutes,
-                appBlocking: appBlocking,
-                focusMode: focusMode,
-                cooldownTimer: cooldownTimer,
-                scheduledLock: scheduledLock,
-                categoryRestriction: categoryRestriction,
-                emergencyAccess: emergencyAccess,
-              )
-              .catchError((Object _) {}),
-        );
-
-        return Column(
-          children: [
-            ChildStatusCard(
-              icon: Icons.timer_outlined,
-              iconColor: purple,
-              title: 'Daily Screen-Time Limit',
-              subtitle: '${_formatMinutes(limitMinutes)} per day',
-            ),
-
-            ParentRuleCard(
-              icon: Icons.block_rounded,
-              title: 'App Blocking',
-              isEnabled: appBlocking,
-              enabledMessage:
-                  'Selected apps are blocked after limits are reached.',
-              disabledMessage: 'App blocking is disabled.',
-            ),
-
-            ParentRuleCard(
-              icon: Icons.center_focus_strong_rounded,
-              title: 'Focus Mode',
-              isEnabled: focusMode,
-              enabledMessage:
-                  'Distracting apps are limited during study or rest time.',
-              disabledMessage: 'Focus Mode is disabled.',
-            ),
-
-            ParentRuleCard(
-              icon: Icons.hourglass_bottom_rounded,
-              title: 'Cooldown Timer',
-              isEnabled: cooldownTimer,
-              enabledMessage:
-                  'Break reminders are enabled after long continuous usage.',
-              disabledMessage: 'Cooldown reminders are disabled.',
-            ),
-
-            ParentRuleCard(
-              icon: Icons.lock_clock_rounded,
-              title: 'Scheduled Lock Session',
-              isEnabled: scheduledLock,
-              enabledMessage: 'Default lock time: 10:00 PM to 5:00 AM.',
-              disabledMessage: 'Scheduled lock sessions are disabled.',
-            ),
-
-            ParentRuleCard(
-              icon: Icons.shield_outlined,
-              title: 'Harmful Category Restriction',
-              isEnabled: categoryRestriction,
-              enabledMessage:
-                  'Supported harmful website or category events are restricted.',
-              disabledMessage: 'Harmful category restriction is disabled.',
-            ),
-
-            ParentRuleCard(
-              icon: Icons.emergency_rounded,
-              title: 'Emergency Access',
-              isEnabled: emergencyAccess,
-              enabledMessage:
-                  'Selected essential functions are allowed during restrictions.',
-              disabledMessage: 'Emergency access is disabled.',
-            ),
-          ],
-        );
-      },
-    );
+    return Icons.apps_rounded;
   }
 
-  bool _readBool(Map<String, dynamic> data, String key, bool defaultValue) {
-    final value = data[key];
-
-    return value is bool ? value : defaultValue;
-  }
-
-  String _formatMinutes(int minutes) {
-    final duration = Duration(minutes: minutes);
-
-    final hours = duration.inHours;
-
-    final remaining = duration.inMinutes.remainder(60);
-
-    if (hours > 0) {
-      return '${hours}h ${remaining}m';
-    }
-
-    return '${duration.inMinutes}m';
-  }
-}
-
-class ParentRuleCard extends StatelessWidget {
-  const ParentRuleCard({
-    super.key,
-    required this.icon,
-    required this.title,
-    required this.isEnabled,
-    required this.enabledMessage,
-    required this.disabledMessage,
-  });
-
-  final IconData icon;
-  final String title;
-  final bool isEnabled;
-  final String enabledMessage;
-  final String disabledMessage;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      elevation: 1,
-      shadowColor: Colors.black12,
-      margin: const EdgeInsets.only(bottom: 12),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      child: ListTile(
-        contentPadding: const EdgeInsets.all(18),
-        leading: Container(
-          width: 46,
-          height: 46,
-          decoration: BoxDecoration(
-            color: const Color(0xFFF4F0FF),
-            borderRadius: BorderRadius.circular(13),
+  Widget _appUsageRow({
+    required IconData icon,
+    required Color iconColor,
+    required String appName,
+    required String time,
+    required double value,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 17),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 24,
+            backgroundColor: iconColor,
+            child: Icon(icon, color: Colors.white, size: 28),
           ),
-          child: Icon(icon, color: const Color(0xFF5B2BBF)),
-        ),
-        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
-        subtitle: Padding(
-          padding: const EdgeInsets.only(top: 5),
-          child: Text(isEnabled ? enabledMessage : disabledMessage),
-        ),
-        trailing: Text(
-          isEnabled ? 'ON' : 'OFF',
-          style: TextStyle(
-            color: isEnabled ? Colors.green : Colors.grey,
-            fontWeight: FontWeight.w900,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class SmsBackupPermissionSection extends StatefulWidget {
-  const SmsBackupPermissionSection({super.key});
-
-  @override
-  State<SmsBackupPermissionSection> createState() =>
-      _SmsBackupPermissionSectionState();
-}
-
-class _SmsBackupPermissionSectionState
-    extends State<SmsBackupPermissionSection> {
-  bool isChecking = true;
-  bool isGranted = false;
-
-  @override
-  void initState() {
-    super.initState();
-    checkPermission();
-  }
-
-  Future<void> checkPermission() async {
-    final granted = await const NativeRestrictionRulesService()
-        .isSmsPermissionGranted();
-
-    if (!mounted) return;
-
-    setState(() {
-      isGranted = granted;
-      isChecking = false;
-    });
-  }
-
-  Future<void> requestPermission() async {
-    setState(() {
-      isChecking = true;
-    });
-
-    await const NativeRestrictionRulesService().requestSmsPermission();
-
-    await Future<void>.delayed(const Duration(milliseconds: 800));
-
-    await checkPermission();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return PermissionCard(
-      icon: Icons.sms_outlined,
-      title: 'SMS Backup Permission',
-      subtitle:
-          'Allow WellScreen to send critical backup alerts. WellScreen does not read SMS messages.',
-      granted: isGranted,
-      isChecking: isChecking,
-      onRecheck: checkPermission,
-      onEnable: requestPermission,
-      buttonText: 'Allow SMS Backup Alerts',
-    );
-  }
-}
-
-class EmergencyAccessRequestSection extends StatefulWidget {
-  const EmergencyAccessRequestSection({
-    super.key,
-    required this.parentId,
-    required this.childId,
-    required this.childEmail,
-  });
-
-  final String? parentId;
-  final String? childId;
-  final String childEmail;
-
-  @override
-  State<EmergencyAccessRequestSection> createState() =>
-      _EmergencyAccessRequestSectionState();
-}
-
-class _EmergencyAccessRequestSectionState
-    extends State<EmergencyAccessRequestSection> {
-  final TextEditingController reasonController = TextEditingController();
-
-  bool isSubmitting = false;
-  int requestedDurationMinutes = 30;
-
-  static const Color purple = Color(0xFF5B2BBF);
-
-  static const List<int> requestDurationOptions = [15, 30, 60];
-
-  String _formatDurationMinutes(int minutes) {
-    if (minutes >= 60 && minutes % 60 == 0) {
-      final hours = minutes ~/ 60;
-      return hours == 1 ? '1 hour' : '$hours hours';
-    }
-
-    return '$minutes minutes';
-  }
-
-  @override
-  void dispose() {
-    reasonController.dispose();
-    super.dispose();
-  }
-
-  Future<void> submitEmergencyRequest() async {
-    final user = FirebaseAuth.instance.currentUser;
-
-    if (user == null) {
-      return;
-    }
-
-    if (widget.parentId == null || widget.parentId!.isEmpty) {
-      _showMessage('Parent account is unavailable.');
-      return;
-    }
-
-    final reason = reasonController.text.trim();
-
-    if (reason.length < 5) {
-      _showMessage('Please enter a short reason.');
-      return;
-    }
-
-    setState(() {
-      isSubmitting = true;
-    });
-
-    try {
-      await FirebaseFirestore.instance
-          .collection('emergency_access_requests')
-          .doc(user.uid)
-          .set({
-            'parentId': widget.parentId,
-            'childId': widget.childId,
-            'childUserId': user.uid,
-            'childEmail': widget.childEmail,
-            'reason': reason,
-            'requestedDurationMinutes': requestedDurationMinutes,
-            'status': 'pending',
-            'requestedAt': FieldValue.serverTimestamp(),
-            'updatedAt': FieldValue.serverTimestamp(),
-          }, SetOptions(merge: true));
-
-      var parentAlertSent = true;
-
-      try {
-        await NotificationService.instance.createInAppAlert(
-          recipientUserId: widget.parentId!,
-          parentId: widget.parentId!,
-          childId: widget.childId,
-          title: 'Emergency Access Request',
-          message:
-              '$reason\nRequested duration: '
-              '${_formatDurationMinutes(requestedDurationMinutes)}',
-          triggerType: 'emergency_access_request',
-          priority: 'high',
-          extraData: {
-            'childUserId': user.uid,
-            'childEmail': widget.childEmail,
-            'requestedDurationMinutes': requestedDurationMinutes,
-          },
-        );
-      } catch (_) {
-        parentAlertSent = false;
-      }
-
-      reasonController.clear();
-
-      _showMessage(
-        parentAlertSent
-            ? 'Emergency access request sent.'
-            : 'Emergency access request sent, but the parent notification alert could not be created.',
-      );
-    } catch (e) {
-      _showMessage(e.toString());
-    } finally {
-      if (mounted) {
-        setState(() {
-          isSubmitting = false;
-        });
-      }
-    }
-  }
-
-  void _syncToNative(Map<String, dynamic>? data) {
-    final status = data?['status'] as String? ?? 'none';
-
-    final approvedUntilValue = data?['approvedUntil'];
-
-    final approvedUntil = approvedUntilValue is Timestamp
-        ? approvedUntilValue.toDate()
-        : null;
-
-    final approved =
-        status == 'approved' &&
-        approvedUntil != null &&
-        approvedUntil.isAfter(DateTime.now());
-
-    unawaited(
-      const NativeRestrictionRulesService()
-          .saveEmergencyAccessState(
-            isApproved: approved,
-            approvedUntil: approvedUntil,
-          )
-          .catchError((Object _) {}),
-    );
-  }
-
-  void _showMessage(String message) {
-    if (!mounted) return;
-
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final user = FirebaseAuth.instance.currentUser;
-
-    if (user == null) {
-      return const SizedBox();
-    }
-
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
-          .collection('emergency_access_requests')
-          .doc(user.uid)
-          .snapshots(),
-      builder: (context, snapshot) {
-        final data = snapshot.data?.data();
-
-        _syncToNative(data);
-
-        final status = data?['status'] as String? ?? 'none';
-
-        final statusText = switch (status) {
-          'pending' => 'Request pending',
-          'approved' => 'Temporary access approved',
-          'denied' => 'Previous request denied',
-          _ => 'No active request',
-        };
-
-        final savedRequestedDuration = data?['requestedDurationMinutes'] is num
-            ? (data!['requestedDurationMinutes'] as num).toInt()
-            : null;
-
-        return Card(
-          elevation: 1.5,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(18),
+          const SizedBox(width: 14),
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    const Icon(
-                      Icons.emergency_rounded,
-                      color: purple,
-                      size: 30,
-                    ),
-
-                    const SizedBox(width: 12),
-
-                    Expanded(
-                      child: Text(
-                        statusText,
-                        style: const TextStyle(fontWeight: FontWeight.w900),
-                      ),
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 14),
-
-                DropdownButtonFormField<int>(
-                  initialValue: requestedDurationMinutes,
-                  decoration: InputDecoration(
-                    labelText: 'Requested Duration',
-                    prefixIcon: const Icon(Icons.timer_outlined),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                  ),
-                  items: requestDurationOptions.map((minutes) {
-                    return DropdownMenuItem<int>(
-                      value: minutes,
-                      child: Text(_formatDurationMinutes(minutes)),
-                    );
-                  }).toList(),
-                  onChanged: isSubmitting
-                      ? null
-                      : (value) {
-                          if (value == null) return;
-
-                          setState(() {
-                            requestedDurationMinutes = value;
-                          });
-                        },
-                ),
-
-                if (savedRequestedDuration != null && status == 'pending') ...[
-                  const SizedBox(height: 10),
-                  Text(
-                    'Current request: '
-                    '${_formatDurationMinutes(savedRequestedDuration)}',
-                    style: const TextStyle(
-                      color: Color(0xFF4B5563),
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ],
-
-                const SizedBox(height: 12),
-
-                TextField(
-                  controller: reasonController,
-                  maxLines: 2,
-                  decoration: InputDecoration(
-                    labelText: 'Reason',
-                    hintText: 'Example: I need to call my guardian.',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(14),
-                    ),
+                Text(
+                  appName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: darkText,
+                    fontWeight: FontWeight.w900,
                   ),
                 ),
-
-                const SizedBox(height: 12),
-
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed: isSubmitting ? null : submitEmergencyRequest,
-                    style: FilledButton.styleFrom(backgroundColor: purple),
-                    icon: const Icon(Icons.send_rounded),
-                    label: Text(
-                      isSubmitting ? 'Sending...' : 'Request Emergency Access',
-                    ),
+                const SizedBox(height: 8),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(20),
+                  child: LinearProgressIndicator(
+                    value: value,
+                    minHeight: 5,
+                    color: purple,
+                    backgroundColor: AppColors.track,
                   ),
                 ),
               ],
             ),
           ),
-        );
-      },
-    );
-  }
-}
-
-class ChildStatusCard extends StatelessWidget {
-  const ChildStatusCard({
-    super.key,
-    required this.icon,
-    required this.iconColor,
-    required this.title,
-    required this.subtitle,
-  });
-
-  final IconData icon;
-  final Color iconColor;
-  final String title;
-  final String subtitle;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      elevation: 1.5,
-      shadowColor: Colors.black12,
-      margin: const EdgeInsets.only(bottom: 12),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      child: ListTile(
-        contentPadding: const EdgeInsets.all(18),
-        leading: Icon(icon, color: iconColor, size: 32),
-        title: Text(
-          title,
-          style: const TextStyle(
-            color: Color(0xFF111827),
-            fontWeight: FontWeight.w900,
+          const SizedBox(width: 10),
+          SizedBox(
+            width: 52,
+            child: Text(
+              time,
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                color: darkText,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
           ),
-        ),
-        subtitle: Padding(
-          padding: const EdgeInsets.only(top: 6),
-          child: Text(
-            subtitle,
-            style: const TextStyle(color: Color(0xFF4B5563), height: 1.4),
-          ),
-        ),
+        ],
       ),
     );
   }
-}
 
-class UnreadNotificationBadgeButton extends StatelessWidget {
-  const UnreadNotificationBadgeButton({
-    super.key,
-    required this.userId,
-    required this.onPressed,
-    required this.tooltip,
-  });
-
-  final String userId;
-  final VoidCallback onPressed;
-  final String tooltip;
-
-  @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
-          .collection('in_app_alerts')
-          .where('recipientUserId', isEqualTo: userId)
-          .snapshots(),
-      builder: (context, snapshot) {
-        final unreadCount =
-            snapshot.data?.docs.where((doc) {
-              return doc.data()['isRead'] != true;
-            }).length ??
-            0;
-
-        return IconButton(
-          tooltip: tooltip,
-          onPressed: onPressed,
-          icon: Stack(
-            clipBehavior: Clip.none,
+  /// Same fabricated Mon-Sun bar chart as the parent dashboard's version -
+  /// see the note on ParentDashboardScreen._weeklyTrendSection. No daily
+  /// history is stored yet, so this is an honest placeholder instead.
+  Widget _weeklyTrendSection() {
+    return _whiteCard(
+      child: Column(
+        children: [
+          const Row(
             children: [
-              const Icon(Icons.notifications_none_rounded),
-              if (unreadCount > 0)
-                Positioned(
-                  top: -8,
-                  right: -9,
-                  child: Container(
-                    constraints: const BoxConstraints(
-                      minWidth: 19,
-                      minHeight: 19,
-                    ),
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: Colors.red,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.white, width: 1.5),
-                    ),
-                    child: Text(
-                      unreadCount > 99 ? '99+' : '$unreadCount',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w900,
-                        height: 1,
-                      ),
-                    ),
+              Expanded(
+                child: Text(
+                  'Weekly Trend',
+                  style: TextStyle(
+                    color: darkText,
+                    fontSize: 19,
+                    fontWeight: FontWeight.w900,
                   ),
                 ),
+              ),
             ],
           ),
-        );
-      },
+          const SizedBox(height: 14),
+          const Icon(Icons.bar_chart_rounded, color: grayText, size: 42),
+          const SizedBox(height: 10),
+          const Text(
+            'Weekly trends aren\'t available yet',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: darkText, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'This needs several days of usage reports stored per day. '
+            'Today\'s data only, for now.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: grayText, fontSize: 12),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _whiteCard({
+    required Widget child,
+    EdgeInsets padding = const EdgeInsets.all(18),
+  }) {
+    return Container(
+      padding: padding,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(26),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x10000000),
+            blurRadius: 12,
+            offset: Offset(0, 5),
+          ),
+        ],
+      ),
+      child: child,
     );
   }
 }

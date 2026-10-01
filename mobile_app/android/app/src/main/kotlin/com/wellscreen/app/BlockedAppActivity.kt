@@ -1,120 +1,87 @@
-﻿package com.wellscreen.app
+package com.wellscreen.app
 
 import android.app.Activity
-import android.content.Intent
 import android.os.Bundle
-import android.os.CountDownTimer
+import android.view.Gravity
 import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.TextView
 
 class BlockedAppActivity : Activity() {
 
-    private var cooldownTimer: CountDownTimer? = null
-    private lateinit var cooldownText: TextView
+    companion object {
+        // True while this screen is the foreground activity. Consumed by
+        // WellScreenAccessibilityService.checkRestrictedApp() so a
+        // restricted app that reappears in the foreground AFTER this
+        // screen is dismissed gets re-blocked immediately, instead of
+        // waiting out a fixed 2.5s debounce window that a quick "Go Back"
+        // tap or Recents switch beats every time - without this, dismissing
+        // the block screen and immediately switching back to the still-
+        // running restricted app left it fully accessible and unblocked.
+        @Volatile
+        var isShowing: Boolean = false
+            private set
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        setContentView(R.layout.activity_blocked_app)
+        val blockedDomain = intent.getStringExtra("blocked_domain")
+        val blockedPackage = intent.getStringExtra("blocked_package") ?: "Restricted app"
 
-        val appName = intent.getStringExtra(EXTRA_APP_NAME) ?: "Restricted app"
-        val packageName = intent.getStringExtra(EXTRA_PACKAGE_NAME) ?: "unknown"
-        val attemptCount = intent.getIntExtra(EXTRA_ATTEMPT_COUNT, 1)
-        val blockReasonLabel =
-            intent.getStringExtra(EXTRA_BLOCK_REASON_LABEL) ?: "App Blocking"
-        val cooldownEnabled = intent.getBooleanExtra(EXTRA_COOLDOWN_ENABLED, false)
-        val cooldownEndAtMillis = intent.getLongExtra(
-            EXTRA_COOLDOWN_END_AT_MILLIS,
-            0L
-        )
-
-        cooldownText = findViewById(R.id.blockedAppCooldownText)
-
-        findViewById<TextView>(R.id.blockedAppNameText).text = appName
-        findViewById<TextView>(R.id.blockedAppPackageText).text = packageName
-        findViewById<TextView>(R.id.blockedAppReasonText).text =
-            "Reason: $blockReasonLabel"
-        findViewById<TextView>(R.id.blockedAppAttemptText).text =
-            "Open Attempts: $attemptCount"
-
-        updateCooldownText(
-            cooldownEnabled = cooldownEnabled,
-            cooldownEndAtMillis = cooldownEndAtMillis
-        )
-
-        findViewById<Button>(R.id.blockedAppLeaveButton).setOnClickListener {
-            leaveRestrictedApp()
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(48, 48, 48, 48)
         }
-    }
 
-    override fun onDestroy() {
-        cooldownTimer?.cancel()
-        cooldownTimer = null
-        super.onDestroy()
+        val title = TextView(this).apply {
+            text = if (blockedDomain != null) "Website Blocked" else "App Restricted"
+            textSize = 30f
+            gravity = Gravity.CENTER
+        }
+
+        val message = TextView(this).apply {
+            text = if (blockedDomain != null) "This website is blocked by WellScreen.\n\n$blockedDomain\n\nPlease ask your parent/guardian." else "This app is currently restricted by WellScreen.\n\nPackage:\n$blockedPackage\n\nPlease take a break or ask your parent/guardian."
+            textSize = 17f
+            gravity = Gravity.CENTER
+            setPadding(0, 32, 0, 32)
+        }
+
+        val button = Button(this).apply {
+            text = "Go Back"
+            setOnClickListener {
+                if (blockedDomain != null) {
+                    // Leave the browser, not just the overlay, so the blocked
+                    // page isn't sitting right underneath.
+                    startActivity(
+                        android.content.Intent(android.content.Intent.ACTION_MAIN)
+                            .addCategory(android.content.Intent.CATEGORY_HOME)
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }
+                finish()
+            }
+        }
+
+        root.addView(title)
+        root.addView(message)
+        root.addView(button)
+
+        setContentView(root)
     }
 
     override fun onBackPressed() {
-        leaveRestrictedApp()
-    }
-
-    private fun updateCooldownText(
-        cooldownEnabled: Boolean,
-        cooldownEndAtMillis: Long
-    ) {
-        if (!cooldownEnabled || cooldownEndAtMillis <= 0L) {
-            cooldownText.text = "Cooldown: Not active"
-            return
-        }
-
-        val remainingMillis = cooldownEndAtMillis - System.currentTimeMillis()
-
-        if (remainingMillis <= 0L) {
-            cooldownText.text = "Cooldown complete. You may return after guardian rules allow it."
-            return
-        }
-
-        cooldownTimer?.cancel()
-        cooldownTimer = object : CountDownTimer(remainingMillis, 1000L) {
-            override fun onTick(millisUntilFinished: Long) {
-                cooldownText.text =
-                    "Cooldown remaining: ${formatRemainingTime(millisUntilFinished)}"
-            }
-
-            override fun onFinish() {
-                cooldownText.text =
-                    "Cooldown complete. You may return after guardian rules allow it."
-            }
-        }.start()
-    }
-
-    private fun formatRemainingTime(millis: Long): String {
-        val totalSeconds = (millis / 1000L).coerceAtLeast(0L)
-        val minutes = totalSeconds / 60L
-        val seconds = totalSeconds % 60L
-
-        return if (minutes > 0L) {
-            "${minutes}m ${seconds}s"
-        } else {
-            "${seconds}s"
-        }
-    }
-
-    private fun leaveRestrictedApp() {
-        val homeIntent = Intent(Intent.ACTION_MAIN).apply {
-            addCategory(Intent.CATEGORY_HOME)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-
-        startActivity(homeIntent)
         finish()
     }
 
-    companion object {
-        const val EXTRA_APP_NAME = "extra_app_name"
-        const val EXTRA_PACKAGE_NAME = "extra_package_name"
-        const val EXTRA_ATTEMPT_COUNT = "extra_attempt_count"
-        const val EXTRA_BLOCK_REASON_LABEL = "extra_block_reason_label"
-        const val EXTRA_COOLDOWN_ENABLED = "extra_cooldown_enabled"
-        const val EXTRA_COOLDOWN_END_AT_MILLIS = "extra_cooldown_end_at_millis"
+    override fun onStart() {
+        super.onStart()
+        isShowing = true
+    }
+
+    override fun onStop() {
+        super.onStop()
+        isShowing = false
     }
 }

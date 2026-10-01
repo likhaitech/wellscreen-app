@@ -23,8 +23,6 @@ class UsageReport {
     required this.generatedAt,
     required this.patternStatus,
     required this.recommendationMessage,
-    this.riskScore = 0,
-    this.riskFactors = const [],
   });
 
   final Duration totalUsageDuration;
@@ -33,34 +31,6 @@ class UsageReport {
   final DateTime generatedAt;
   final UsagePatternStatus patternStatus;
   final String recommendationMessage;
-  final int riskScore;
-  final List<String> riskFactors;
-
-  int get clampedRiskScore => riskScore.clamp(0, 100).toInt();
-
-  String get riskScoreLabel {
-    return '$clampedRiskScore/100';
-  }
-
-  String get riskLevelLabel {
-    if (clampedRiskScore >= 60) {
-      return 'Unhealthy Risk';
-    }
-
-    if (clampedRiskScore >= 30) {
-      return 'Warning Risk';
-    }
-
-    return 'Healthy Risk';
-  }
-
-  String get riskFactorSummary {
-    if (riskFactors.isEmpty) {
-      return 'No risk factors were detected in this report.';
-    }
-
-    return riskFactors.join('\n');
-  }
 
   String get totalUsageLabel {
     final hours = totalUsageDuration.inHours;

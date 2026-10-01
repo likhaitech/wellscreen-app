@@ -65,30 +65,46 @@ def create_user(
         disabled=disabled,
     )
 
-    claims = {
-        "role": role,
-        "admin": role == "admin",
-    }
-
-    auth.set_custom_user_claims(
-        user.uid,
-        claims,
-    )
-
-    db = get_firestore_client()
-
-    db.collection("users").document(user.uid).set(
-        {
-            "uid": user.uid,
-            "email": user.email,
-            "fullName": display_name,
+    try:
+        claims = {
             "role": role,
-            "disabled": disabled,
-            "createdAt": firestore.SERVER_TIMESTAMP,
-            "updatedAt": firestore.SERVER_TIMESTAMP,
-        },
-        merge=True,
-    )
+            "admin": role == "admin",
+        }
+
+        auth.set_custom_user_claims(
+            user.uid,
+            claims,
+        )
+
+        db = get_firestore_client()
+
+        db.collection("users").document(user.uid).set(
+            {
+                "uid": user.uid,
+                "email": user.email,
+                "fullName": display_name,
+                "role": role,
+                "disabled": disabled,
+                "createdAt": firestore.SERVER_TIMESTAMP,
+                "updatedAt": firestore.SERVER_TIMESTAMP,
+            },
+            merge=True,
+        )
+    except Exception:
+        # FIX: auth.create_user() above already created the Auth account.
+        # If either write below it fails (a Firestore hiccup, a transient
+        # network error), that account is left permanently orphaned - no
+        # custom claims and/or no users/{uid} doc, but the email is
+        # already taken. The admin sees a 500 and, on retry, a confusing
+        # 409 "email already exists" (auth.EmailAlreadyExistsError, see
+        # admin_users.py's create_new_user) with no way to complete the
+        # create through this endpoint. Delete the orphaned Auth account
+        # so a retry with the same email can succeed cleanly instead.
+        try:
+            auth.delete_user(user.uid)
+        except Exception:
+            pass  # best-effort cleanup - surface the original error either way
+        raise
 
     return get_user(user.uid)
 
@@ -129,6 +145,7 @@ def update_user(
     current_claims = dict(
         current_user.custom_claims or {}
     )
+    was_admin = bool(current_claims.get("admin"))
 
     if role is not None:
         current_claims["role"] = role
@@ -138,6 +155,26 @@ def update_user(
             uid,
             current_claims,
         )
+
+    demoted_from_admin = was_admin and role is not None and role != "admin"
+
+    if disabled is True or demoted_from_admin:
+        # FIX: Firebase ID tokens are verified statelessly by default (see
+        # admin_auth_service.require_admin / user_auth_service.require_user),
+        # so disabling an account here alone did NOT stop an already-issued
+        # token (valid up to 1h) from continuing to pass auth.verify_id_token
+        # on every admin/alert route. revoke_refresh_tokens() marks a
+        # revocation timestamp Firebase checks when the caller verifies with
+        # check_revoked=True (see the require_admin/require_user fix in
+        # admin_auth_service.py / user_auth_service.py) - without both
+        # halves of this fix, disabling a user is close to a no-op for up
+        # to an hour, which defeats the point of an admin "disable" action
+        # in a parental-control app. Same hole exists for demoting an admin
+        # to a non-admin role: set_custom_user_claims() only affects
+        # future tokens, so a just-demoted admin's still-valid token keeps
+        # passing require_admin's "admin" claim check until it naturally
+        # expires unless we revoke it here too.
+        auth.revoke_refresh_tokens(uid)
 
     db = get_firestore_client()
 
@@ -167,6 +204,11 @@ def update_user(
 
 def delete_user(uid: str) -> None:
     initialize_firebase()
+
+    # FIX: revoke before delete, same reasoning as update_user's disabled
+    # branch above - an already-issued ID token for this uid must stop
+    # verifying immediately, not just once it happens to expire.
+    auth.revoke_refresh_tokens(uid)
 
     auth.delete_user(uid)
 

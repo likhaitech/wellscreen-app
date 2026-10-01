@@ -1,0 +1,63 @@
+# Philippines-specific, NOT from UT1 Blacklists (unlike gambling_domains.txt
+# in this same directory). UT1's gambling list is broad but international
+# and scraped/mirror-heavy - a live gap check found it was missing the
+# actual primary/canonical domains of several real, currently-operating
+# Philippine online casino/betting brands (surfaced when a real user
+# reported "ptgaming.ph" wasn't being detected by the app). Added the same
+# way adult_domains_philippines.txt was: individually verified via live web
+# search, not guessed, generated, or pattern-extrapolated from the brand
+# name.
+#
+# IMPORTANT, stated honestly: this is NOT a comprehensive list of
+# Philippine gambling sites. This category of site rotates mirror/lookalike
+# domains constantly by design (to evade blocks) - that's why UT1's own
+# international list already runs into the tens of thousands of entries.
+# This file adds specific, individually-verified canonical/primary domains
+# for a handful of real brands, not an exhaustive sweep.
+#
+# Sources (verified via live web search, August 2026):
+#   PT Gaming - https://www.ptgaming.ph/ https://www.ptgaming.com.ph/
+#     https://ptgaming.one/ https://ptgaming.club/ https://ptgaming.app/
+#     https://ptgaming.online/
+#   Hawkplay - https://hawkplay888.net/ https://hawkplay999.ph/register/
+#     https://hawkplaybet.com/ https://hawkplayreal.com/
+#   Nice88 - https://nice-88.com.ph/ https://nice88top.com/
+#     https://nice88live.com/
+#   TMTPlay - https://tmt3333.com/ https://playtmt.net/ https://tmt.cash/
+#   PhlWin - https://phlwin8.com.ph/
+#   Taya365 - https://taya365phpro.com/ https://taya365in.com/
+#     https://taya365bet.ph/ https://taya77.com/taya-777/
+#   Lodibet - https://lodibetvvip.com/
+#   Jolibet - https://www.jolibet.ph/ https://www.jolibet.net.ph/
+#     https://www.jolibetphp.com/en-ph https://joli-bet.com.ph/
+#     https://jolibet1.org/ https://www.joliv1.com/en-ph
+#   Jilibet - https://jilibet-play.com/
+ptgaming.ph
+ptgaming.com.ph
+ptgaming.one
+ptgaming.club
+ptgaming.app
+ptgaming.online
+hawkplay888.net
+hawkplay999.ph
+hawkplaybet.com
+hawkplayreal.com
+nice-88.com.ph
+nice88top.com
+nice88live.com
+tmt3333.com
+playtmt.net
+tmt.cash
+phlwin8.com.ph
+taya365phpro.com
+taya365in.com
+taya365bet.ph
+taya77.com
+lodibetvvip.com
+jolibet.ph
+jolibet.net.ph
+jolibetphp.com
+joli-bet.com.ph
+jolibet1.org
+joliv1.com
+jilibet-play.com

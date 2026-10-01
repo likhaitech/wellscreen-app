@@ -76,7 +76,8 @@ class MlRiskClassifierService {
   /// ml/generate_dataset.py for what each one means and where it comes
   /// from on-device): total_screen_time_minutes, daily_limit_minutes,
   /// late_night_minutes, longest_session_minutes,
-  /// restricted_app_attempts_today, rule_violations_7d.
+  /// restricted_app_attempts_today, rule_violations_7d,
+  /// frequent_app_opens_today.
   Future<MlRiskAssessment> classify(Map<String, num> features) async {
     await _ensureLoaded();
 

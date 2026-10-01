@@ -1,21 +1,14 @@
 import '../models/app_usage_summary.dart';
 import '../models/usage_report.dart';
-import 'age_based_screen_time_threshold_service.dart';
 
 class PatternDetectionService {
-  PatternDetectionService({
-    AgeBasedScreenTimeThresholdService? ageThresholdService,
-  }) : _ageThresholdService =
-           ageThresholdService ?? AgeBasedScreenTimeThresholdService();
+  static const Duration warningTotalUsageLimit = Duration(hours: 3);
+  static const Duration unhealthyTotalUsageLimit = Duration(hours: 5);
 
   static const Duration warningSingleAppLimit = Duration(hours: 1, minutes: 30);
   static const Duration unhealthySingleAppLimit = Duration(hours: 3);
 
   static const Duration riskyAppUsageLimit = Duration(hours: 1);
-
-  static const int warningRiskScore = 30;
-  static const int unhealthyRiskScore = 60;
-  static const int maximumRiskScore = 100;
 
   static const List<String> riskyKeywords = [
     'facebook',
@@ -40,26 +33,21 @@ class PatternDetectionService {
     'freefire',
   ];
 
-  final AgeBasedScreenTimeThresholdService _ageThresholdService;
-
-  UsageReport generateReport(List<AppUsageSummary> summaries, {int? childAge}) {
-    final threshold = _ageThresholdService.getThresholdForAge(childAge);
-
+  UsageReport generateReport(List<AppUsageSummary> summaries) {
     final totalUsageDuration = _getTotalUsageDuration(summaries);
     final topUsedApp = _getTopUsedApp(summaries);
     final unhealthyAppCount = _getUnhealthyAppCount(summaries);
     final hasLongSingleAppUsage = _hasLongSingleAppUsage(summaries);
+    final hasVeryLongSingleAppUsage = _hasVeryLongSingleAppUsage(summaries);
     final hasLateNightUsage = _hasLateNightUsage(summaries);
 
-    final riskResult = _calculateRiskScore(
+    final status = _detectStatus(
       totalUsageDuration: totalUsageDuration,
-      topUsedApp: topUsedApp,
       unhealthyAppCount: unhealthyAppCount,
+      hasLongSingleAppUsage: hasLongSingleAppUsage,
+      hasVeryLongSingleAppUsage: hasVeryLongSingleAppUsage,
       hasLateNightUsage: hasLateNightUsage,
-      threshold: threshold,
     );
-
-    final status = _detectStatus(riskScore: riskResult.score);
 
     return UsageReport(
       totalUsageDuration: totalUsageDuration,
@@ -67,16 +55,13 @@ class PatternDetectionService {
       unhealthyAppCount: unhealthyAppCount,
       generatedAt: DateTime.now(),
       patternStatus: status,
-      riskScore: riskResult.score,
-      riskFactors: riskResult.factors,
       recommendationMessage: _getRecommendationMessage(
         status: status,
-        riskScore: riskResult.score,
+        totalUsageDuration: totalUsageDuration,
         topUsedApp: topUsedApp,
         unhealthyAppCount: unhealthyAppCount,
         hasLongSingleAppUsage: hasLongSingleAppUsage,
         hasLateNightUsage: hasLateNightUsage,
-        threshold: threshold,
       ),
     );
   }
@@ -106,7 +91,20 @@ class PatternDetectionService {
   }
 
   bool _hasLongSingleAppUsage(List<AppUsageSummary> summaries) {
-    return summaries.any((app) => app.usageDuration >= warningSingleAppLimit);
+    return summaries.any(
+      (app) => app.usageDuration >= warningSingleAppLimit,
+    );
+  }
+
+  /// True when a single app was used continuously for [unhealthySingleAppLimit]
+  /// (3h) or more. Previously this constant was declared but never checked
+  /// anywhere, so an extreme single-app session (e.g. 6 straight hours)
+  /// produced the exact same "warning-tier" signal as a 1h31m session via
+  /// [_hasLongSingleAppUsage]. This escalates it to the unhealthy tier.
+  bool _hasVeryLongSingleAppUsage(List<AppUsageSummary> summaries) {
+    return summaries.any(
+      (app) => app.usageDuration >= unhealthySingleAppLimit,
+    );
   }
 
   bool _hasLateNightUsage(List<AppUsageSummary> summaries) {
@@ -127,81 +125,40 @@ class PatternDetectionService {
 
     return riskyKeywords.any(
       (keyword) =>
-          packageName.contains(keyword) || displayName.contains(keyword),
+          _matchesKeyword(packageName, keyword) ||
+          _matchesKeyword(displayName, keyword),
     );
   }
 
-  _RiskScoreResult _calculateRiskScore({
+  /// Matches [keyword] as a whole token within [text] rather than as a bare
+  /// substring, so short/common keywords like 'x' or 'cod' don't false-match
+  /// unrelated names such as "Firefox" or "VSCode". A token boundary is any
+  /// character that isn't a letter or digit (covers package-name separators
+  /// like '.', '_', '-', and spaces in display names).
+  bool _matchesKeyword(String text, String keyword) {
+    final pattern = RegExp(
+      r'(?<![a-z0-9])' + RegExp.escape(keyword) + r'(?![a-z0-9])',
+    );
+    return pattern.hasMatch(text);
+  }
+
+  UsagePatternStatus _detectStatus({
     required Duration totalUsageDuration,
-    required AppUsageSummary? topUsedApp,
     required int unhealthyAppCount,
+    required bool hasLongSingleAppUsage,
+    required bool hasVeryLongSingleAppUsage,
     required bool hasLateNightUsage,
-    required AgeBasedScreenTimeThreshold threshold,
   }) {
-    var score = 0;
-    final factors = <String>[];
-
-    if (totalUsageDuration >= threshold.unhealthyLimit) {
-      score += 60;
-      factors.add(
-        'Total screen time reached the unhealthy limit for ${threshold.ageGroupLabel}.',
-      );
-    } else if (totalUsageDuration >= threshold.warningLimit) {
-      score += 20;
-      factors.add(
-        'Total screen time reached the warning limit for ${threshold.ageGroupLabel}.',
-      );
-    }
-
-    if (topUsedApp != null &&
-        topUsedApp.usageDuration >= unhealthySingleAppLimit) {
-      score += 10;
-      factors.add(
-        '${topUsedApp.displayName} was used for ${topUsedApp.usageLabel}, which is a very long single-app session.',
-      );
-    } else if (topUsedApp != null &&
-        topUsedApp.usageDuration >= warningSingleAppLimit) {
-      score += 10;
-      factors.add(
-        '${topUsedApp.displayName} was used for ${topUsedApp.usageLabel}, which may need a break reminder.',
-      );
-    }
-
-    if (unhealthyAppCount >= 3) {
-      score += 60;
-      factors.add(
-        'Multiple social media, video, or gaming apps had high usage.',
-      );
-    } else if (unhealthyAppCount >= 1) {
-      score += 20;
-      factors.add(
-        'At least one social media, video, or gaming app had high usage.',
-      );
-    }
-
-    if (hasLateNightUsage) {
-      score += 60;
-      factors.add(
-        'Late-night phone usage was detected between 10:00 PM and 5:00 AM.',
-      );
-    }
-
-    if (factors.isEmpty) {
-      factors.add('No major risk signals were detected.');
-    }
-
-    return _RiskScoreResult(
-      score: score.clamp(0, maximumRiskScore).toInt(),
-      factors: factors,
-    );
-  }
-
-  UsagePatternStatus _detectStatus({required int riskScore}) {
-    if (riskScore >= unhealthyRiskScore) {
+    if (totalUsageDuration >= unhealthyTotalUsageLimit ||
+        unhealthyAppCount >= 3 ||
+        hasLateNightUsage ||
+        hasVeryLongSingleAppUsage) {
       return UsagePatternStatus.unhealthy;
     }
 
-    if (riskScore >= warningRiskScore) {
+    if (totalUsageDuration >= warningTotalUsageLimit ||
+        unhealthyAppCount >= 1 ||
+        hasLongSingleAppUsage) {
       return UsagePatternStatus.warning;
     }
 
@@ -210,47 +167,39 @@ class PatternDetectionService {
 
   String _getRecommendationMessage({
     required UsagePatternStatus status,
-    required int riskScore,
+    required Duration totalUsageDuration,
     required AppUsageSummary? topUsedApp,
     required int unhealthyAppCount,
     required bool hasLongSingleAppUsage,
     required bool hasLateNightUsage,
-    required AgeBasedScreenTimeThreshold threshold,
   }) {
     final topAppName = topUsedApp?.displayName ?? 'No app';
 
     switch (status) {
       case UsagePatternStatus.healthy:
-        return 'Risk score is $riskScore/100. Usage looks healthy for the ${threshold.ageGroupLabel.toLowerCase()} threshold. Keep maintaining balanced screen time.';
+        return 'Usage looks healthy. Keep maintaining balanced screen time.';
 
       case UsagePatternStatus.warning:
         if (hasLongSingleAppUsage) {
-          return 'Risk score is $riskScore/100. $topAppName was used for a long session. A short break is recommended.';
+          return '$topAppName was used for a long session. A short break is recommended.';
         }
 
         if (unhealthyAppCount > 0) {
-          return 'Risk score is $riskScore/100. Some social media, video, or gaming apps have high usage. Consider setting app limits.';
+          return 'Some social media or gaming apps have high usage. Consider setting app limits.';
         }
 
-        return 'Risk score is $riskScore/100. Screen time is above the recommended limit for ${threshold.ageGroupLabel.toLowerCase()}. Consider taking a break.';
+        return 'Screen time is getting high. Consider taking a break.';
 
       case UsagePatternStatus.unhealthy:
         if (hasLateNightUsage) {
-          return 'Risk score is $riskScore/100. Late-night phone usage was detected. Consider enabling bedtime restrictions.';
+          return 'Late-night phone usage was detected. Consider enabling bedtime restrictions.';
         }
 
         if (unhealthyAppCount >= 3) {
-          return 'Risk score is $riskScore/100. Multiple social media, video, or gaming apps show high usage. Guardian guidance is recommended.';
+          return 'Multiple social media or gaming apps show high usage. Parent guidance is recommended.';
         }
 
-        return 'Risk score is $riskScore/100. Total screen time is too high for ${threshold.ageGroupLabel.toLowerCase()}. Consider using focus mode or temporary app blocking.';
+        return 'Total screen time is too high. Consider using focus mode or temporary app blocking.';
     }
   }
-}
-
-class _RiskScoreResult {
-  const _RiskScoreResult({required this.score, required this.factors});
-
-  final int score;
-  final List<String> factors;
 }

@@ -1,23 +1,11 @@
-﻿import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 
 import 'firebase_options.dart';
 import 'screens/splash_screen.dart';
-import 'services/notification_service.dart';
-
-@pragma('vm:entry-point')
-Future<void> wellScreenFirebaseMessagingBackgroundHandler(
-  RemoteMessage message,
-) async {
-  WidgetsFlutterBinding.ensureInitialized();
-
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
-
-  await NotificationService.handleBackgroundMessage(message);
-}
+import 'services/push_notification_service.dart';
+import 'theme/app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -26,11 +14,10 @@ Future<void> main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
-  FirebaseMessaging.onBackgroundMessage(
-    wellScreenFirebaseMessagingBackgroundHandler,
-  );
-
-  await NotificationService.instance.initialize();
+  // Must be registered before runApp() - required by firebase_messaging so
+  // the OS can deliver background/terminated-state messages. See
+  // push_notification_service.dart for why this is intentionally minimal.
+  FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
 
   runApp(const WellScreenApp());
 }
@@ -43,13 +30,8 @@ class WellScreenApp extends StatelessWidget {
     return MaterialApp(
       title: 'WellScreen',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Color(0xFF2563EB),
-        ),
-        useMaterial3: true,
-      ),
-      home: SplashScreen(),
+      theme: AppTheme.light(),
+      home: const SplashScreen(),
     );
   }
 }

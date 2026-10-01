@@ -1,17 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="accessibility_service_description">WellScreen uses this service to help guardians monitor and manage screen time on this device.</string>
-
-    <string name="blocked_website_label">Website Blocked</string>
-    <string name="blocked_website_title">Website Blocked</string>
-    <string name="blocked_website_message">This website belongs to a harmful or restricted category. WellScreen has blocked access based on guardian-guided safety rules.</string>
-    <string name="blocked_website_leave_button">Go Back to Safety</string>
-
-    <string name="blocked_app_label">App Blocked</string>
-    <string name="blocked_app_title">App Blocked</string>
-    <string name="blocked_app_message">This app is currently restricted by WellScreen based on active guardian rules, focus mode, cooldown timer, or scheduled lock sessions.</string>
-    <string name="blocked_app_leave_button">Go Back to Safety</string>
+    <string name="app_name">WellScreen</string>
+    <string name="wellscreen_accessibility_description">WellScreen uses accessibility access to detect when a restricted app is opened and show a restriction screen based on parent rules, and to record which websites are visited in supported browsers (Chrome, Firefox, Samsung Internet, Edge, Opera, DuckDuckGo) so a parent can review browsing activity.</string>
 </resources>
-
-
-

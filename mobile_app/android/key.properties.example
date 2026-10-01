@@ -1,0 +1,12 @@
+# Copy this file to "key.properties" (same folder) and fill in the real
+# values from the keystore you generate yourself with keytool - see the
+# command in the message that came with this change.
+#
+# key.properties is already git-ignored (see android/.gitignore) and must
+# NEVER be committed. This .example file has no real secrets in it and is
+# safe to commit as a template for teammates.
+
+storePassword=REPLACE_WITH_YOUR_KEYSTORE_PASSWORD
+keyPassword=REPLACE_WITH_YOUR_KEY_PASSWORD
+keyAlias=wellscreen
+storeFile=../wellscreen-release-key.jks

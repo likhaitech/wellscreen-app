@@ -1,4 +1,4 @@
-﻿import '../models/usage_report.dart';
+import '../models/usage_report.dart';
 import 'intervention_recommendation_service.dart';
 import 'usage_dashboard_service.dart';
 
@@ -14,8 +14,6 @@ class UsageDashboardViewModel {
     required this.isUsingCachedData,
     required this.hasUsagePermission,
     required this.errorMessage,
-    this.riskScoreLabel = '0/100 - Healthy Risk',
-    this.riskFactorSummary = 'No risk factors were detected in this report.',
   });
 
   final String statusLabel;
@@ -28,8 +26,6 @@ class UsageDashboardViewModel {
   final bool isUsingCachedData;
   final bool hasUsagePermission;
   final String? errorMessage;
-  final String riskScoreLabel;
-  final String riskFactorSummary;
 }
 
 class UsageDashboardViewModelService {
@@ -49,8 +45,6 @@ class UsageDashboardViewModelService {
       isUsingCachedData: result.isUsingCachedData,
       hasUsagePermission: result.hasUsagePermission,
       errorMessage: result.errorMessage,
-      riskScoreLabel: _getRiskScoreLabel(report),
-      riskFactorSummary: _getRiskFactorSummary(report),
     );
   }
 
@@ -90,22 +84,6 @@ class UsageDashboardViewModelService {
     }
 
     return '${report.unhealthyAppCount} apps need attention';
-  }
-
-  String _getRiskScoreLabel(UsageReport? report) {
-    if (report == null) {
-      return '0/100 - No Report';
-    }
-
-    return '${report.riskScoreLabel} - ${report.riskLevelLabel}';
-  }
-
-  String _getRiskFactorSummary(UsageReport? report) {
-    if (report == null) {
-      return 'Generate a usage report first to calculate the point-based risk score.';
-    }
-
-    return report.riskFactorSummary;
   }
 
   String _getInterventionTitle(InterventionRecommendation? intervention) {

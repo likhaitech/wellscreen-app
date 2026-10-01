@@ -1,8 +1,39 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
-class AdminLogsScreen extends StatelessWidget {
+import '../theme/app_theme.dart';
+
+/// System-wide audit log for admins - every action recorded server-side
+/// (grant_admin.py, backend services, etc.) into the `system_logs`
+/// collection. Previously a raw ListView.separated of plain Material
+/// Cards showing every entry fully expanded, all at once, in strict
+/// chronological order - fine for a handful of entries but read as an
+/// undifferentiated wall of text once there were dozens, with no way to
+/// tell whether anything actually needed attention without reading every
+/// entry. Redesigned to match the rest of the app's AppTheme card
+/// language (AppCard/AppSectionHeader/AppBadge) and to apply the same
+/// "important things first, detail behind a tap" pattern already used on
+/// the parent Reports tab's Alerts section (see reports_screen.dart):
+/// a summary card up top counts entries needing attention, an
+/// "Errors & warnings only" filter hides routine info-level noise, and
+/// each entry's raw details payload stays collapsed until tapped instead
+/// of always rendering a multi-line key:value dump inline.
+class AdminLogsScreen extends StatefulWidget {
   const AdminLogsScreen({super.key});
+
+  @override
+  State<AdminLogsScreen> createState() => _AdminLogsScreenState();
+}
+
+enum _LevelFilter { all, attention }
+
+class _AdminLogsScreenState extends State<AdminLogsScreen> {
+  _LevelFilter _filter = _LevelFilter.all;
+
+  // Keyed by Firestore document id (stable and unique) rather than list
+  // position, so which entries are expanded survives the list reordering
+  // itself when new log entries stream in.
+  final Set<String> _expandedDocIds = {};
 
   Query<Map<String, dynamic>> get _logsQuery {
     return FirebaseFirestore.instance
@@ -42,6 +73,11 @@ class AdminLogsScreen extends StatelessWidget {
     return details.toString();
   }
 
+  bool _needsAttention(String level) {
+    final normalized = level.toLowerCase();
+    return normalized == 'error' || normalized == 'warning';
+  }
+
   IconData _levelIcon(String level) {
     switch (level.toLowerCase()) {
       case 'error':
@@ -50,6 +86,17 @@ class AdminLogsScreen extends StatelessWidget {
         return Icons.warning_amber_outlined;
       default:
         return Icons.info_outline;
+    }
+  }
+
+  (Color, Color) _levelColors(String level) {
+    switch (level.toLowerCase()) {
+      case 'error':
+        return (AppColors.danger, AppColors.dangerBg);
+      case 'warning':
+        return (AppColors.warning, AppColors.warningBg);
+      default:
+        return (AppColors.info, AppColors.infoBg);
     }
   }
 
@@ -73,102 +120,237 @@ class AdminLogsScreen extends StatelessWidget {
           }
 
           if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
+            return const Center(
+              child: CircularProgressIndicator(color: AppColors.primary),
+            );
           }
 
           final documents = snapshot.data?.docs ?? [];
 
           if (documents.isEmpty) {
-            return const Center(child: Text('No system logs found.'));
+            return const AppEmptyState(
+              icon: Icons.shield_rounded,
+              title: 'System Logs',
+              message: 'No system logs recorded yet.',
+            );
           }
+
+          final attentionCount =
+              documents.where((doc) {
+                final level = (doc.data()['level'] ?? 'info').toString();
+                return _needsAttention(level);
+              }).length;
+
+          final visibleDocs = _filter == _LevelFilter.attention
+              ? documents.where((doc) {
+                  final level = (doc.data()['level'] ?? 'info').toString();
+                  return _needsAttention(level);
+                }).toList()
+              : documents;
 
           return RefreshIndicator(
             onRefresh: () async {
               await _logsQuery.get();
             },
-            child: ListView.separated(
+            child: ListView(
               physics: const AlwaysScrollableScrollPhysics(),
-              padding: const EdgeInsets.all(16),
-              itemCount: documents.length,
-              separatorBuilder: (_, _) => const SizedBox(height: 12),
-              itemBuilder: (context, index) {
-                final document = documents[index];
-                final data = document.data();
-
-                final level = (data['level'] ?? 'info').toString();
-                final action = (data['action'] ?? 'Unknown action').toString();
-                final message = (data['message'] ?? '').toString();
-                final actorUid = data['actor_uid']?.toString();
-                final timestamp = _formatTimestamp(data['timestamp']);
-                final details = _formatDetails(data['details']);
-
-                return Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Icon(_levelIcon(level)),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                action,
-                                style: Theme.of(context).textTheme.titleMedium
-                                    ?.copyWith(fontWeight: FontWeight.bold),
-                              ),
-                            ),
-                            Text(
-                              level.toUpperCase(),
-                              style: Theme.of(context).textTheme.labelMedium,
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 10),
-
-                        if (message.isNotEmpty)
-                          Text(
-                            message,
-                            style: Theme.of(context).textTheme.bodyLarge,
-                          ),
-
-                        const SizedBox(height: 12),
-
-                        Text(
-                          'Time: $timestamp',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-
-                        if (actorUid != null && actorUid.isNotEmpty) ...[
-                          const SizedBox(height: 4),
-                          Text(
-                            'Actor UID: $actorUid',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                        ],
-
-                        if (details.isNotEmpty) ...[
-                          const SizedBox(height: 12),
-                          const Divider(),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Details',
-                            style: Theme.of(context).textTheme.labelLarge
-                                ?.copyWith(fontWeight: FontWeight.bold),
-                          ),
-                          const SizedBox(height: 6),
-                          SelectableText(details),
-                        ],
-                      ],
-                    ),
-                  ),
-                );
-              },
+              padding: const EdgeInsets.all(AppSpacing.lg),
+              children: [
+                _summaryCard(total: documents.length, attentionCount: attentionCount),
+                const SizedBox(height: AppSpacing.md),
+                if (visibleDocs.isEmpty)
+                  const AppEmptyState(
+                    icon: Icons.check_circle_rounded,
+                    title: 'Nothing Needs Attention',
+                    message: 'No error or warning entries in the most '
+                        'recent 100 log entries.',
+                  )
+                else
+                  for (final document in visibleDocs) ...[
+                    _logEntryCard(document),
+                    const SizedBox(height: AppSpacing.sm),
+                  ],
+              ],
             ),
           );
         },
+      ),
+    );
+  }
+
+  Widget _summaryCard({required int total, required int attentionCount}) {
+    return AppCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AppSectionHeader(
+            icon: Icons.shield_rounded,
+            iconColor: AppColors.primary,
+            title: 'System Logs',
+            trailing: attentionCount > 0
+                ? AppBadge(
+                    label:
+                        '$attentionCount need${attentionCount == 1 ? 's' : ''} attention',
+                    color: AppColors.danger,
+                    background: AppColors.dangerBg,
+                    icon: Icons.error_rounded,
+                  )
+                : const AppBadge(
+                    label: 'All OK',
+                    color: AppColors.success,
+                    background: AppColors.successBg,
+                    icon: Icons.check_circle_rounded,
+                  ),
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Text(
+            'Most recent $total entr${total == 1 ? 'y' : 'ies'} recorded server-side.',
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+          if (attentionCount > 0) ...[
+            const SizedBox(height: AppSpacing.sm),
+            Row(
+              children: [
+                _filterChip(
+                  label: 'All',
+                  selected: _filter == _LevelFilter.all,
+                  onTap: () => setState(() => _filter = _LevelFilter.all),
+                ),
+                const SizedBox(width: 8),
+                _filterChip(
+                  label: 'Errors & warnings only ($attentionCount)',
+                  selected: _filter == _LevelFilter.attention,
+                  onTap: () => setState(() => _filter = _LevelFilter.attention),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _filterChip({
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(AppRadius.pill),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.primary : AppColors.background,
+          borderRadius: BorderRadius.circular(AppRadius.pill),
+          border: Border.all(
+            color: selected ? AppColors.primary : AppColors.border,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: selected ? Colors.white : AppColors.textSecondary,
+            fontWeight: FontWeight.w700,
+            fontSize: 12,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _logEntryCard(QueryDocumentSnapshot<Map<String, dynamic>> document) {
+    final data = document.data();
+
+    final level = (data['level'] ?? 'info').toString();
+    final action = (data['action'] ?? 'Unknown action').toString();
+    final message = (data['message'] ?? '').toString();
+    final actorUid = data['actor_uid']?.toString();
+    final timestamp = _formatTimestamp(data['timestamp']);
+    final details = _formatDetails(data['details']);
+    final (color, background) = _levelColors(level);
+    final expanded = _expandedDocIds.contains(document.id);
+
+    return AppCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(_levelIcon(level), color: color, size: 20),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Text(
+                  action,
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w700),
+                ),
+              ),
+              AppBadge(
+                label: level.toUpperCase(),
+                color: color,
+                background: background,
+              ),
+            ],
+          ),
+          if (message.isNotEmpty) ...[
+            const SizedBox(height: AppSpacing.xs),
+            Text(message, style: Theme.of(context).textTheme.bodyMedium),
+          ],
+          const SizedBox(height: AppSpacing.xs),
+          Text(
+            actorUid != null && actorUid.isNotEmpty
+                ? '$timestamp · actor $actorUid'
+                : timestamp,
+            style: Theme.of(context).textTheme.labelSmall,
+          ),
+          if (details.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            InkWell(
+              borderRadius: BorderRadius.circular(AppRadius.button),
+              onTap: () => setState(() {
+                if (expanded) {
+                  _expandedDocIds.remove(document.id);
+                } else {
+                  _expandedDocIds.add(document.id);
+                }
+              }),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      expanded ? 'Hide details' : 'Show details',
+                      style: const TextStyle(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 12,
+                      ),
+                    ),
+                    Icon(
+                      expanded
+                          ? Icons.expand_less_rounded
+                          : Icons.expand_more_rounded,
+                      color: AppColors.primary,
+                      size: 16,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (expanded) ...[
+              const Divider(height: AppSpacing.lg),
+              SelectableText(
+                details,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ],
+        ],
       ),
     );
   }

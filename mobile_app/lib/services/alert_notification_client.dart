@@ -40,8 +40,11 @@ class AlertNotificationClient {
            Dio(
              BaseOptions(
                baseUrl: AppConfig.backendBaseUrl,
-               connectTimeout: const Duration(seconds: 8),
-               receiveTimeout: const Duration(seconds: 8),
+               // Render's free tier sleeps after 15 min idle and takes ~30-60s to
+               // wake; 8s made the first alert after every idle period fail as
+               // failed_network. 75s covers a cold start.
+               connectTimeout: const Duration(seconds: 75),
+               receiveTimeout: const Duration(seconds: 75),
              ),
            ),
        _getIdToken = getIdToken ?? _realGetIdToken,
