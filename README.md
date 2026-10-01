@@ -22,11 +22,11 @@ Capstone project, BSIT, University of Cebu Lapu-Lapu and Mandaue. Team: Laresma,
 | --- | --- |
 | `mobile_app/` | Flutter app (Dart) and the Android native code (Kotlin) for enforcement |
 | `backend/` | FastAPI server (push alerts, admin routes) and its pytest suite |
-| `ml/` | Training scripts and outputs for the risk classifier and site-category classifier |
-| `ml_models/` | Exported model assets |
+| `ml/` | Training scripts and outputs for the risk classifier and site-category classifier (the app uses copies of the trained files in `mobile_app/assets/`) |
 | `data_cleaned/` | Cleaned site-category dataset |
 | `firestore_rules_tests/` | Tests for `firestore.rules`, run against the Firestore emulator |
 | `.github/workflows/` | CI: backend tests, Firestore rules tests, Flutter analyze/test and release APK |
+| `docs/` | Research documents (e.g. the guardian survey) |
 
 ## Architecture in short
 
@@ -69,6 +69,17 @@ cd firestore_rules_tests && npm install && npm test
 ```
 
 The rules tests need the Firebase CLI installed and use `cp` in their `pretest` step, so on Windows run them from Git Bash or WSL. The three CI workflows in `.github/workflows/` run the same suites on every pull request.
+
+## Working on the repo
+
+`main` is the final, tested code. Do not push to it directly; open a pull request. Branch names are `type/short-description` in lowercase with hyphens, using one of these types:
+
+- `feature/` for new work, e.g. `feature/gps-accuracy-check`
+- `fix/` for bug fixes, e.g. `fix/sync-retry-logging`
+- `docs/` for documentation only
+- `test/` for test-only changes
+
+Commit messages start with a verb in the imperative ("Add", "Fix", "Remove") and say what changed in one line. Delete a branch once its pull request is merged. Releases are tagged `vMAJOR.MINOR-name`, for example `v1.0-defense`.
 
 ## Honest limitations
 
