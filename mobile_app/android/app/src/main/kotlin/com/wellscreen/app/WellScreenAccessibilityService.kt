@@ -3,6 +3,8 @@ package com.wellscreen.app
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.util.Log
+import android.os.Handler
+import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import org.json.JSONArray
 
@@ -33,6 +35,38 @@ class WellScreenAccessibilityService : AccessibilityService() {
     // same still-loaded page (this fires more than once per navigation in
     // practice) don't spam BrowsingLogger with duplicate entries.
     private val lastCapturedDomain = mutableMapOf<String, String>()
+
+    // Accessibility window events do not necessarily fire when a child stays
+    // inside one app for their entire allowance. Re-check the active window
+    // while this native service is alive (independent of Flutter lifecycle).
+    // Only the limited app triggers a UsageStats query; others are cheap.
+    private val limitPollHandler = Handler(Looper.getMainLooper())
+    private val limitPollIntervalMs = 5_000L
+    private val limitPoll = object : Runnable {
+        override fun run() {
+            try {
+                val activePackage = rootInActiveWindow?.packageName?.toString()
+                if (!activePackage.isNullOrEmpty() && activePackage != packageName) {
+                    checkRestrictedApp(activePackage)
+                }
+            } catch (e: Exception) {
+                Log.w("WellScreenLimits", "Foreground limit check failed", e)
+            } finally {
+                limitPollHandler.postDelayed(this, limitPollIntervalMs)
+            }
+        }
+    }
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        limitPollHandler.removeCallbacks(limitPoll)
+        limitPollHandler.postDelayed(limitPoll, limitPollIntervalMs)
+    }
+
+    override fun onDestroy() {
+        limitPollHandler.removeCallbacks(limitPoll)
+        super.onDestroy()
+    }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
@@ -81,9 +115,14 @@ class WellScreenAccessibilityService : AccessibilityService() {
     }
 
     private fun checkRestrictedApp(currentPackage: String) {
-        val restrictedPackages = getRestrictedPackages()
+        val permanentlyRestricted = getRestrictedPackages().contains(currentPackage)
+        // Keep temporary daily limits completely separate from the existing
+        // permanent restrictions; a limited app must remain usable below its
+        // threshold. Fail open if Usage Access is missing/unavailable.
+        val dailyLimitReached = !permanentlyRestricted &&
+            AppTimeLimitEnforcer.isLimitReached(this, currentPackage)
 
-        if (restrictedPackages.contains(currentPackage)) {
+        if (permanentlyRestricted || dailyLimitReached) {
             val now = System.currentTimeMillis()
 
             if (isEmergencyAccessActive(now)) {
@@ -131,7 +170,7 @@ class WellScreenAccessibilityService : AccessibilityService() {
                 lastBlockTime = now
 
                 try {
-                    openBlockedScreen(currentPackage)
+                    openBlockedScreen(currentPackage, timeLimitReached = dailyLimitReached)
                     RestrictionLogger.recordOutcome(this, currentPackage, "blocked", now)
                 } catch (_: Exception) {
                     RestrictionLogger.recordOutcome(
@@ -142,12 +181,16 @@ class WellScreenAccessibilityService : AccessibilityService() {
                     )
                 }
 
-                SmsAlertSender.maybeSendRestrictedAppAlert(
-                    this,
-                    currentPackage,
-                    getAppLabel(currentPackage),
-                    now,
-                )
+                // Preserve SMS behavior for manually restricted apps only;
+                // don't introduce new SMS traffic for daily-limit blocks.
+                if (permanentlyRestricted) {
+                    SmsAlertSender.maybeSendRestrictedAppAlert(
+                        this,
+                        currentPackage,
+                        getAppLabel(currentPackage),
+                        now,
+                    )
+                }
             }
         }
     }
@@ -303,11 +346,14 @@ class WellScreenAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun openBlockedScreen(blockedPackage: String) {
+    private fun openBlockedScreen(blockedPackage: String, timeLimitReached: Boolean = false) {
         val intent = Intent(this, BlockedAppActivity::class.java)
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
         intent.putExtra("blocked_package", blockedPackage)
+        // Non-breaking metadata. Existing BlockedAppActivity still handles
+        // the block; it may later customize the message for time limits.
+        if (timeLimitReached) intent.putExtra("time_limit_reached", true)
         startActivity(intent)
     }
 }

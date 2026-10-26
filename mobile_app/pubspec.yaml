@@ -1,3 +1,4 @@
+
 name: app
 description: "WellScreen: parental-control and digital-wellbeing app (parent and child apps in one codebase)."
 publish_to: 'none'
@@ -69,8 +70,13 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/icons/wellscreen_icon.png
+    # Register all WellScreen and application icons.
+    - assets/icons/
+
+    # Machine learning assets.
     - assets/ml/forest_rules.json
+
+    # Site category detection assets.
     - assets/site_categories/cleaned_site_categories.csv
     - assets/site_categories/category_classifier_weights.json
 

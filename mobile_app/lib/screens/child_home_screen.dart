@@ -9,10 +9,12 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_rule.dart';
+import '../models/app_time_limit.dart';
 import '../models/app_usage_summary.dart';
 import '../models/usage_report.dart';
 import '../services/alert_notification_client.dart';
 import '../services/app_rules_service.dart';
+import '../services/app_time_limit_service.dart';
 import '../services/daily_screen_time_limit_service.dart';
 import '../services/emergency_access_service.dart';
 import '../services/ml_risk_classifier_service.dart';
@@ -64,19 +66,16 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   static const Color softBlue = AppColors.infoBg;
   static const Color softRed = Color(0xFFFFEFEF);
 
-  // Used by handleBottomNavTap to scroll to real, already-rendered sections
-  // of this same page instead of the two "Pairing"/"Reports" tabs
-  // previously just showing a dead-end SnackBar. There's no separate
-  // pairing or reports screen on the child side (by design - a child
-  // shouldn't see the parent-facing alert/detection log about their own
-  // browsing), so scrolling to the relevant section already on this page
-  // is the honest fix rather than inventing new screens with nothing real
-  // to show.
+  // Used by handleBottomNavTap to scroll to the existing pairing section
+  // when a child device has not yet been connected to a parent.
   final ScrollController _scrollController = ScrollController();
   final GlobalKey _pairingSectionKey = GlobalKey();
-  final GlobalKey _reportsSectionKey = GlobalKey();
 
   final AppRulesService _rulesService = AppRulesService();
+  final AppTimeLimitService _appTimeLimitService = AppTimeLimitService();
+  StreamSubscription<List<AppTimeLimit>>? _appTimeLimitSubscription;
+  String? _timeLimitProfileId;
+  int _timeLimitWatchGeneration = 0;
   final UsageTrackingService _usageTrackingService = UsageTrackingService();
   final AlertNotificationClient _alertNotificationClient =
       AlertNotificationClient();
@@ -162,8 +161,9 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     _loadUsageDashboard();
     _refreshSmsAlertStatus();
     _refreshSyncStatus();
-    _connectivitySubscription =
-        _syncStatusService.onlineStatusChanges.listen(_handleConnectivityChange);
+    _connectivitySubscription = _syncStatusService.onlineStatusChanges.listen(
+      _handleConnectivityChange,
+    );
     _locationAutoShareTimer = Timer.periodic(
       _locationAutoShareInterval,
       (_) => _autoShareLocation(),
@@ -174,12 +174,51 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     );
   }
 
+  /// Starts mirroring per-app limits only for this signed-in child profile.
+  /// This sync does not enforce blocking; the AccessibilityService must
+  /// implement consumption of the `flutter.app_time_limits_json` cache.
+  void _ensureAppTimeLimitSubscription(String childProfileId) {
+    if (_timeLimitProfileId == childProfileId) return;
+    _timeLimitProfileId = childProfileId;
+    final generation = ++_timeLimitWatchGeneration;
+    final previous = _appTimeLimitSubscription;
+    _appTimeLimitSubscription = null;
+    unawaited(
+      _restartAppTimeLimitSubscription(previous, childProfileId, generation),
+    );
+  }
+
+  Future<void> _restartAppTimeLimitSubscription(
+    StreamSubscription<List<AppTimeLimit>>? previous,
+    String childProfileId,
+    int generation,
+  ) async {
+    await previous?.cancel();
+    if (!mounted || generation != _timeLimitWatchGeneration) return;
+    await _appTimeLimitService.prepareCacheForChild(childProfileId);
+    if (!mounted ||
+        generation != _timeLimitWatchGeneration ||
+        childProfileId.isEmpty) {
+      return;
+    }
+    _appTimeLimitSubscription = _appTimeLimitService
+        .watchForChildAndCache(childProfileId)
+        .listen(
+          (_) {},
+          onError: (Object error, StackTrace trace) {
+            debugPrint('Could not mirror app time limits: $error');
+          },
+        );
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     pairingCodeController.dispose();
     emergencyReasonController.dispose();
     _connectivitySubscription?.cancel();
+    _timeLimitWatchGeneration++;
+    _appTimeLimitSubscription?.cancel();
     _locationAutoShareTimer?.cancel();
     _usageAutoSyncTimer?.cancel();
     _scrollController.dispose();
@@ -247,8 +286,9 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
 
     setState(() {
       _smsPermissionGranted = status.isGranted;
-      _cachedParentPhoneNumber =
-          (phoneNumber != null && phoneNumber.isNotEmpty) ? phoneNumber : null;
+      _cachedParentPhoneNumber = (phoneNumber != null && phoneNumber.isNotEmpty)
+          ? phoneNumber
+          : null;
       _smsAlertLog = log;
     });
   }
@@ -476,7 +516,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       status.isGranted
           ? 'SMS backup alerts enabled.'
           : 'SMS permission was not granted. Backup alerts will stay off '
-              'until it\'s allowed.',
+                'until it\'s allowed.',
     );
   }
 
@@ -1007,7 +1047,10 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         return;
       }
 
-      final summaries = await _usageTrackingService.getTodayUsage();
+      // The existing report model still uses its top-ten summary; the
+      // dedicated All Apps screen needs the complete uncapped list.
+      final allSummaries = await _usageTrackingService.getAllTodayUsage();
+      final summaries = allSummaries.take(10).toList();
       final report = await _usageTrackingService.getTodayUsageReport();
 
       final topApps = summaries
@@ -1021,9 +1064,26 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
           )
           .toList();
 
+      final allApps = allSummaries
+          .map(
+            (app) => {
+              'packageName': app.packageName,
+              'displayName': app.displayName,
+              'usageDurationMs': app.usageDuration.inMilliseconds,
+              'lastTimeUsed': app.lastTimeUsed?.toIso8601String(),
+            },
+          )
+          .toList();
+      final allAppsTotalMs = allSummaries.fold<int>(
+        0,
+        (runningTotal, app) => runningTotal + app.usageDuration.inMilliseconds,
+      );
+
       final usageReportData = {
         'totalUsageDurationMs': report.totalUsageDuration.inMilliseconds,
         'topApps': topApps,
+        'allApps': allApps,
+        'allAppsTotalUsageDurationMs': allAppsTotalMs,
         'unhealthyAppCount': report.unhealthyAppCount,
         'patternStatus': report.patternStatus.name,
         'recommendationMessage': report.recommendationMessage,
@@ -1057,9 +1117,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       // parent below when one does - it does NOT block the page from
       // loading, since that would need this same check running natively,
       // before the page renders, which isn't built yet.
-      final browsingLog = _decodeJsonList(
-        prefs.getString('browsing_log_json'),
-      );
+      final browsingLog = _decodeJsonList(prefs.getString('browsing_log_json'));
       // Only alert for harmful entries newer than the last one already
       // alerted on - without this watermark, every sync would re-scan the
       // whole rolling (up to 50-entry) log and re-fire a push for the same
@@ -1124,8 +1182,8 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       Map<String, dynamic>? mlRiskAssessmentData;
       try {
         final dailyLimit = await _dailyScreenTimeLimitService.getDailyLimit();
-        final maxAppOpensToday =
-            await _usageTrackingService.getTodayMaxAppOpenCount();
+        final maxAppOpensToday = await _usageTrackingService
+            .getTodayMaxAppOpenCount();
         final mlFeatures = _buildMlFeatures(
           report: report,
           summaries: summaries,
@@ -1133,9 +1191,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
           dailyLimitMinutes: dailyLimit.inMinutes,
           maxAppOpensToday: maxAppOpensToday,
         );
-        final assessment = await _mlRiskClassifierService.classify(
-          mlFeatures,
-        );
+        final assessment = await _mlRiskClassifierService.classify(mlFeatures);
 
         mlRiskAssessmentData = {
           'label': assessment.label,
@@ -1207,7 +1263,8 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
           _alertNotificationClient.notifyParent(
             parentUid: parentId,
             title: 'Harmful site category detected',
-            body: 'Visited a site categorized as '
+            body:
+                'Visited a site categorized as '
                 '$mostRecentHarmfulCategory'
                 '${mostRecentHarmfulDomain != null && mostRecentHarmfulDomain.isNotEmpty ? ' ($mostRecentHarmfulDomain)' : ''}.',
             alertType: 'harmful_site_category',
@@ -1250,6 +1307,14 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   }
 
   Future<void> logout() async {
+    // Native AccessibilityService cannot read FirebaseAuth session state.
+    // Clear its child-specific rule cache before signing out.
+    _timeLimitWatchGeneration++;
+    final previous = _appTimeLimitSubscription;
+    _appTimeLimitSubscription = null;
+    _timeLimitProfileId = null;
+    await previous?.cancel();
+    await _appTimeLimitService.clearCachedLimits();
     await FirebaseAuth.instance.signOut();
 
     if (!mounted) return;
@@ -1278,8 +1343,6 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         _scrollToSection(_pairingSectionKey);
       }
     } else if (index == 2) {
-      _scrollToSection(_reportsSectionKey);
-    } else if (index == 3) {
       Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => const ProfileSettingsScreen()),
@@ -1296,7 +1359,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
             borderRadius: BorderRadius.circular(26),
           ),
           title: const Text(
-            'Device Connected',
+            'Device Connected Successfully!',
             textAlign: TextAlign.center,
             style: TextStyle(color: darkText, fontWeight: FontWeight.w900),
           ),
@@ -1310,7 +1373,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
               ),
               SizedBox(height: 16),
               Text(
-                'This student device is now connected to the parent dashboard.',
+                'Your device has been successfully connected to your parent’s account.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: grayText,
@@ -1513,7 +1576,8 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
                   padding: const EdgeInsets.all(AppSpacing.lg),
                   child: AppErrorState(
                     title: 'Could Not Load Profile',
-                    message: 'Something went wrong loading your '
+                    message:
+                        'Something went wrong loading your '
                         'profile.\n\n${snapshot.error}',
                   ),
                 ),
@@ -1533,6 +1597,9 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
             if (connected) {
               _maybeSyncParentPhoneNumber(data);
             }
+            _ensureAppTimeLimitSubscription(
+              connected ? (data['pairedChildProfileId'] ?? '').toString() : '',
+            );
 
             return ListView(
               controller: _scrollController,
@@ -1555,10 +1622,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
                 if (connected) const SizedBox(height: 22),
                 if (connected) _emergencyAccessCard(data),
                 const SizedBox(height: 22),
-                KeyedSubtree(
-                  key: _reportsSectionKey,
-                  child: _topAppsSection(),
-                ),
+                _topAppsSection(),
                 const SizedBox(height: 22),
                 _weeklyTrendSection(),
               ],
@@ -1571,7 +1635,6 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         items: const [
           WellScreenNavItem(icon: Icons.home_rounded, label: 'Home'),
           WellScreenNavItem(icon: Icons.link_rounded, label: 'Pairing'),
-          WellScreenNavItem(icon: Icons.analytics_rounded, label: 'Reports'),
           WellScreenNavItem(icon: Icons.settings_rounded, label: 'Settings'),
         ],
         onTap: handleBottomNavTap,
@@ -1613,9 +1676,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
             onLongPress: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(
-                  builder: (_) => const CaptureDebugScreen(),
-                ),
+                MaterialPageRoute(builder: (_) => const CaptureDebugScreen()),
               );
             },
             child: _logoBox(),
@@ -2024,7 +2085,10 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
                 'Usage access permission is required to show real screen '
                     'time data.',
             textAlign: TextAlign.center,
-            style: const TextStyle(color: grayText, fontWeight: FontWeight.w600),
+            style: const TextStyle(
+              color: grayText,
+              fontWeight: FontWeight.w600,
+            ),
           ),
           const SizedBox(height: 12),
           _smallPurpleButton(
@@ -2073,7 +2137,10 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
             const SizedBox(height: 8),
             Text(
               'Daily Limit: $limitLabel',
-              style: const TextStyle(color: grayText, fontWeight: FontWeight.w800),
+              style: const TextStyle(
+                color: grayText,
+                fontWeight: FontWeight.w800,
+              ),
             ),
             const SizedBox(height: 10),
             ClipRRect(
@@ -2283,15 +2350,18 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   /// indicator. Full history with response/recovery times lives on
   /// ReportsScreen's Alerts tab (Synchronization Status card).
   Widget _syncStatusIndicator() {
-    final lastOutcome =
-        _syncLog.isNotEmpty ? _syncLog.last['outcome']?.toString() : null;
+    final lastOutcome = _syncLog.isNotEmpty
+        ? _syncLog.last['outcome']?.toString()
+        : null;
 
     String label;
     if (!_isOnline) {
-      label = 'Offline - usage data will sync automatically once '
+      label =
+          'Offline - usage data will sync automatically once '
           'reconnected.';
     } else if (lastOutcome == 'synced') {
-      label = 'Online - last sync succeeded. Also auto-syncs every '
+      label =
+          'Online - last sync succeeded. Also auto-syncs every '
           '${_usageAutoSyncInterval.inMinutes} min.';
     } else if (lastOutcome == 'queued_offline' ||
         lastOutcome == 'failed_timeout') {
@@ -2299,7 +2369,8 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     } else if (lastOutcome != null) {
       label = 'Online - last sync failed. Tap Sync Usage to retry.';
     } else {
-      label = 'Online - auto-syncs every '
+      label =
+          'Online - auto-syncs every '
           '${_usageAutoSyncInterval.inMinutes} min, or tap Sync Usage now.';
     }
 
@@ -2334,11 +2405,15 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   Widget _smsAlertsCard() {
     final hasPhoneNumber = _cachedParentPhoneNumber != null;
     final sentCount = _smsAlertLog
-        .where((entry) =>
-            entry['outcome'] == 'sent' || entry['outcome'] == 'delivered')
+        .where(
+          (entry) =>
+              entry['outcome'] == 'sent' || entry['outcome'] == 'delivered',
+        )
         .length;
     final failedCount = _smsAlertLog
-        .where((entry) => (entry['outcome'] as String? ?? '').startsWith('failed'))
+        .where(
+          (entry) => (entry['outcome'] as String? ?? '').startsWith('failed'),
+        )
         .length;
 
     return _whiteCard(
@@ -2365,13 +2440,13 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
           Text(
             !_smsPermissionGranted
                 ? 'Off. Grant SMS permission so a backup text alert can '
-                    'reach your parent even without internet, when a '
-                    'restricted app is opened.'
+                      'reach your parent even without internet, when a '
+                      'restricted app is opened.'
                 : hasPhoneNumber
-                    ? 'Enabled. Blocked-app alerts will text '
-                        '${_maskPhoneNumber(_cachedParentPhoneNumber!)}.'
-                    : 'Permission granted, but your parent hasn\'t added a '
-                        'phone number yet in their Profile Settings.',
+                ? 'Enabled. Blocked-app alerts will text '
+                      '${_maskPhoneNumber(_cachedParentPhoneNumber!)}.'
+                : 'Permission granted, but your parent hasn\'t added a '
+                      'phone number yet in their Profile Settings.',
             style: const TextStyle(
               color: grayText,
               fontWeight: FontWeight.w600,
@@ -2574,7 +2649,11 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         const Text(
           'Need a restricted app for something urgent? Ask your parent to '
           'temporarily lift restrictions.',
-          style: TextStyle(color: grayText, fontWeight: FontWeight.w600, fontSize: 13),
+          style: TextStyle(
+            color: grayText,
+            fontWeight: FontWeight.w600,
+            fontSize: 13,
+          ),
         ),
         const SizedBox(height: 10),
         TextField(

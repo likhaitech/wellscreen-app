@@ -1,0 +1,153 @@
+package com.wellscreen.app
+
+import android.app.AppOpsManager
+import android.app.usage.UsageEvents
+import android.app.usage.UsageStatsManager
+import android.content.Context
+import android.content.Intent
+import android.os.Process
+import android.util.Log
+import org.json.JSONObject
+import java.util.Calendar
+
+/**
+ * Child-side enforcement of a guardian's per-app daily usage allowance.
+ *
+ * Reads the paired child's already-synced FlutterSharedPreferences cache.
+ * Does not modify manually restricted packages or their Firestore data.
+ * A limit is evaluated against Android's usage statistics since local
+ * midnight; no mutable counter is stored, so the next day resets naturally.
+ *
+ * UsageStats access and enabled AccessibilityService are both required.
+ * If either is unavailable, this helper does not block on an assumed 0.
+ */
+internal object AppTimeLimitEnforcer {
+    private const val TAG = "WellScreenLimits"
+    private const val PREFS = "FlutterSharedPreferences"
+    private const val ACTIVE_CHILD_KEY = "flutter.active_child_profile_id"
+    private const val LIMITS_KEY = "flutter.app_time_limits_json"
+    private const val MAX_DAILY_MINUTES = 24 * 60
+
+    // Never interrupt the child's ability to reach emergency/system UI or
+    // manage/accessibility settings. Do not exempt *all* preinstalled apps:
+    // YouTube and Chrome are often system apps, but are intended limit targets.
+    private val essentialPackages = setOf(
+        "android",
+        "com.android.systemui",
+        "com.android.settings",
+        "com.android.phone",
+        "com.android.dialer",
+        "com.google.android.dialer",
+        "com.android.emergency",
+        "com.android.permissioncontroller",
+        "com.google.android.permissioncontroller",
+        "com.android.packageinstaller",
+        "com.google.android.packageinstaller",
+    )
+
+    fun isLimitReached(context: Context, targetPackage: String): Boolean {
+        if (targetPackage.isBlank() || targetPackage == context.packageName ||
+            targetPackage in essentialPackages || isDefaultLauncher(context, targetPackage)
+        ) return false
+
+        return try {
+            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val currentChildProfile = prefs.getString(ACTIVE_CHILD_KEY, null)
+            if (currentChildProfile.isNullOrBlank()) return false
+
+            val raw = prefs.getString(LIMITS_KEY, null) ?: return false
+            val cache = JSONObject(raw)
+            if (cache.optString("childProfileId") != currentChildProfile) return false
+
+            val limits = cache.optJSONArray("limits") ?: return false
+            var limitMinutes: Int? = null
+            for (index in 0 until limits.length()) {
+                val limit = limits.optJSONObject(index) ?: continue
+                if (limit.optString("packageName") != targetPackage) continue
+                val minutes = limit.optInt("limitMinutes", 0)
+                if (minutes in 1..MAX_DAILY_MINUTES) limitMinutes = minutes
+                break
+            }
+            val actualLimit = limitMinutes ?: return false
+            if (!hasUsageAccess(context)) return false
+
+            val statsManager = context.getSystemService(Context.USAGE_STATS_SERVICE)
+                as? UsageStatsManager ?: return false
+            val now = System.currentTimeMillis()
+            val localMidnight = Calendar.getInstance().apply {
+                set(Calendar.HOUR_OF_DAY, 0)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }.timeInMillis
+            // The Android aggregate can lag while an app remains foreground.
+            // Also compute complete + still-open sessions from UsageEvents.
+            // MAX (not sum) prevents double-counting the same session.
+            val aggregates = statsManager.queryAndAggregateUsageStats(localMidnight, now)
+            val aggregateMs = aggregates[targetPackage]?.totalTimeInForeground ?: 0L
+            val eventsMs = usageFromEvents(statsManager, targetPackage, localMidnight, now)
+            val usedMilliseconds = maxOf(aggregateMs, eventsMs)
+            usedMilliseconds >= actualLimit * 60_000L
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not determine usage limit for $targetPackage", e)
+            false
+        }
+    }
+
+    /**
+     * Sum foreground sessions in today's Android usage event stream. The
+     * currently active session is counted through `now`, so limits work even
+     * without a window switch. This remains an OS best-effort measurement,
+     * not a cryptographically trustworthy stopwatch.
+     */
+    private fun usageFromEvents(
+        manager: UsageStatsManager,
+        targetPackage: String,
+        dayStart: Long,
+        now: Long,
+    ): Long {
+        val events = manager.queryEvents(dayStart, now)
+        val event = UsageEvents.Event()
+        var activeSince: Long? = null
+        var totalMs = 0L
+
+        while (events.hasNextEvent()) {
+            events.getNextEvent(event)
+            if (event.packageName != targetPackage) continue
+            val at = event.timeStamp.coerceIn(dayStart, now)
+            when (event.eventType) {
+                // Same event IDs as Android's ACTIVITY_RESUMED/PAUSED on
+                // current OS releases, with older MOVE_TO_* compatibility.
+                UsageEvents.Event.MOVE_TO_FOREGROUND -> {
+                    if (activeSince == null) activeSince = at
+                }
+                UsageEvents.Event.MOVE_TO_BACKGROUND -> {
+                    val started = activeSince
+                    if (started != null) {
+                        totalMs += (at - started).coerceAtLeast(0L)
+                        activeSince = null
+                    }
+                }
+            }
+        }
+        val started = activeSince
+        if (started != null) totalMs += (now - started).coerceAtLeast(0L)
+        return totalMs
+    }
+
+    private fun hasUsageAccess(context: Context): Boolean {
+        val ops = context.getSystemService(Context.APP_OPS_SERVICE) as? AppOpsManager
+            ?: return false
+        return ops.checkOpNoThrow(
+            AppOpsManager.OPSTR_GET_USAGE_STATS,
+            Process.myUid(),
+            context.packageName,
+        ) == AppOpsManager.MODE_ALLOWED
+    }
+
+    private fun isDefaultLauncher(context: Context, targetPackage: String): Boolean {
+        val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        val resolved = context.packageManager.resolveActivity(home, 0)
+        return resolved?.activityInfo?.packageName == targetPackage
+    }
+}

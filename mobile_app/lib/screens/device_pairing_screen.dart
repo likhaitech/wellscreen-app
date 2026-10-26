@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -29,6 +30,115 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
 
   final childNameController = TextEditingController();
 
+  // Detect new successful pairings while the parent is on this screen.
+  // The initial server snapshot establishes a baseline, so existing
+  // connected devices do not trigger a confirmation on every visit.
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>?
+  _connectionSubscription;
+  Map<String, bool> _previousConnectionStates = {};
+  bool _hasInitialConnectionSnapshot = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final parentUser = FirebaseAuth.instance.currentUser;
+    if (parentUser == null) return;
+
+    _connectionSubscription = FirebaseFirestore.instance
+        .collection('child_profiles')
+        .where('parentId', isEqualTo: parentUser.uid)
+        .snapshots(includeMetadataChanges: true)
+        .listen(_onChildProfilesUpdated, onError: (Object _) {});
+  }
+
+  void _onChildProfilesUpdated(QuerySnapshot<Map<String, dynamic>> snapshot) {
+    // Cached snapshots may be stale; only use server-confirmed states to
+    // decide that a device has actually completed pairing.
+    if (!mounted || snapshot.metadata.isFromCache) return;
+
+    final currentStates = <String, bool>{
+      for (final doc in snapshot.docs)
+        doc.id: doc.data()['pairingStatus'] == 'connected',
+    };
+
+    if (!_hasInitialConnectionSnapshot) {
+      _previousConnectionStates = currentStates;
+      _hasInitialConnectionSnapshot = true;
+      return;
+    }
+
+    final newlyConnected = snapshot.docs.where(
+      (doc) =>
+          _previousConnectionStates[doc.id] == false &&
+          currentStates[doc.id] == true,
+    );
+
+    final childNames = newlyConnected
+        .map((doc) => (doc.data()['name'] ?? 'Student').toString())
+        .toList();
+
+    // Update before showing dialogs to prevent duplicate confirmations on
+    // Firestore metadata changes or widget rebuilds.
+    _previousConnectionStates = currentStates;
+
+    for (final childName in childNames) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
+        _showPairingSuccessDialog(childName);
+      });
+    }
+  }
+
+  void _showPairingSuccessDialog(String childName) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
+        title: const Text(
+          'Device Connected Successfully!',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: darkText, fontWeight: FontWeight.w900),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircleAvatar(
+              radius: 42,
+              backgroundColor: softGreen,
+              child: Icon(Icons.verified_rounded, color: teal, size: 55),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              '$childName’s device has been successfully connected to your account.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: grayText,
+                height: 1.35,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+        actionsAlignment: MainAxisAlignment.center,
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            style: FilledButton.styleFrom(
+              backgroundColor: purple,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+            ),
+            child: const Text(
+              'Continue',
+              style: TextStyle(fontWeight: FontWeight.w900),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   bool isGenerating = false;
   String generatedCode = '';
   String generatedChildName = '';
@@ -36,6 +146,7 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
 
   @override
   void dispose() {
+    _connectionSubscription?.cancel();
     childNameController.dispose();
     super.dispose();
   }
@@ -175,18 +286,6 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Future<void> logout() async {
-    await FirebaseAuth.instance.signOut();
-
-    if (!mounted) return;
-
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(builder: (_) => const LoginScreen()),
-      (route) => false,
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final parentUser = FirebaseAuth.instance.currentUser;
@@ -219,13 +318,6 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
         backgroundColor: pageBg,
         foregroundColor: darkText,
         elevation: 0,
-        actions: [
-          IconButton(
-            tooltip: 'Logout',
-            onPressed: logout,
-            icon: const Icon(Icons.logout_rounded),
-          ),
-        ],
       ),
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
         stream: childProfilesStream(parentUser.uid),
@@ -236,7 +328,8 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
                 padding: const EdgeInsets.all(AppSpacing.lg),
                 child: AppErrorState(
                   title: 'Could Not Load Devices',
-                  message: 'Something went wrong loading paired '
+                  message:
+                      'Something went wrong loading paired '
                       'devices.\n\n${snapshot.error}',
                 ),
               ),
