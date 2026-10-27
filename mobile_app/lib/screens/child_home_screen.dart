@@ -9,10 +9,12 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_rule.dart';
+import '../models/app_time_limit.dart';
 import '../models/app_usage_summary.dart';
 import '../models/usage_report.dart';
 import '../services/alert_notification_client.dart';
 import '../services/app_rules_service.dart';
+import '../services/app_time_limit_service.dart';
 import '../services/daily_screen_time_limit_service.dart';
 import '../services/emergency_access_service.dart';
 import '../services/ml_risk_classifier_service.dart';
@@ -64,19 +66,16 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   static const Color softBlue = AppColors.infoBg;
   static const Color softRed = Color(0xFFFFEFEF);
 
-  // Used by handleBottomNavTap to scroll to real, already-rendered sections
-  // of this same page instead of the two "Pairing"/"Reports" tabs
-  // previously just showing a dead-end SnackBar. There's no separate
-  // pairing or reports screen on the child side (by design - a child
-  // shouldn't see the parent-facing alert/detection log about their own
-  // browsing), so scrolling to the relevant section already on this page
-  // is the honest fix rather than inventing new screens with nothing real
-  // to show.
+  // Used by handleBottomNavTap to scroll to the existing pairing section
+  // when a child device has not yet been connected to a parent.
   final ScrollController _scrollController = ScrollController();
   final GlobalKey _pairingSectionKey = GlobalKey();
-  final GlobalKey _reportsSectionKey = GlobalKey();
 
   final AppRulesService _rulesService = AppRulesService();
+  final AppTimeLimitService _appTimeLimitService = AppTimeLimitService();
+  StreamSubscription<List<AppTimeLimit>>? _appTimeLimitSubscription;
+  String? _timeLimitProfileId;
+  int _timeLimitWatchGeneration = 0;
   final UsageTrackingService _usageTrackingService = UsageTrackingService();
   final AlertNotificationClient _alertNotificationClient =
       AlertNotificationClient();
@@ -162,8 +161,9 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     _loadUsageDashboard();
     _refreshSmsAlertStatus();
     _refreshSyncStatus();
-    _connectivitySubscription =
-        _syncStatusService.onlineStatusChanges.listen(_handleConnectivityChange);
+    _connectivitySubscription = _syncStatusService.onlineStatusChanges.listen(
+      _handleConnectivityChange,
+    );
     _locationAutoShareTimer = Timer.periodic(
       _locationAutoShareInterval,
       (_) => _autoShareLocation(),
@@ -174,12 +174,51 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     );
   }
 
+  /// Starts mirroring per-app limits only for this signed-in child profile.
+  /// This sync does not enforce blocking; the AccessibilityService must
+  /// implement consumption of the `flutter.app_time_limits_json` cache.
+  void _ensureAppTimeLimitSubscription(String childProfileId) {
+    if (_timeLimitProfileId == childProfileId) return;
+    _timeLimitProfileId = childProfileId;
+    final generation = ++_timeLimitWatchGeneration;
+    final previous = _appTimeLimitSubscription;
+    _appTimeLimitSubscription = null;
+    unawaited(
+      _restartAppTimeLimitSubscription(previous, childProfileId, generation),
+    );
+  }
+
+  Future<void> _restartAppTimeLimitSubscription(
+    StreamSubscription<List<AppTimeLimit>>? previous,
+    String childProfileId,
+    int generation,
+  ) async {
+    await previous?.cancel();
+    if (!mounted || generation != _timeLimitWatchGeneration) return;
+    await _appTimeLimitService.prepareCacheForChild(childProfileId);
+    if (!mounted ||
+        generation != _timeLimitWatchGeneration ||
+        childProfileId.isEmpty) {
+      return;
+    }
+    _appTimeLimitSubscription = _appTimeLimitService
+        .watchForChildAndCache(childProfileId)
+        .listen(
+          (_) {},
+          onError: (Object error, StackTrace trace) {
+            debugPrint('Could not mirror app time limits: $error');
+          },
+        );
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     pairingCodeController.dispose();
     emergencyReasonController.dispose();
     _connectivitySubscription?.cancel();
+    _timeLimitWatchGeneration++;
+    _appTimeLimitSubscription?.cancel();
     _locationAutoShareTimer?.cancel();
     _usageAutoSyncTimer?.cancel();
     _scrollController.dispose();
@@ -247,8 +286,9 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
 
     setState(() {
       _smsPermissionGranted = status.isGranted;
-      _cachedParentPhoneNumber =
-          (phoneNumber != null && phoneNumber.isNotEmpty) ? phoneNumber : null;
+      _cachedParentPhoneNumber = (phoneNumber != null && phoneNumber.isNotEmpty)
+          ? phoneNumber
+          : null;
       _smsAlertLog = log;
     });
   }
@@ -476,7 +516,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       status.isGranted
           ? 'SMS backup alerts enabled.'
           : 'SMS permission was not granted. Backup alerts will stay off '
-              'until it\'s allowed.',
+                'until it\'s allowed.',
     );
   }
 
@@ -518,6 +558,9 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
 
     setState(() => isPairing = true);
 
+    String newlyPairedParentId = '';
+    String newlyPairedProfileId = '';
+
     try {
       final firestore = FirebaseFirestore.instance;
 
@@ -545,6 +588,9 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         if (parentId.isEmpty || childProfileId.isEmpty) {
           throw Exception('Invalid pairing code data.');
         }
+
+        newlyPairedParentId = parentId;
+        newlyPairedProfileId = childProfileId;
 
         if (expiresAt is Timestamp) {
           final expiryDate = expiresAt.toDate();
@@ -590,7 +636,10 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
 
       if (!mounted) return;
 
-      showConnectedSuccessDialog();
+      showConnectedSuccessDialog(
+        parentId: newlyPairedParentId,
+        childProfileId: newlyPairedProfileId,
+      );
     } catch (e) {
       final message = e.toString().replaceFirst('Exception: ', '');
       showMessage(message);
@@ -1007,7 +1056,10 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         return;
       }
 
-      final summaries = await _usageTrackingService.getTodayUsage();
+      // The existing report model still uses its top-ten summary; the
+      // dedicated All Apps screen needs the complete uncapped list.
+      final allSummaries = await _usageTrackingService.getAllTodayUsage();
+      final summaries = allSummaries.take(10).toList();
       final report = await _usageTrackingService.getTodayUsageReport();
 
       final topApps = summaries
@@ -1021,9 +1073,26 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
           )
           .toList();
 
+      final allApps = allSummaries
+          .map(
+            (app) => {
+              'packageName': app.packageName,
+              'displayName': app.displayName,
+              'usageDurationMs': app.usageDuration.inMilliseconds,
+              'lastTimeUsed': app.lastTimeUsed?.toIso8601String(),
+            },
+          )
+          .toList();
+      final allAppsTotalMs = allSummaries.fold<int>(
+        0,
+        (runningTotal, app) => runningTotal + app.usageDuration.inMilliseconds,
+      );
+
       final usageReportData = {
         'totalUsageDurationMs': report.totalUsageDuration.inMilliseconds,
         'topApps': topApps,
+        'allApps': allApps,
+        'allAppsTotalUsageDurationMs': allAppsTotalMs,
         'unhealthyAppCount': report.unhealthyAppCount,
         'patternStatus': report.patternStatus.name,
         'recommendationMessage': report.recommendationMessage,
@@ -1057,9 +1126,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       // parent below when one does - it does NOT block the page from
       // loading, since that would need this same check running natively,
       // before the page renders, which isn't built yet.
-      final browsingLog = _decodeJsonList(
-        prefs.getString('browsing_log_json'),
-      );
+      final browsingLog = _decodeJsonList(prefs.getString('browsing_log_json'));
       // Only alert for harmful entries newer than the last one already
       // alerted on - without this watermark, every sync would re-scan the
       // whole rolling (up to 50-entry) log and re-fire a push for the same
@@ -1124,8 +1191,8 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       Map<String, dynamic>? mlRiskAssessmentData;
       try {
         final dailyLimit = await _dailyScreenTimeLimitService.getDailyLimit();
-        final maxAppOpensToday =
-            await _usageTrackingService.getTodayMaxAppOpenCount();
+        final maxAppOpensToday = await _usageTrackingService
+            .getTodayMaxAppOpenCount();
         final mlFeatures = _buildMlFeatures(
           report: report,
           summaries: summaries,
@@ -1133,9 +1200,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
           dailyLimitMinutes: dailyLimit.inMinutes,
           maxAppOpensToday: maxAppOpensToday,
         );
-        final assessment = await _mlRiskClassifierService.classify(
-          mlFeatures,
-        );
+        final assessment = await _mlRiskClassifierService.classify(mlFeatures);
 
         mlRiskAssessmentData = {
           'label': assessment.label,
@@ -1207,7 +1272,8 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
           _alertNotificationClient.notifyParent(
             parentUid: parentId,
             title: 'Harmful site category detected',
-            body: 'Visited a site categorized as '
+            body:
+                'Visited a site categorized as '
                 '$mostRecentHarmfulCategory'
                 '${mostRecentHarmfulDomain != null && mostRecentHarmfulDomain.isNotEmpty ? ' ($mostRecentHarmfulDomain)' : ''}.',
             alertType: 'harmful_site_category',
@@ -1250,6 +1316,14 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   }
 
   Future<void> logout() async {
+    // Native AccessibilityService cannot read FirebaseAuth session state.
+    // Clear its child-specific rule cache before signing out.
+    _timeLimitWatchGeneration++;
+    final previous = _appTimeLimitSubscription;
+    _appTimeLimitSubscription = null;
+    _timeLimitProfileId = null;
+    await previous?.cancel();
+    await _appTimeLimitService.clearCachedLimits();
     await FirebaseAuth.instance.signOut();
 
     if (!mounted) return;
@@ -1278,8 +1352,6 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         _scrollToSection(_pairingSectionKey);
       }
     } else if (index == 2) {
-      _scrollToSection(_reportsSectionKey);
-    } else if (index == 3) {
       Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => const ProfileSettingsScreen()),
@@ -1287,57 +1359,278 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     }
   }
 
-  void showConnectedSuccessDialog() {
-    showDialog(
+  /// Shows the actual pairing and identity-verification state. Missing
+  /// parent name/email is NOT proof that the pairing was disconnected.
+  /// Those fields are copied by the owning parent into the child profile.
+  void showConnectedSuccessDialog({String? parentId, String? childProfileId}) {
+    final linkedParentId =
+        parentId ?? (_cachedUserData?['pairedParentId'] ?? '').toString();
+    final linkedProfileId =
+        childProfileId ??
+        (_cachedUserData?['pairedChildProfileId'] ?? '').toString();
+    final signedInChildId = FirebaseAuth.instance.currentUser?.uid;
+
+    if (linkedParentId.isEmpty ||
+        linkedProfileId.isEmpty ||
+        signedInChildId == null) {
+      showMessage('This device has no linked parent account.');
+      return;
+    }
+
+    showDialog<void>(
       context: context,
-      builder: (_) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(26),
-          ),
-          title: const Text(
-            'Device Connected',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: darkText, fontWeight: FontWeight.w900),
-          ),
-          content: const Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircleAvatar(
-                radius: 42,
-                backgroundColor: softGreen,
-                child: Icon(Icons.verified_rounded, color: teal, size: 55),
-              ),
-              SizedBox(height: 16),
-              Text(
-                'This student device is now connected to the parent dashboard.',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: grayText,
-                  height: 1.35,
-                  fontWeight: FontWeight.w600,
+      builder: (dialogContext) =>
+          StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+            stream: FirebaseFirestore.instance
+                .collection('child_profiles')
+                .doc(linkedProfileId)
+                .snapshots(),
+            builder: (context, snapshot) {
+              final loading = !snapshot.hasData && !snapshot.hasError;
+              final loadFailed = snapshot.hasError;
+              final profile = snapshot.data?.data();
+              final paired =
+                  !loading &&
+                  !loadFailed &&
+                  snapshot.data?.exists == true &&
+                  profile?['parentId'] == linkedParentId &&
+                  profile?['childAccountId'] == signedInChildId &&
+                  profile?['pairingStatus'] == 'connected';
+              final parentName = paired
+                  ? (profile?['parentDisplayName'] ?? '').toString().trim()
+                  : '';
+              final parentEmail = paired
+                  ? (profile?['parentEmail'] ?? '').toString().trim()
+                  : '';
+              final identityReady =
+                  parentName.isNotEmpty && parentEmail.isNotEmpty;
+              final verified = paired && identityReady;
+              final statusText = loading
+                  ? 'Checking...'
+                  : loadFailed
+                  ? 'Verification Unavailable'
+                  : !paired
+                  ? 'Not Connected'
+                  : !identityReady
+                  ? 'Not Verified'
+                  : 'Connected';
+              final statusColor = loading || loadFailed
+                  ? const Color(0xFFB7791F)
+                  : verified
+                  ? const Color(0xFF05884A)
+                  : AppColors.danger;
+              final statusBackground = loading || loadFailed
+                  ? const Color(0xFFFFF2D6)
+                  : verified
+                  ? const Color(0xFFD0FBE5)
+                  : const Color(0xFFFFE1E1);
+              final heading = verified
+                  ? 'Parent Account\nConnected'
+                  : loading
+                  ? 'Checking Parent\nAccount'
+                  : !paired && !loadFailed
+                  ? 'Parent Account\nNot Connected'
+                  : 'Parent Account\nNot Verified';
+              final helpText = loading
+                  ? 'Checking the linked parent account...'
+                  : loadFailed
+                  ? 'Could not verify account details. Check your internet '
+                        'connection and try again.'
+                  : !paired
+                  ? 'This parent link is missing or no longer valid. '
+                        'Please pair this device again.'
+                  : !identityReady
+                  ? 'The device is paired, but the parent name and '
+                        'email have not synced. Ask your parent to open '
+                        'Devices and tap Sync Parent Details.'
+                  : 'Parent account details verified for this pairing.';
+
+              return Dialog(
+                backgroundColor: Colors.white,
+                insetPadding: const EdgeInsets.symmetric(
+                  horizontal: 22,
+                  vertical: 24,
                 ),
-              ),
-            ],
-          ),
-          actionsAlignment: MainAxisAlignment.center,
-          actions: [
-            FilledButton(
-              onPressed: () => Navigator.pop(context),
-              style: FilledButton.styleFrom(
-                backgroundColor: purple,
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
+                  borderRadius: BorderRadius.circular(30),
                 ),
-              ),
-              child: const Text(
-                'Continue',
-                style: TextStyle(fontWeight: FontWeight.w900),
-              ),
-            ),
-          ],
-        );
-      },
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 440),
+                  child: SingleChildScrollView(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(24, 30, 24, 28),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircleAvatar(
+                            radius: 49,
+                            backgroundColor: verified
+                                ? const Color(0xFFDDF7EB)
+                                : statusBackground,
+                            child: loading
+                                ? const CircularProgressIndicator(color: purple)
+                                : Icon(
+                                    verified
+                                        ? Icons.check_circle_rounded
+                                        : Icons.error_rounded,
+                                    color: statusColor,
+                                    size: 77,
+                                  ),
+                          ),
+                          const SizedBox(height: 22),
+                          Text(
+                            heading,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              color: darkText,
+                              fontSize: 27,
+                              height: 1.14,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          const Text(
+                            'This device is linked to the following parent account:',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: grayText,
+                              fontSize: 15,
+                              height: 1.45,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 24),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFECF4FF),
+                              borderRadius: BorderRadius.circular(18),
+                              border: Border.all(
+                                color: const Color(0xFFD2E4FC),
+                              ),
+                            ),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const CircleAvatar(
+                                  backgroundColor: Color(0xFFCCE2FF),
+                                  radius: 31,
+                                  child: Icon(
+                                    Icons.person_rounded,
+                                    size: 36,
+                                    color: Color(0xFF2665C4),
+                                  ),
+                                ),
+                                const SizedBox(width: 13),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        parentName.isNotEmpty
+                                            ? parentName
+                                            : 'Parent name not available',
+                                        style: const TextStyle(
+                                          color: darkText,
+                                          fontWeight: FontWeight.w900,
+                                          fontSize: 16,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        parentEmail.isNotEmpty
+                                            ? parentEmail
+                                            : 'Email not available',
+                                        softWrap: true,
+                                        style: const TextStyle(
+                                          color: grayText,
+                                          fontSize: 13,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 11),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                          vertical: 6,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: statusBackground,
+                                          borderRadius: BorderRadius.circular(
+                                            20,
+                                          ),
+                                        ),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(
+                                              Icons.circle,
+                                              color: statusColor,
+                                              size: 9,
+                                            ),
+                                            const SizedBox(width: 6),
+                                            Text(
+                                              statusText,
+                                              style: TextStyle(
+                                                color: statusColor,
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (!verified) ...[
+                            const SizedBox(height: 12),
+                            Text(
+                              helpText,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                height: 1.4,
+                                color: grayText,
+                              ),
+                            ),
+                          ],
+                          const SizedBox(height: 26),
+                          SizedBox(
+                            width: double.infinity,
+                            child: FilledButton(
+                              onPressed: () =>
+                                  Navigator.of(dialogContext).pop(),
+                              style: FilledButton.styleFrom(
+                                backgroundColor: const Color(0xFF2963C3),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 15,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                              ),
+                              child: const Text(
+                                'Continue',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 17,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
     );
   }
 
@@ -1415,11 +1708,11 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   }
 
   bool isConnected(Map<String, dynamic> data) {
-    final pairingStatus = (data['pairingStatus'] ?? '').toString();
-
-    return pairingStatus == 'connected' ||
-        data['pairedParentId'] != null ||
-        data['pairedChildProfileId'] != null;
+    final parentId = (data['pairedParentId'] ?? '').toString().trim();
+    final profileId = (data['pairedChildProfileId'] ?? '').toString().trim();
+    return data['pairingStatus'] == 'connected' &&
+        parentId.isNotEmpty &&
+        profileId.isNotEmpty;
   }
 
   String appTitle(AppRule rule) {
@@ -1513,7 +1806,8 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
                   padding: const EdgeInsets.all(AppSpacing.lg),
                   child: AppErrorState(
                     title: 'Could Not Load Profile',
-                    message: 'Something went wrong loading your '
+                    message:
+                        'Something went wrong loading your '
                         'profile.\n\n${snapshot.error}',
                   ),
                 ),
@@ -1533,6 +1827,9 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
             if (connected) {
               _maybeSyncParentPhoneNumber(data);
             }
+            _ensureAppTimeLimitSubscription(
+              connected ? (data['pairedChildProfileId'] ?? '').toString() : '',
+            );
 
             return ListView(
               controller: _scrollController,
@@ -1555,10 +1852,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
                 if (connected) const SizedBox(height: 22),
                 if (connected) _emergencyAccessCard(data),
                 const SizedBox(height: 22),
-                KeyedSubtree(
-                  key: _reportsSectionKey,
-                  child: _topAppsSection(),
-                ),
+                _topAppsSection(),
                 const SizedBox(height: 22),
                 _weeklyTrendSection(),
               ],
@@ -1571,7 +1865,6 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         items: const [
           WellScreenNavItem(icon: Icons.home_rounded, label: 'Home'),
           WellScreenNavItem(icon: Icons.link_rounded, label: 'Pairing'),
-          WellScreenNavItem(icon: Icons.analytics_rounded, label: 'Reports'),
           WellScreenNavItem(icon: Icons.settings_rounded, label: 'Settings'),
         ],
         onTap: handleBottomNavTap,
@@ -1613,9 +1906,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
             onLongPress: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(
-                  builder: (_) => const CaptureDebugScreen(),
-                ),
+                MaterialPageRoute(builder: (_) => const CaptureDebugScreen()),
               );
             },
             child: _logoBox(),
@@ -2024,7 +2315,10 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
                 'Usage access permission is required to show real screen '
                     'time data.',
             textAlign: TextAlign.center,
-            style: const TextStyle(color: grayText, fontWeight: FontWeight.w600),
+            style: const TextStyle(
+              color: grayText,
+              fontWeight: FontWeight.w600,
+            ),
           ),
           const SizedBox(height: 12),
           _smallPurpleButton(
@@ -2073,7 +2367,10 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
             const SizedBox(height: 8),
             Text(
               'Daily Limit: $limitLabel',
-              style: const TextStyle(color: grayText, fontWeight: FontWeight.w800),
+              style: const TextStyle(
+                color: grayText,
+                fontWeight: FontWeight.w800,
+              ),
             ),
             const SizedBox(height: 10),
             ClipRRect(
@@ -2283,15 +2580,18 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   /// indicator. Full history with response/recovery times lives on
   /// ReportsScreen's Alerts tab (Synchronization Status card).
   Widget _syncStatusIndicator() {
-    final lastOutcome =
-        _syncLog.isNotEmpty ? _syncLog.last['outcome']?.toString() : null;
+    final lastOutcome = _syncLog.isNotEmpty
+        ? _syncLog.last['outcome']?.toString()
+        : null;
 
     String label;
     if (!_isOnline) {
-      label = 'Offline - usage data will sync automatically once '
+      label =
+          'Offline - usage data will sync automatically once '
           'reconnected.';
     } else if (lastOutcome == 'synced') {
-      label = 'Online - last sync succeeded. Also auto-syncs every '
+      label =
+          'Online - last sync succeeded. Also auto-syncs every '
           '${_usageAutoSyncInterval.inMinutes} min.';
     } else if (lastOutcome == 'queued_offline' ||
         lastOutcome == 'failed_timeout') {
@@ -2299,7 +2599,8 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     } else if (lastOutcome != null) {
       label = 'Online - last sync failed. Tap Sync Usage to retry.';
     } else {
-      label = 'Online - auto-syncs every '
+      label =
+          'Online - auto-syncs every '
           '${_usageAutoSyncInterval.inMinutes} min, or tap Sync Usage now.';
     }
 
@@ -2334,11 +2635,15 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   Widget _smsAlertsCard() {
     final hasPhoneNumber = _cachedParentPhoneNumber != null;
     final sentCount = _smsAlertLog
-        .where((entry) =>
-            entry['outcome'] == 'sent' || entry['outcome'] == 'delivered')
+        .where(
+          (entry) =>
+              entry['outcome'] == 'sent' || entry['outcome'] == 'delivered',
+        )
         .length;
     final failedCount = _smsAlertLog
-        .where((entry) => (entry['outcome'] as String? ?? '').startsWith('failed'))
+        .where(
+          (entry) => (entry['outcome'] as String? ?? '').startsWith('failed'),
+        )
         .length;
 
     return _whiteCard(
@@ -2365,13 +2670,13 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
           Text(
             !_smsPermissionGranted
                 ? 'Off. Grant SMS permission so a backup text alert can '
-                    'reach your parent even without internet, when a '
-                    'restricted app is opened.'
+                      'reach your parent even without internet, when a '
+                      'restricted app is opened.'
                 : hasPhoneNumber
-                    ? 'Enabled. Blocked-app alerts will text '
-                        '${_maskPhoneNumber(_cachedParentPhoneNumber!)}.'
-                    : 'Permission granted, but your parent hasn\'t added a '
-                        'phone number yet in their Profile Settings.',
+                ? 'Enabled. Blocked-app alerts will text '
+                      '${_maskPhoneNumber(_cachedParentPhoneNumber!)}.'
+                : 'Permission granted, but your parent hasn\'t added a '
+                      'phone number yet in their Profile Settings.',
             style: const TextStyle(
               color: grayText,
               fontWeight: FontWeight.w600,
@@ -2574,7 +2879,11 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         const Text(
           'Need a restricted app for something urgent? Ask your parent to '
           'temporarily lift restrictions.',
-          style: TextStyle(color: grayText, fontWeight: FontWeight.w600, fontSize: 13),
+          style: TextStyle(
+            color: grayText,
+            fontWeight: FontWeight.w600,
+            fontSize: 13,
+          ),
         ),
         const SizedBox(height: 10),
         TextField(

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -29,6 +30,199 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
 
   final childNameController = TextEditingController();
 
+  // Detect new successful pairings while the parent is on this screen.
+  // The initial server snapshot establishes a baseline, so existing
+  // connected devices do not trigger a confirmation on every visit.
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>?
+  _connectionSubscription;
+  Map<String, bool> _previousConnectionStates = {};
+  bool _hasInitialConnectionSnapshot = false;
+  bool _isSyncingParentDetails = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final parentUser = FirebaseAuth.instance.currentUser;
+    if (parentUser == null) return;
+
+    // Backfill parent details for devices paired before this feature existed.
+    // Only the owning parent writes these identity fields.
+    unawaited(_syncPublicParentDetailsToChildren(parentUser));
+
+    _connectionSubscription = FirebaseFirestore.instance
+        .collection('child_profiles')
+        .where('parentId', isEqualTo: parentUser.uid)
+        .snapshots(includeMetadataChanges: true)
+        .listen(_onChildProfilesUpdated, onError: (Object _) {});
+  }
+
+  /// Details deliberately copied only into the parent's own child profiles.
+  /// The child does not need read permission for the parent's users document.
+  Future<Map<String, String>> _parentIdentityFields(User parentUser) async {
+    var name = (parentUser.displayName ?? '').trim();
+    var email = (parentUser.email ?? '').trim();
+
+    try {
+      final parentDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(parentUser.uid)
+          .get();
+      final profile = parentDoc.data() ?? <String, dynamic>{};
+      final profileName =
+          (profile['fullName'] ??
+                  profile['displayName'] ??
+                  profile['name'] ??
+                  '')
+              .toString()
+              .trim();
+      final profileEmail = (profile['email'] ?? '').toString().trim();
+      if (profileName.isNotEmpty) name = profileName;
+      if (email.isEmpty && profileEmail.isNotEmpty) email = profileEmail;
+    } catch (error) {
+      debugPrint('Could not read parent display details: $error');
+    }
+
+    return {
+      if (name.isNotEmpty) 'parentDisplayName': name,
+      if (email.isNotEmpty) 'parentEmail': email,
+    };
+  }
+
+  /// Backfills existing child profiles without generating new pairing codes.
+  /// Manual retries give visible feedback instead of swallowing failures.
+  Future<void> _syncPublicParentDetailsToChildren(
+    User parentUser, {
+    bool showFeedback = false,
+  }) async {
+    if (_isSyncingParentDetails) return;
+    _isSyncingParentDetails = true;
+    if (mounted) setState(() {});
+    try {
+      final details = await _parentIdentityFields(parentUser);
+      if ((details['parentDisplayName'] ?? '').trim().isEmpty ||
+          (details['parentEmail'] ?? '').trim().isEmpty) {
+        throw StateError(
+          'Set your full name and email in the parent account profile first.',
+        );
+      }
+      final profiles = await FirebaseFirestore.instance
+          .collection('child_profiles')
+          .where('parentId', isEqualTo: parentUser.uid)
+          .get(const GetOptions(source: Source.server));
+      var updated = 0;
+      for (final profile in profiles.docs) {
+        final oldData = profile.data();
+        if (details.entries.any((field) => oldData[field.key] != field.value)) {
+          await profile.reference
+              .set(details, SetOptions(merge: true))
+              .timeout(const Duration(seconds: 12));
+          updated++;
+        }
+      }
+      if (showFeedback && mounted) {
+        showMessage(
+          'Parent details synced. $updated child profile(s) updated.',
+        );
+      }
+    } catch (error) {
+      debugPrint('Could not sync linked parent identity: $error');
+      if (showFeedback && mounted) {
+        showMessage('Parent details sync failed: $error');
+      }
+    } finally {
+      _isSyncingParentDetails = false;
+      if (mounted) setState(() {});
+    }
+  }
+
+  void _onChildProfilesUpdated(QuerySnapshot<Map<String, dynamic>> snapshot) {
+    // Cached snapshots may be stale; only use server-confirmed states to
+    // decide that a device has actually completed pairing.
+    if (!mounted || snapshot.metadata.isFromCache) return;
+
+    final currentStates = <String, bool>{
+      for (final doc in snapshot.docs)
+        doc.id: doc.data()['pairingStatus'] == 'connected',
+    };
+
+    if (!_hasInitialConnectionSnapshot) {
+      _previousConnectionStates = currentStates;
+      _hasInitialConnectionSnapshot = true;
+      return;
+    }
+
+    final newlyConnected = snapshot.docs.where(
+      (doc) =>
+          _previousConnectionStates[doc.id] == false &&
+          currentStates[doc.id] == true,
+    );
+
+    final childNames = newlyConnected
+        .map((doc) => (doc.data()['name'] ?? 'Student').toString())
+        .toList();
+
+    // Update before showing dialogs to prevent duplicate confirmations on
+    // Firestore metadata changes or widget rebuilds.
+    _previousConnectionStates = currentStates;
+
+    for (final childName in childNames) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
+        _showPairingSuccessDialog(childName);
+      });
+    }
+  }
+
+  void _showPairingSuccessDialog(String childName) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
+        title: const Text(
+          'Device Connected Successfully!',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: darkText, fontWeight: FontWeight.w900),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircleAvatar(
+              radius: 42,
+              backgroundColor: softGreen,
+              child: Icon(Icons.verified_rounded, color: teal, size: 55),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              '$childName’s device has been successfully connected to your account.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: grayText,
+                height: 1.35,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+        actionsAlignment: MainAxisAlignment.center,
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            style: FilledButton.styleFrom(
+              backgroundColor: purple,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+            ),
+            child: const Text(
+              'Continue',
+              style: TextStyle(fontWeight: FontWeight.w900),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   bool isGenerating = false;
   String generatedCode = '';
   String generatedChildName = '';
@@ -36,6 +230,7 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
 
   @override
   void dispose() {
+    _connectionSubscription?.cancel();
     childNameController.dispose();
     super.dispose();
   }
@@ -87,12 +282,14 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
 
       final childProfileRef = firestore.collection('child_profiles').doc();
       final pairingCodeRef = firestore.collection('pairing_codes').doc(code);
+      final parentIdentity = await _parentIdentityFields(parentUser);
 
       final batch = firestore.batch();
 
       batch.set(childProfileRef, {
         'id': childProfileRef.id,
         'parentId': parentUser.uid,
+        ...parentIdentity,
         'name': childName,
         'pairingStatus': 'waiting',
         'createdAt': FieldValue.serverTimestamp(),
@@ -175,18 +372,6 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Future<void> logout() async {
-    await FirebaseAuth.instance.signOut();
-
-    if (!mounted) return;
-
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(builder: (_) => const LoginScreen()),
-      (route) => false,
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final parentUser = FirebaseAuth.instance.currentUser;
@@ -219,13 +404,6 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
         backgroundColor: pageBg,
         foregroundColor: darkText,
         elevation: 0,
-        actions: [
-          IconButton(
-            tooltip: 'Logout',
-            onPressed: logout,
-            icon: const Icon(Icons.logout_rounded),
-          ),
-        ],
       ),
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
         stream: childProfilesStream(parentUser.uid),
@@ -236,7 +414,8 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
                 padding: const EdgeInsets.all(AppSpacing.lg),
                 child: AppErrorState(
                   title: 'Could Not Load Devices',
-                  message: 'Something went wrong loading paired '
+                  message:
+                      'Something went wrong loading paired '
                       'devices.\n\n${snapshot.error}',
                 ),
               ),
@@ -531,6 +710,39 @@ class _DevicePairingScreenState extends State<DevicePairingScreen> {
           ),
         ),
         const SizedBox(height: 12),
+        if (childDocs.isNotEmpty) ...[
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _isSyncingParentDetails
+                  ? null
+                  : () {
+                      final parentUser = FirebaseAuth.instance.currentUser;
+                      if (parentUser != null) {
+                        unawaited(
+                          _syncPublicParentDetailsToChildren(
+                            parentUser,
+                            showFeedback: true,
+                          ),
+                        );
+                      }
+                    },
+              icon: _isSyncingParentDetails
+                  ? const SizedBox(
+                      width: 17,
+                      height: 17,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.sync_rounded),
+              label: Text(
+                _isSyncingParentDetails
+                    ? 'Syncing Parent Details...'
+                    : 'Sync Parent Details',
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+        ],
         if (childDocs.isEmpty)
           _emptyChildrenCard()
         else

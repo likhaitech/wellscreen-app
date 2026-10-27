@@ -59,9 +59,7 @@ class _RulesScreenState extends State<RulesScreen> {
 
       setState(() {
         _installedApps = apps;
-        _rulesByPackage = {
-          for (final rule in rules) rule.packageName: rule,
-        };
+        _rulesByPackage = {for (final rule in rules) rule.packageName: rule};
       });
     } catch (e) {
       setState(() {
@@ -93,11 +91,9 @@ class _RulesScreenState extends State<RulesScreen> {
 
     if (!mounted) return;
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Rules saved successfully.'),
-      ),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Rules saved successfully.')));
   }
 
   void _updateMonitor(InstalledAppInfo app, bool value) {
@@ -147,24 +143,26 @@ class _RulesScreenState extends State<RulesScreen> {
 
     if (!mounted) return;
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('All rules cleared.'),
-      ),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('All rules cleared.')));
   }
 
   @override
   Widget build(BuildContext context) {
-    final monitoredRules = _rulesByPackage.values
-        .where((rule) => rule.monitorEnabled)
-        .toList()
-      ..sort((a, b) => a.appName.toLowerCase().compareTo(b.appName.toLowerCase()));
+    final monitoredRules =
+        _rulesByPackage.values.where((rule) => rule.monitorEnabled).toList()
+          ..sort(
+            (a, b) =>
+                a.appName.toLowerCase().compareTo(b.appName.toLowerCase()),
+          );
 
-    final restrictedRules = _rulesByPackage.values
-        .where((rule) => rule.restrictEnabled)
-        .toList()
-      ..sort((a, b) => a.appName.toLowerCase().compareTo(b.appName.toLowerCase()));
+    final restrictedRules =
+        _rulesByPackage.values.where((rule) => rule.restrictEnabled).toList()
+          ..sort(
+            (a, b) =>
+                a.appName.toLowerCase().compareTo(b.appName.toLowerCase()),
+          );
 
     final filteredApps = _installedApps.where((app) {
       final query = _searchText.toLowerCase().trim();
@@ -193,107 +191,120 @@ class _RulesScreenState extends State<RulesScreen> {
             onPressed: _saving ? null : _saveAllRules,
             child: _saving
                 ? const SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
                 : const Text(
-              'SAVE',
-              style: TextStyle(fontWeight: FontWeight.w800),
-            ),
+                    'SAVE',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
           ),
         ],
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+          ? const Center(
+              child: CircularProgressIndicator(color: AppColors.primary),
+            )
           : _loadError != null
           ? Center(
-        child: Padding(
-          padding: const EdgeInsets.all(AppSpacing.lg),
-          child: AppErrorState(
-            title: 'Could Not Load Rules',
-            message: _loadError!,
-            onRetry: _loadAppsAndRules,
-          ),
-        ),
-      )
-          : Column(
-        children: [
-          _PermissionCard(
-            monitoredCount: monitoredRules.length,
-            restrictedCount: restrictedRules.length,
-            onOpenAccessibility:
-            _androidAppService.openAccessibilitySettings,
-            onOpenUsageAccess:
-            _androidAppService.openUsageAccessSettings,
-            onClearRules: _clearRules,
-          ),
-          _ActiveRulesCard(
-            monitoredRules: monitoredRules,
-            restrictedRules: restrictedRules,
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
-            child: TextField(
-              decoration: InputDecoration(
-                filled: true,
-                fillColor: Colors.white,
-                prefixIcon: const Icon(Icons.search),
-                hintText: 'Search apps',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
+              child: Padding(
+                padding: const EdgeInsets.all(AppSpacing.lg),
+                child: AppErrorState(
+                  title: 'Could Not Load Rules',
+                  message: _loadError!,
+                  onRetry: _loadAppsAndRules,
                 ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  borderSide: const BorderSide(
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-              ),
-              onChanged: (value) {
-                setState(() {
-                  _searchText = value;
-                });
-              },
-            ),
-          ),
-          Expanded(
-            child: filteredApps.isEmpty
-                ? Padding(
-              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
-              child: AppEmptyState(
-                icon: Icons.apps_rounded,
-                title: 'No Apps Found',
-                message: _searchText.trim().isEmpty
-                    ? 'No installed apps were detected on this device.'
-                    : 'No installed apps match "$_searchText".',
               ),
             )
-                : ListView.separated(
-              padding: const EdgeInsets.only(bottom: 18),
-              itemCount: filteredApps.length,
-              separatorBuilder: (context, index) =>
-              const Divider(height: 1),
-              itemBuilder: (context, index) {
-                final app = filteredApps[index];
-                final rule = _rulesByPackage[app.packageName];
+          : CustomScrollView(
+              slivers: [
+                SliverToBoxAdapter(
+                  child: Column(
+                    children: [
+                      _PermissionCard(
+                        monitoredCount: monitoredRules.length,
+                        restrictedCount: restrictedRules.length,
+                        onOpenAccessibility:
+                            _androidAppService.openAccessibilitySettings,
+                        onOpenUsageAccess:
+                            _androidAppService.openUsageAccessSettings,
+                        onClearRules: _clearRules,
+                      ),
+                      _ActiveRulesCard(
+                        monitoredRules: monitoredRules,
+                        restrictedRules: restrictedRules,
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+                        child: TextField(
+                          decoration: InputDecoration(
+                            filled: true,
+                            fillColor: Colors.white,
+                            prefixIcon: const Icon(Icons.search),
+                            hintText: 'Search apps',
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: const BorderSide(
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
+                          ),
+                          onChanged: (value) {
+                            setState(() {
+                              _searchText = value;
+                            });
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (filteredApps.isEmpty)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: AppSpacing.md,
+                      ),
+                      child: AppEmptyState(
+                        icon: Icons.apps_rounded,
+                        title: 'No Apps Found',
+                        message: _searchText.trim().isEmpty
+                            ? 'No installed apps were detected on this device.'
+                            : 'No installed apps match "$_searchText".',
+                      ),
+                    ),
+                  )
+                else
+                  SliverPadding(
+                    padding: const EdgeInsets.only(bottom: 18),
+                    sliver: SliverList.separated(
+                      itemCount: filteredApps.length,
+                      separatorBuilder: (context, index) =>
+                          const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        final app = filteredApps[index];
+                        final rule = _rulesByPackage[app.packageName];
 
-                return _AppRuleRow(
-                  app: app,
-                  monitorEnabled: rule?.monitorEnabled ?? false,
-                  restrictEnabled: rule?.restrictEnabled ?? false,
-                  onMonitorChanged: (value) {
-                    _updateMonitor(app, value);
-                  },
-                  onRestrictChanged: (value) {
-                    _updateRestrict(app, value);
-                  },
-                );
-              },
+                        return _AppRuleRow(
+                          app: app,
+                          monitorEnabled: rule?.monitorEnabled ?? false,
+                          restrictEnabled: rule?.restrictEnabled ?? false,
+                          onMonitorChanged: (value) {
+                            _updateMonitor(app, value);
+                          },
+                          onRestrictChanged: (value) {
+                            _updateRestrict(app, value);
+                          },
+                        );
+                      },
+                    ),
+                  ),
+              ],
             ),
-          ),
-        ],
-      ),
     );
   }
 }
@@ -318,9 +329,7 @@ class _PermissionCard extends StatelessWidget {
     return Card(
       color: AppColors.primaryLight,
       margin: const EdgeInsets.fromLTRB(14, 14, 14, 10),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(18),
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       child: Padding(
         padding: const EdgeInsets.all(18),
         child: Column(
@@ -439,10 +448,7 @@ class _CountBadge extends StatelessWidget {
               '$count $label',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: color,
-                fontWeight: FontWeight.w900,
-              ),
+              style: TextStyle(color: color, fontWeight: FontWeight.w900),
             ),
           ),
         ],
@@ -467,9 +473,7 @@ class _ActiveRulesCard extends StatelessWidget {
     return Card(
       color: Colors.white,
       margin: const EdgeInsets.fromLTRB(14, 0, 14, 12),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(18),
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       child: ExpansionTile(
         initiallyExpanded: hasRules,
         tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -695,10 +699,7 @@ class _CompactRuleSwitch extends StatelessWidget {
           const SizedBox(height: 2),
           Transform.scale(
             scale: 0.72,
-            child: Switch(
-              value: value,
-              onChanged: onChanged,
-            ),
+            child: Switch(value: value, onChanged: onChanged),
           ),
         ],
       ),

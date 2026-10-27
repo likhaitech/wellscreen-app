@@ -7,6 +7,7 @@ import '../services/pattern_detection_service.dart';
 import '../services/push_notification_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/wellscreen_bottom_nav.dart';
+import 'all_apps_screen.dart';
 import 'device_pairing_screen.dart';
 import 'gps_map_screen.dart';
 import 'login_screen.dart';
@@ -281,9 +282,7 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
   void openRulesScreen() {
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => const RulesScreen(),
-      ),
+      MaterialPageRoute(builder: (_) => const RulesScreen()),
     );
   }
 
@@ -307,9 +306,7 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => ReportsScreen(
-            childProfileId: _primaryChildId ?? '',
-          ),
+          builder: (_) => ReportsScreen(childProfileId: _primaryChildId ?? ''),
         ),
       );
     } else if (index == 3) {
@@ -321,8 +318,8 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
   }
 
   QueryDocumentSnapshot<Map<String, dynamic>>? getPrimaryChildDoc(
-      List<QueryDocumentSnapshot<Map<String, dynamic>>> childDocs,
-      ) {
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> childDocs,
+  ) {
     if (childDocs.isEmpty) return null;
 
     for (final doc in childDocs) {
@@ -345,7 +342,7 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
               Navigator.pushAndRemoveUntil(
                 context,
                 MaterialPageRoute(builder: (_) => const LoginScreen()),
-                    (route) => false,
+                (route) => false,
               );
             },
             child: const Text('Return to Login'),
@@ -371,7 +368,8 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                   padding: const EdgeInsets.all(AppSpacing.lg),
                   child: AppErrorState(
                     title: 'Could Not Load Dashboard',
-                    message: 'Something went wrong loading your child '
+                    message:
+                        'Something went wrong loading your child '
                         'profiles.\n\n${snapshot.error}',
                   ),
                 ),
@@ -678,73 +676,73 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
           padding: const EdgeInsets.all(18),
           child: compact
               ? Column(
-            children: [
-              Row(
-                children: [
-                  _profileAvatar(connected),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: _profileInfo(
-                      childName: childName,
-                      childEmail: childEmail,
-                      connected: connected,
+                  children: [
+                    Row(
+                      children: [
+                        _profileAvatar(connected),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: _profileInfo(
+                            childName: childName,
+                            childEmail: childEmail,
+                            connected: connected,
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              Row(
-                children: [
-                  Expanded(
-                    child: _smallPurpleButton(
-                      label: 'View Map',
-                      onTap: () => openGpsMap(child),
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _smallPurpleButton(
+                            label: 'View Map',
+                            onTap: () => openGpsMap(child),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: _smallPurpleButton(
+                            label: 'View Rules',
+                            onTap: openRulesScreen,
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _smallPurpleButton(
-                      label: 'View Rules',
-                      onTap: openRulesScreen,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          )
+                  ],
+                )
               : Row(
-            children: [
-              _profileAvatar(connected),
-              const SizedBox(width: 16),
-              Expanded(
-                child: _profileInfo(
-                  childName: childName,
-                  childEmail: childEmail,
-                  connected: connected,
+                  children: [
+                    _profileAvatar(connected),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: _profileInfo(
+                        childName: childName,
+                        childEmail: childEmail,
+                        connected: connected,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Column(
+                      children: [
+                        SizedBox(
+                          width: 130,
+                          child: _smallPurpleButton(
+                            label: 'View Map',
+                            onTap: () => openGpsMap(child),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: 130,
+                          child: _smallPurpleButton(
+                            label: 'View Rules',
+                            onTap: openRulesScreen,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
-              ),
-              const SizedBox(width: 12),
-              Column(
-                children: [
-                  SizedBox(
-                    width: 130,
-                    child: _smallPurpleButton(
-                      label: 'View Map',
-                      onTap: () => openGpsMap(child),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    width: 130,
-                    child: _smallPurpleButton(
-                      label: 'View Rules',
-                      onTap: openRulesScreen,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
         );
       },
     );
@@ -856,8 +854,10 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     final totalDuration = usageTotalDuration(child);
     const warningLimit = PatternDetectionService.warningTotalUsageLimit;
     final progress = hasReport
-        ? (totalDuration.inMilliseconds / warningLimit.inMilliseconds)
-            .clamp(0.0, 1.0)
+        ? (totalDuration.inMilliseconds / warningLimit.inMilliseconds).clamp(
+            0.0,
+            1.0,
+          )
         : 0.0;
     final hours = totalDuration.inHours;
     final minutes = totalDuration.inMinutes.remainder(60);
@@ -1133,9 +1133,8 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (_) => ReportsScreen(
-                        childProfileId: _primaryChildId ?? '',
-                      ),
+                      builder: (_) =>
+                          AllAppsScreen(childProfileId: _primaryChildId ?? ''),
                     ),
                   );
                 },

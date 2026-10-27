@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import '../services/app_time_limit_service.dart';
 import 'login_screen.dart';
 
 class ProfileSettingsScreen extends StatefulWidget {
@@ -21,7 +22,6 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   static const Color pageBg = AppColors.background;
   static const Color softPurple = AppColors.primaryLight;
   static const Color softGreen = AppColors.successBg;
-  static const Color softOrange = AppColors.warningBg;
   static const Color softRed = Color(0xFFFFEFEF);
   static const Color softBlue = AppColors.infoBg;
 
@@ -93,10 +93,44 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
       await user.updateDisplayName(fullName);
       await user.updatePhotoURL(photoUrl.isEmpty ? null : photoUrl);
 
+      // Keep linked child profiles consistent when the parent edits their name.
+      // Child accounts cannot read the parent's private users/{uid} document.
+      // If the sync fails, the profile save remains successful and the parent
+      // can retry using Devices > Sync Parent Details.
+      var identitySyncFailed = false;
+      if (role == 'parent') {
+        try {
+          final email = (user.email ?? '').trim();
+          if (email.isEmpty) {
+            throw StateError('Parent email address is missing.');
+          }
+          final children = await firestore
+              .collection('child_profiles')
+              .where('parentId', isEqualTo: user.uid)
+              .get(const GetOptions(source: Source.server));
+          for (final child in children.docs) {
+            if (child.data()['parentDisplayName'] != fullName ||
+                child.data()['parentEmail'] != email) {
+              await child.reference.set({
+                'parentDisplayName': fullName,
+                'parentEmail': email,
+              }, SetOptions(merge: true));
+            }
+          }
+        } catch (error) {
+          debugPrint('Parent profile saved, identity sync failed: $error');
+          identitySyncFailed = true;
+        }
+      }
+
       if (!mounted) return;
 
       Navigator.pop(context);
-      showMessage('Profile details updated successfully.');
+      showMessage(
+        identitySyncFailed
+            ? 'Profile saved. Open Devices and tap Sync Parent Details.'
+            : 'Profile details updated successfully.',
+      );
     } catch (e) {
       showMessage('Failed to update profile: $e');
     } finally {
@@ -296,10 +330,10 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                           ),
                           icon: const Icon(Icons.save_rounded),
                           label: Text(
-                            sheetIsSubmitting ? 'Changing...' : 'Change Password',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w900,
-                            ),
+                            sheetIsSubmitting
+                                ? 'Changing...'
+                                : 'Change Password',
+                            style: const TextStyle(fontWeight: FontWeight.w900),
                           ),
                         ),
                       ),
@@ -315,6 +349,8 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   }
 
   Future<void> logout() async {
+    // Clear the child-specific native limit cache before switching accounts.
+    await AppTimeLimitService().clearCachedLimits();
     await FirebaseAuth.instance.signOut();
 
     if (!mounted) return;
@@ -538,7 +574,8 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                 padding: const EdgeInsets.all(AppSpacing.lg),
                 child: AppErrorState(
                   title: 'Could Not Load Profile',
-                  message: 'Something went wrong loading your profile '
+                  message:
+                      'Something went wrong loading your profile '
                       'details.\n\n${snapshot.error}',
                 ),
               ),
@@ -558,16 +595,10 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
           final photoUrl = (data['profilePhotoUrl'] ?? user.photoURL ?? '')
               .toString();
 
-          final phoneNumber = (data['phoneNumber'] ?? 'Not added').toString();
-
-          final extraDetail = role == 'child'
-              ? (data['gradeSection'] ?? 'Not added').toString()
-              : (data['relationship'] ?? 'Not added').toString();
-
           final roleLabel = role == 'parent'
               ? 'Guardian'
               : role == 'child'
-              ? 'Student Account'
+              ? 'Child Account'
               : 'User Account';
 
           return ListView(
@@ -592,36 +623,6 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                     title: 'Edit Profile',
                     subtitle:
                         'Change name, photo URL, phone number, and details.',
-                    onTap: () => showEditProfileSheet(data, role),
-                  ),
-                  _settingsTile(
-                    icon: Icons.photo_camera_rounded,
-                    iconColor: teal,
-                    backgroundColor: softGreen,
-                    title: 'Change Profile Picture',
-                    subtitle: photoUrl.isEmpty
-                        ? 'No profile photo added yet.'
-                        : 'Profile photo URL is saved.',
-                    onTap: () => showEditProfileSheet(data, role),
-                  ),
-                  _settingsTile(
-                    icon: Icons.phone_rounded,
-                    iconColor: Colors.orange,
-                    backgroundColor: softOrange,
-                    title: 'Phone Number',
-                    subtitle: phoneNumber,
-                    onTap: () => showEditProfileSheet(data, role),
-                  ),
-                  _settingsTile(
-                    icon: role == 'child'
-                        ? Icons.school_rounded
-                        : Icons.family_restroom_rounded,
-                    iconColor: purple,
-                    backgroundColor: softBlue,
-                    title: role == 'child'
-                        ? 'Grade / Section'
-                        : 'Relationship to Child',
-                    subtitle: extraDetail,
                     onTap: () => showEditProfileSheet(data, role),
                   ),
                 ],
