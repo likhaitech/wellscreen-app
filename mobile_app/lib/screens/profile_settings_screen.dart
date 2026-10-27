@@ -93,10 +93,44 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
       await user.updateDisplayName(fullName);
       await user.updatePhotoURL(photoUrl.isEmpty ? null : photoUrl);
 
+      // Keep linked child profiles consistent when the parent edits their name.
+      // Child accounts cannot read the parent's private users/{uid} document.
+      // If the sync fails, the profile save remains successful and the parent
+      // can retry using Devices > Sync Parent Details.
+      var identitySyncFailed = false;
+      if (role == 'parent') {
+        try {
+          final email = (user.email ?? '').trim();
+          if (email.isEmpty) {
+            throw StateError('Parent email address is missing.');
+          }
+          final children = await firestore
+              .collection('child_profiles')
+              .where('parentId', isEqualTo: user.uid)
+              .get(const GetOptions(source: Source.server));
+          for (final child in children.docs) {
+            if (child.data()['parentDisplayName'] != fullName ||
+                child.data()['parentEmail'] != email) {
+              await child.reference.set({
+                'parentDisplayName': fullName,
+                'parentEmail': email,
+              }, SetOptions(merge: true));
+            }
+          }
+        } catch (error) {
+          debugPrint('Parent profile saved, identity sync failed: $error');
+          identitySyncFailed = true;
+        }
+      }
+
       if (!mounted) return;
 
       Navigator.pop(context);
-      showMessage('Profile details updated successfully.');
+      showMessage(
+        identitySyncFailed
+            ? 'Profile saved. Open Devices and tap Sync Parent Details.'
+            : 'Profile details updated successfully.',
+      );
     } catch (e) {
       showMessage('Failed to update profile: $e');
     } finally {
@@ -564,7 +598,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
           final roleLabel = role == 'parent'
               ? 'Guardian'
               : role == 'child'
-              ? 'Student Account'
+              ? 'Child Account'
               : 'User Account';
 
           return ListView(

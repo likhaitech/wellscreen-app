@@ -558,6 +558,9 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
 
     setState(() => isPairing = true);
 
+    String newlyPairedParentId = '';
+    String newlyPairedProfileId = '';
+
     try {
       final firestore = FirebaseFirestore.instance;
 
@@ -585,6 +588,9 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
         if (parentId.isEmpty || childProfileId.isEmpty) {
           throw Exception('Invalid pairing code data.');
         }
+
+        newlyPairedParentId = parentId;
+        newlyPairedProfileId = childProfileId;
 
         if (expiresAt is Timestamp) {
           final expiryDate = expiresAt.toDate();
@@ -630,7 +636,10 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
 
       if (!mounted) return;
 
-      showConnectedSuccessDialog();
+      showConnectedSuccessDialog(
+        parentId: newlyPairedParentId,
+        childProfileId: newlyPairedProfileId,
+      );
     } catch (e) {
       final message = e.toString().replaceFirst('Exception: ', '');
       showMessage(message);
@@ -1350,57 +1359,278 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     }
   }
 
-  void showConnectedSuccessDialog() {
-    showDialog(
+  /// Shows the actual pairing and identity-verification state. Missing
+  /// parent name/email is NOT proof that the pairing was disconnected.
+  /// Those fields are copied by the owning parent into the child profile.
+  void showConnectedSuccessDialog({String? parentId, String? childProfileId}) {
+    final linkedParentId =
+        parentId ?? (_cachedUserData?['pairedParentId'] ?? '').toString();
+    final linkedProfileId =
+        childProfileId ??
+        (_cachedUserData?['pairedChildProfileId'] ?? '').toString();
+    final signedInChildId = FirebaseAuth.instance.currentUser?.uid;
+
+    if (linkedParentId.isEmpty ||
+        linkedProfileId.isEmpty ||
+        signedInChildId == null) {
+      showMessage('This device has no linked parent account.');
+      return;
+    }
+
+    showDialog<void>(
       context: context,
-      builder: (_) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(26),
-          ),
-          title: const Text(
-            'Device Connected Successfully!',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: darkText, fontWeight: FontWeight.w900),
-          ),
-          content: const Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircleAvatar(
-                radius: 42,
-                backgroundColor: softGreen,
-                child: Icon(Icons.verified_rounded, color: teal, size: 55),
-              ),
-              SizedBox(height: 16),
-              Text(
-                'Your device has been successfully connected to your parent’s account.',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: grayText,
-                  height: 1.35,
-                  fontWeight: FontWeight.w600,
+      builder: (dialogContext) =>
+          StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+            stream: FirebaseFirestore.instance
+                .collection('child_profiles')
+                .doc(linkedProfileId)
+                .snapshots(),
+            builder: (context, snapshot) {
+              final loading = !snapshot.hasData && !snapshot.hasError;
+              final loadFailed = snapshot.hasError;
+              final profile = snapshot.data?.data();
+              final paired =
+                  !loading &&
+                  !loadFailed &&
+                  snapshot.data?.exists == true &&
+                  profile?['parentId'] == linkedParentId &&
+                  profile?['childAccountId'] == signedInChildId &&
+                  profile?['pairingStatus'] == 'connected';
+              final parentName = paired
+                  ? (profile?['parentDisplayName'] ?? '').toString().trim()
+                  : '';
+              final parentEmail = paired
+                  ? (profile?['parentEmail'] ?? '').toString().trim()
+                  : '';
+              final identityReady =
+                  parentName.isNotEmpty && parentEmail.isNotEmpty;
+              final verified = paired && identityReady;
+              final statusText = loading
+                  ? 'Checking...'
+                  : loadFailed
+                  ? 'Verification Unavailable'
+                  : !paired
+                  ? 'Not Connected'
+                  : !identityReady
+                  ? 'Not Verified'
+                  : 'Connected';
+              final statusColor = loading || loadFailed
+                  ? const Color(0xFFB7791F)
+                  : verified
+                  ? const Color(0xFF05884A)
+                  : AppColors.danger;
+              final statusBackground = loading || loadFailed
+                  ? const Color(0xFFFFF2D6)
+                  : verified
+                  ? const Color(0xFFD0FBE5)
+                  : const Color(0xFFFFE1E1);
+              final heading = verified
+                  ? 'Parent Account\nConnected'
+                  : loading
+                  ? 'Checking Parent\nAccount'
+                  : !paired && !loadFailed
+                  ? 'Parent Account\nNot Connected'
+                  : 'Parent Account\nNot Verified';
+              final helpText = loading
+                  ? 'Checking the linked parent account...'
+                  : loadFailed
+                  ? 'Could not verify account details. Check your internet '
+                        'connection and try again.'
+                  : !paired
+                  ? 'This parent link is missing or no longer valid. '
+                        'Please pair this device again.'
+                  : !identityReady
+                  ? 'The device is paired, but the parent name and '
+                        'email have not synced. Ask your parent to open '
+                        'Devices and tap Sync Parent Details.'
+                  : 'Parent account details verified for this pairing.';
+
+              return Dialog(
+                backgroundColor: Colors.white,
+                insetPadding: const EdgeInsets.symmetric(
+                  horizontal: 22,
+                  vertical: 24,
                 ),
-              ),
-            ],
-          ),
-          actionsAlignment: MainAxisAlignment.center,
-          actions: [
-            FilledButton(
-              onPressed: () => Navigator.pop(context),
-              style: FilledButton.styleFrom(
-                backgroundColor: purple,
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
+                  borderRadius: BorderRadius.circular(30),
                 ),
-              ),
-              child: const Text(
-                'Continue',
-                style: TextStyle(fontWeight: FontWeight.w900),
-              ),
-            ),
-          ],
-        );
-      },
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 440),
+                  child: SingleChildScrollView(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(24, 30, 24, 28),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircleAvatar(
+                            radius: 49,
+                            backgroundColor: verified
+                                ? const Color(0xFFDDF7EB)
+                                : statusBackground,
+                            child: loading
+                                ? const CircularProgressIndicator(color: purple)
+                                : Icon(
+                                    verified
+                                        ? Icons.check_circle_rounded
+                                        : Icons.error_rounded,
+                                    color: statusColor,
+                                    size: 77,
+                                  ),
+                          ),
+                          const SizedBox(height: 22),
+                          Text(
+                            heading,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              color: darkText,
+                              fontSize: 27,
+                              height: 1.14,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          const Text(
+                            'This device is linked to the following parent account:',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: grayText,
+                              fontSize: 15,
+                              height: 1.45,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 24),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFECF4FF),
+                              borderRadius: BorderRadius.circular(18),
+                              border: Border.all(
+                                color: const Color(0xFFD2E4FC),
+                              ),
+                            ),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const CircleAvatar(
+                                  backgroundColor: Color(0xFFCCE2FF),
+                                  radius: 31,
+                                  child: Icon(
+                                    Icons.person_rounded,
+                                    size: 36,
+                                    color: Color(0xFF2665C4),
+                                  ),
+                                ),
+                                const SizedBox(width: 13),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        parentName.isNotEmpty
+                                            ? parentName
+                                            : 'Parent name not available',
+                                        style: const TextStyle(
+                                          color: darkText,
+                                          fontWeight: FontWeight.w900,
+                                          fontSize: 16,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        parentEmail.isNotEmpty
+                                            ? parentEmail
+                                            : 'Email not available',
+                                        softWrap: true,
+                                        style: const TextStyle(
+                                          color: grayText,
+                                          fontSize: 13,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 11),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                          vertical: 6,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: statusBackground,
+                                          borderRadius: BorderRadius.circular(
+                                            20,
+                                          ),
+                                        ),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(
+                                              Icons.circle,
+                                              color: statusColor,
+                                              size: 9,
+                                            ),
+                                            const SizedBox(width: 6),
+                                            Text(
+                                              statusText,
+                                              style: TextStyle(
+                                                color: statusColor,
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (!verified) ...[
+                            const SizedBox(height: 12),
+                            Text(
+                              helpText,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                height: 1.4,
+                                color: grayText,
+                              ),
+                            ),
+                          ],
+                          const SizedBox(height: 26),
+                          SizedBox(
+                            width: double.infinity,
+                            child: FilledButton(
+                              onPressed: () =>
+                                  Navigator.of(dialogContext).pop(),
+                              style: FilledButton.styleFrom(
+                                backgroundColor: const Color(0xFF2963C3),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 15,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                              ),
+                              child: const Text(
+                                'Continue',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 17,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
     );
   }
 
@@ -1478,11 +1708,11 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
   }
 
   bool isConnected(Map<String, dynamic> data) {
-    final pairingStatus = (data['pairingStatus'] ?? '').toString();
-
-    return pairingStatus == 'connected' ||
-        data['pairedParentId'] != null ||
-        data['pairedChildProfileId'] != null;
+    final parentId = (data['pairedParentId'] ?? '').toString().trim();
+    final profileId = (data['pairedChildProfileId'] ?? '').toString().trim();
+    return data['pairingStatus'] == 'connected' &&
+        parentId.isNotEmpty &&
+        profileId.isNotEmpty;
   }
 
   String appTitle(AppRule rule) {
