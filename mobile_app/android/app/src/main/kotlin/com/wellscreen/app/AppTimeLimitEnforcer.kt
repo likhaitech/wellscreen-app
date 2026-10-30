@@ -45,34 +45,49 @@ internal object AppTimeLimitEnforcer {
         "com.google.android.packageinstaller",
     )
 
-    fun isLimitReached(context: Context, targetPackage: String): Boolean {
+    data class Status(
+        val appName: String,
+        val limitMinutes: Int,
+        val remainingMilliseconds: Long,
+    )
+
+    fun isLimitReached(context: Context, targetPackage: String): Boolean =
+        getStatus(context, targetPackage)?.remainingMilliseconds?.let { it <= 0L } ?: false
+
+    /** Query the same UsageStats measurement used for blocking and reminders. */
+    fun getStatus(context: Context, targetPackage: String): Status? {
         if (targetPackage.isBlank() || targetPackage == context.packageName ||
             targetPackage in essentialPackages || isDefaultLauncher(context, targetPackage)
-        ) return false
+        ) return null
 
         return try {
             val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             val currentChildProfile = prefs.getString(ACTIVE_CHILD_KEY, null)
-            if (currentChildProfile.isNullOrBlank()) return false
+            if (currentChildProfile.isNullOrBlank()) return null
 
-            val raw = prefs.getString(LIMITS_KEY, null) ?: return false
+            val raw = prefs.getString(LIMITS_KEY, null) ?: return null
             val cache = JSONObject(raw)
-            if (cache.optString("childProfileId") != currentChildProfile) return false
+            if (cache.optString("childProfileId") != currentChildProfile) return null
 
-            val limits = cache.optJSONArray("limits") ?: return false
+            val limits = cache.optJSONArray("limits") ?: return null
             var limitMinutes: Int? = null
+            var appName = targetPackage
             for (index in 0 until limits.length()) {
                 val limit = limits.optJSONObject(index) ?: continue
                 if (limit.optString("packageName") != targetPackage) continue
                 val minutes = limit.optInt("limitMinutes", 0)
-                if (minutes in 1..MAX_DAILY_MINUTES) limitMinutes = minutes
+                if (minutes in 1..MAX_DAILY_MINUTES) {
+                    limitMinutes = minutes
+                    appName = limit.optString("appName").takeIf { it.isNotBlank() }
+                        ?: targetPackage
+                }
                 break
             }
-            val actualLimit = limitMinutes ?: return false
-            if (!hasUsageAccess(context)) return false
+            val actualLimit = limitMinutes ?: return null
+            if (!hasUsageAccess(context)) return null
 
             val statsManager = context.getSystemService(Context.USAGE_STATS_SERVICE)
-                as? UsageStatsManager ?: return false
+                as? UsageStatsManager ?: return null
             val now = System.currentTimeMillis()
             val localMidnight = Calendar.getInstance().apply {
                 set(Calendar.HOUR_OF_DAY, 0)
@@ -80,17 +95,16 @@ internal object AppTimeLimitEnforcer {
                 set(Calendar.SECOND, 0)
                 set(Calendar.MILLISECOND, 0)
             }.timeInMillis
-            // The Android aggregate can lag while an app remains foreground.
-            // Also compute complete + still-open sessions from UsageEvents.
-            // MAX (not sum) prevents double-counting the same session.
+            // UsageStats aggregates can lag during a continuous session.
+            // MAX avoids double-counting events and aggregates.
             val aggregates = statsManager.queryAndAggregateUsageStats(localMidnight, now)
             val aggregateMs = aggregates[targetPackage]?.totalTimeInForeground ?: 0L
             val eventsMs = usageFromEvents(statsManager, targetPackage, localMidnight, now)
             val usedMilliseconds = maxOf(aggregateMs, eventsMs)
-            usedMilliseconds >= actualLimit * 60_000L
+            Status(appName, actualLimit, actualLimit * 60_000L - usedMilliseconds)
         } catch (e: Exception) {
             Log.w(TAG, "Could not determine usage limit for $targetPackage", e)
-            false
+            null
         }
     }
 

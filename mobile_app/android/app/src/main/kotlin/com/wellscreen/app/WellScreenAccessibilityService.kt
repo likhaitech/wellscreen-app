@@ -119,8 +119,14 @@ class WellScreenAccessibilityService : AccessibilityService() {
         // Keep temporary daily limits completely separate from the existing
         // permanent restrictions; a limited app must remain usable below its
         // threshold. Fail open if Usage Access is missing/unavailable.
-        val dailyLimitReached = !permanentlyRestricted &&
-            AppTimeLimitEnforcer.isLimitReached(this, currentPackage)
+        val limitStatus = if (permanentlyRestricted) null else
+            AppTimeLimitEnforcer.getStatus(this, currentPackage)
+        // Silent Android notification only; does not interrupt the app.
+        // Polls approximately every 5 seconds even during a long session.
+        if (limitStatus != null && !isEmergencyAccessActive(System.currentTimeMillis())) {
+            AppTimeLimitNotifier.maybeNotifyFiveMinutes(this, currentPackage, limitStatus)
+        }
+        val dailyLimitReached = limitStatus?.remainingMilliseconds?.let { it <= 0L } ?: false
 
         if (permanentlyRestricted || dailyLimitReached) {
             val now = System.currentTimeMillis()
