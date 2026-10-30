@@ -15,6 +15,7 @@ import '../models/usage_report.dart';
 import '../services/alert_notification_client.dart';
 import '../services/app_rules_service.dart';
 import '../services/app_time_limit_service.dart';
+import '../services/app_time_limit_notification_service.dart';
 import '../services/daily_screen_time_limit_service.dart';
 import '../services/emergency_access_service.dart';
 import '../services/ml_risk_classifier_service.dart';
@@ -73,6 +74,8 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
 
   final AppRulesService _rulesService = AppRulesService();
   final AppTimeLimitService _appTimeLimitService = AppTimeLimitService();
+  final AppTimeLimitNotificationService _limitNotifications =
+      AppTimeLimitNotificationService.instance;
   StreamSubscription<List<AppTimeLimit>>? _appTimeLimitSubscription;
   String? _timeLimitProfileId;
   int _timeLimitWatchGeneration = 0;
@@ -196,6 +199,10 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     await previous?.cancel();
     if (!mounted || generation != _timeLimitWatchGeneration) return;
     await _appTimeLimitService.prepareCacheForChild(childProfileId);
+    // Register this child's FCM token before monitoring the parent-set limits.
+    // Non-blocking: a notification permission/network problem must never
+    // prevent time-limit enforcement or the dashboard from loading.
+    unawaited(_limitNotifications.startForChild(childProfileId));
     if (!mounted ||
         generation != _timeLimitWatchGeneration ||
         childProfileId.isEmpty) {
@@ -235,6 +242,10 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
       _loadUsageDashboard();
       _refreshSmsAlertStatus();
       _refreshSyncStatus();
+      final activeProfile = _timeLimitProfileId;
+      if (activeProfile != null && activeProfile.isNotEmpty) {
+        unawaited(_limitNotifications.startForChild(activeProfile));
+      }
     }
   }
 
@@ -1324,6 +1335,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     _timeLimitProfileId = null;
     await previous?.cancel();
     await _appTimeLimitService.clearCachedLimits();
+    await _limitNotifications.stopForSignOut();
     await FirebaseAuth.instance.signOut();
 
     if (!mounted) return;

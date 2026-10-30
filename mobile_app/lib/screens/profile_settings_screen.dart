@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
 import '../services/app_time_limit_service.dart';
+import '../services/app_time_limit_notification_service.dart';
 import 'login_screen.dart';
 
 class ProfileSettingsScreen extends StatefulWidget {
@@ -349,6 +350,9 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   }
 
   Future<void> logout() async {
+    // Revoke the child's registered push token before leaving this account.
+    await AppTimeLimitNotificationService.instance.stopForSignOut();
+
     // Clear the child-specific native limit cache before switching accounts.
     await AppTimeLimitService().clearCachedLimits();
     await FirebaseAuth.instance.signOut();
