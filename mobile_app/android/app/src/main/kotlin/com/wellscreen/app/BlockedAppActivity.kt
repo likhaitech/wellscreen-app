@@ -1,32 +1,66 @@
 package com.wellscreen.app
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import android.view.Gravity
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import org.json.JSONArray
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Shared block screen for manually restricted apps, blocked websites,
- * and guardian-configured daily app time limits.
+ * Block screen for manually restricted apps, blocked websites and daily limits.
  *
- * WellScreenAccessibilityService passes `time_limit_reached = true` only
- * when the daily allowance is exhausted. Existing restriction paths keep
- * their original titles, messages, and Go Back behavior.
+ * Only a DAILY LIMIT screen automatically dismisses when a refreshed local
+ * allowance exceeds today's actual app usage. Other restriction paths retain
+ * their existing behavior.
  */
 class BlockedAppActivity : Activity() {
 
     companion object {
-        // Used by WellScreenAccessibilityService's debounce logic. Preserve
-        // this lifecycle signal so reopening a restricted app re-blocks it.
         @Volatile
         var isShowing: Boolean = false
             private set
+
+        private const val TAG = "WellScreenLimits"
+        private const val PREFS = "FlutterSharedPreferences"
+        private const val LIMITS_CACHE_KEY = "flutter.app_time_limits_json"
+        private const val PROFILE_KEY = "flutter.active_child_profile_id"
+        private const val RESTRICTED_KEY = "flutter.restricted_packages_json"
+        private const val RECHECK_INTERVAL_MS = 5_000L
     }
 
     private var isDailyTimeLimitBlock = false
+    private var dailyBlockedPackage: String? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val statusExecutor = Executors.newSingleThreadExecutor()
+    private val statusCheckInProgress = AtomicBoolean(false)
+    private var listeningToPrefs = false
+
+    private val cacheChangeListener =
+        SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == LIMITS_CACHE_KEY || key == PROFILE_KEY || key == RESTRICTED_KEY) {
+                checkForGrantedTime()
+            }
+        }
+
+    // Also retry on a timer. Changes written by another process or a background
+    // Flutter engine are not guaranteed to notify every SharedPreferences listener.
+    private val recheckRunnable = object : Runnable {
+        override fun run() {
+            if (!isShowing || !isDailyTimeLimitBlock) return
+            checkForGrantedTime()
+            mainHandler.postDelayed(this, RECHECK_INTERVAL_MS)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -35,11 +69,12 @@ class BlockedAppActivity : Activity() {
         val blockedPackage = intent.getStringExtra("blocked_package") ?: "Restricted app"
         isDailyTimeLimitBlock = blockedDomain == null &&
             intent.getBooleanExtra("time_limit_reached", false)
+        if (isDailyTimeLimitBlock) dailyBlockedPackage = blockedPackage
 
         val appLabel = if (isDailyTimeLimitBlock) {
             try {
-                val appInfo = packageManager.getApplicationInfo(blockedPackage, 0)
-                packageManager.getApplicationLabel(appInfo).toString()
+                val info = packageManager.getApplicationInfo(blockedPackage, 0)
+                packageManager.getApplicationLabel(info).toString()
             } catch (_: Exception) {
                 blockedPackage
             }
@@ -84,13 +119,8 @@ class BlockedAppActivity : Activity() {
             text = if (isDailyTimeLimitBlock) "Go Home" else "Go Back"
             setOnClickListener {
                 when {
-                    // Existing blocked-website behavior: leave the browser
-                    // instead of revealing the blocked page underneath.
                     blockedDomain != null -> returnToHome()
-                    // A time-limited app may still be open underneath this
-                    // activity; leaving to Home avoids immediately exposing it.
                     isDailyTimeLimitBlock -> returnToHome()
-                    // Preserve the existing manual restriction behavior.
                     else -> finish()
                 }
             }
@@ -100,6 +130,83 @@ class BlockedAppActivity : Activity() {
         root.addView(message)
         root.addView(button)
         setContentView(root)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        isShowing = true
+        if (isDailyTimeLimitBlock) {
+            getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .registerOnSharedPreferenceChangeListener(cacheChangeListener)
+            listeningToPrefs = true
+            mainHandler.removeCallbacks(recheckRunnable)
+            mainHandler.post(recheckRunnable)
+        }
+    }
+
+    override fun onStop() {
+        isShowing = false
+        mainHandler.removeCallbacks(recheckRunnable)
+        if (listeningToPrefs) {
+            getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .unregisterOnSharedPreferenceChangeListener(cacheChangeListener)
+            listeningToPrefs = false
+        }
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        mainHandler.removeCallbacks(recheckRunnable)
+        statusExecutor.shutdownNow()
+        super.onDestroy()
+    }
+
+    private fun checkForGrantedTime() {
+        val target = dailyBlockedPackage ?: return
+        if (!isDailyTimeLimitBlock || !isShowing || isFinishing || isDestroyed) return
+        if (!statusCheckInProgress.compareAndSet(false, true)) return
+
+        // UsageStatsManager queries may scan today's events. Never run these
+        // queries repeatedly on the main/UI thread.
+        try {
+            statusExecutor.execute {
+                val allowanceIsAvailable = try {
+                    !isManuallyRestricted(target) &&
+                        (AppTimeLimitEnforcer.getStatus(applicationContext, target)
+                            ?.remainingMilliseconds ?: 0L) > 0L
+                } catch (error: Exception) {
+                    Log.w(TAG, "Failed to recheck added allowance", error)
+                    false
+                }
+
+                mainHandler.post {
+                    statusCheckInProgress.set(false)
+                    if (allowanceIsAvailable && isShowing && !isFinishing && !isDestroyed &&
+                        dailyBlockedPackage == target
+                    ) {
+                        // The original target app may still be underneath this
+                        // Activity. Finishing reveals it, now with a valid limit.
+                        Log.d(TAG, "New allowance available; closing daily limit screen")
+                        finish()
+                    }
+                }
+            }
+        } catch (error: RuntimeException) {
+            statusCheckInProgress.set(false)
+            Log.w(TAG, "Could not schedule allowance check", error)
+        }
+    }
+
+    private fun isManuallyRestricted(targetPackage: String): Boolean {
+        return try {
+            val raw = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(RESTRICTED_KEY, "[]") ?: "[]"
+            val array = JSONArray(raw)
+            (0 until array.length()).any { array.optString(it) == targetPackage }
+        } catch (_: Exception) {
+            // An unreadable restriction cache is not proof that an app is safe.
+            true
+        }
     }
 
     private fun returnToHome() {
@@ -115,18 +222,7 @@ class BlockedAppActivity : Activity() {
         if (isDailyTimeLimitBlock) {
             returnToHome()
         } else {
-            // Preserve the old back behavior for manual restrictions/websites.
             super.onBackPressed()
         }
-    }
-
-    override fun onStart() {
-        super.onStart()
-        isShowing = true
-    }
-
-    override fun onStop() {
-        super.onStop()
-        isShowing = false
     }
 }
