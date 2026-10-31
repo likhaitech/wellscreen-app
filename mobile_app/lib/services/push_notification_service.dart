@@ -1,31 +1,82 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
-/// Top-level (not a class member) because firebase_messaging requires the
-/// background message handler to be a top-level or static function, so the
-/// OS can invoke it in a separate isolate when the app isn't running.
-/// Deliberately minimal: for a "notification" message (which is what
-/// notification_service.py on the backend sends), Android/iOS already show
-/// the system notification themselves when the app is backgrounded or
-/// terminated - this handler exists only because the plugin requires one to
-/// be registered, not because it needs to do the displaying itself here.
-@pragma('vm:entry-point')
-Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {}
+import '../firebase_options.dart';
+import 'app_time_limit_background_sync.dart';
 
-/// Registers the parent's device for push notifications and displays them
-/// while the app is open (foreground messages don't auto-display on
-/// Android/iOS - that's what flutter_local_notifications is for here).
-///
-/// This is the real, standard FCM pattern: get a device token, save it to
-/// Firestore so the backend can look it up, and use
-/// firebase_admin.messaging.send() server-side (see
-/// backend/app/services/notification_service.py) to actually deliver.
-/// There is no client-side way to push to a specific other device - that
-/// always requires a server holding Firebase Admin credentials, which is
-/// why this needs the FastAPI backend deployed (see
-/// backend/DEPLOYMENT.md), not just app code.
+/// Receives FCM while Flutter UI is not foregrounded. Called in a separate
+/// Android Dart isolate. Do not use BuildContext or a MainActivity channel.
+@pragma('vm:entry-point')
+Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  if (message.data['type'] != 'app_time_limit_changed') return;
+
+  try {
+    WidgetsFlutterBinding.ensureInitialized();
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+
+    final childProfileId = message.data['childProfileId'];
+    if (childProfileId == null || childProfileId.isEmpty) return;
+
+    final synchronized = await AppTimeLimitBackgroundSync.refreshForChild(
+      childProfileId,
+    );
+    // A high-priority DATA-ONLY FCM message has no automatic system tray
+    // notification. Post a quiet local notification once the limits are
+    // synchronized (and preserve the existing parent alert handler below).
+    if (synchronized) {
+      await _showBackgroundLimitNotice(message);
+    }
+  } catch (error) {
+    // FCM is best-effort. Keep enforcement using the last valid local cache;
+    // opening ChildHomeScreen will also resynchronize through its listener.
+    debugPrint('Background FCM app-limit refresh failed: $error');
+  }
+}
+
+/// Shows an informational notice from a data-only FCM sync while child UI is
+/// backgrounded. Does NOT use MainActivity's MethodChannel (not available in
+/// an Android headless Flutter background engine).
+Future<void> _showBackgroundLimitNotice(RemoteMessage message) async {
+  final appName = message.data['appName'] ?? 'your app';
+  final minutes = int.tryParse(message.data['limitMinutes'] ?? '');
+  if (minutes == null || minutes < 1 || minutes > 1440) return;
+
+  final label = minutes % 60 == 0
+      ? '${minutes ~/ 60} hour${minutes == 60 ? '' : 's'}'
+      : minutes < 60
+      ? '$minutes minute${minutes == 1 ? '' : 's'}'
+      : '${minutes ~/ 60}h ${minutes % 60}m';
+
+  final notifications = FlutterLocalNotificationsPlugin();
+  const initialSettings = InitializationSettings(
+    android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+  );
+  await notifications.initialize(settings: initialSettings);
+
+  const android = AndroidNotificationDetails(
+    'wellscreen_limit_updates',
+    'App time limits',
+    channelDescription: 'Quiet notices about daily app allowances',
+    importance: Importance.low,
+    priority: Priority.low,
+    playSound: false,
+    enableVibration: false,
+  );
+  await notifications.show(
+    id: 'app_limit_${message.data['packageName'] ?? ''}'.hashCode,
+    title: 'App Time Limit Updated',
+    body: 'Your daily limit for $appName is now $label.',
+    notificationDetails: const NotificationDetails(android: android),
+  );
+}
+
+/// Existing parent-device alerts, unchanged except for the handler above.
 class PushNotificationService {
   static const String _channelId = 'wellscreen_alerts';
   static const String _channelName = 'WellScreen Alerts';
@@ -53,7 +104,8 @@ class PushNotificationService {
 
     await _localNotifications
         .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
+          AndroidFlutterLocalNotificationsPlugin
+        >()
         ?.createNotificationChannel(
           const AndroidNotificationChannel(
             _channelId,
@@ -79,16 +131,12 @@ class PushNotificationService {
       final token = await FirebaseMessaging.instance.getToken();
       if (token == null) return;
 
-      await FirebaseFirestore.instance.collection('users').doc(user.uid).set(
-        {
-          'fcmToken': token,
-          'fcmTokenUpdatedAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true),
-      );
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+        'fcmToken': token,
+        'fcmTokenUpdatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
     } catch (_) {
-      // Best-effort - the parent just won't receive push until this
-      // succeeds on a later app open; nothing else depends on it.
+      // Best-effort parent device notification token registration.
     }
   }
 

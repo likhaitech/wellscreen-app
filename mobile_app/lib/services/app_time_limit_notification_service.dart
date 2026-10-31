@@ -15,8 +15,9 @@ class AppTimeLimitNotificationService {
   static final AppTimeLimitNotificationService instance =
       AppTimeLimitNotificationService._();
 
-  static const MethodChannel _channel =
-      MethodChannel('wellscreen/app_limit_notifications');
+  static const MethodChannel _channel = MethodChannel(
+    'wellscreen/app_limit_notifications',
+  );
 
   String? _childUid;
   String? _childProfileId;
@@ -30,8 +31,10 @@ class AppTimeLimitNotificationService {
     if (user == null) return;
     // Avoid rewriting an unchanged token every time the child returns from
     // Android Settings or another application.
-    if (_childUid == user.uid && _childProfileId == childProfileId &&
-        _foregroundMessages != null && _tokenChanges != null) {
+    if (_childUid == user.uid &&
+        _childProfileId == childProfileId &&
+        _foregroundMessages != null &&
+        _tokenChanges != null) {
       return;
     }
 
@@ -68,7 +71,8 @@ class AppTimeLimitNotificationService {
         await _storeToken(uid, token);
       }
       // A logout may have happened while FirebaseMessaging awaited a token.
-      if (FirebaseAuth.instance.currentUser?.uid != uid || _childUid != uid ||
+      if (FirebaseAuth.instance.currentUser?.uid != uid ||
+          _childUid != uid ||
           _childProfileId != childProfileId) {
         return;
       }
@@ -82,7 +86,8 @@ class AppTimeLimitNotificationService {
       _tokenChanges ??= FirebaseMessaging.instance.onTokenRefresh.listen(
         (token) {
           if (FirebaseAuth.instance.currentUser?.uid == _childUid &&
-              _childUid != null && token.isNotEmpty) {
+              _childUid != null &&
+              token.isNotEmpty) {
             unawaited(_storeToken(_childUid!, token));
           }
         },
@@ -98,10 +103,14 @@ class AppTimeLimitNotificationService {
   Future<void> _storeToken(String uid, String token) async {
     if (FirebaseAuth.instance.currentUser?.uid != uid) return;
     try {
-      await FirebaseFirestore.instance.collection('users').doc(uid).set({
-        'limitNotificationToken': token,
-        'limitNotificationTokenUpdatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true)).timeout(const Duration(seconds: 10));
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .set({
+            'limitNotificationToken': token,
+            'limitNotificationTokenUpdatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true))
+          .timeout(const Duration(seconds: 10));
     } catch (error) {
       debugPrint('Could not save child time-limit FCM token: $error');
     }
@@ -122,10 +131,11 @@ class AppTimeLimitNotificationService {
     final label = minutes % 60 == 0
         ? '${minutes ~/ 60} hour${minutes == 60 ? '' : 's'}'
         : minutes < 60
-            ? '$minutes minute${minutes == 1 ? '' : 's'}'
-            : '${minutes ~/ 60}h ${minutes % 60}m';
+        ? '$minutes minute${minutes == 1 ? '' : 's'}'
+        : '${minutes ~/ 60}h ${minutes % 60}m';
     final title = message.notification?.title ?? 'New App Time Limit';
-    final body = message.notification?.body ??
+    final body =
+        message.notification?.body ??
         'Your parent set a daily limit of $label for $appName.';
 
     try {
@@ -155,10 +165,14 @@ class AppTimeLimitNotificationService {
 
     if (uid == null || FirebaseAuth.instance.currentUser?.uid != uid) return;
     try {
-      await FirebaseFirestore.instance.collection('users').doc(uid).update({
-        'limitNotificationToken': FieldValue.delete(),
-        'limitNotificationTokenUpdatedAt': FieldValue.delete(),
-      }).timeout(const Duration(seconds: 5));
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .update({
+            'limitNotificationToken': FieldValue.delete(),
+            'limitNotificationTokenUpdatedAt': FieldValue.delete(),
+          })
+          .timeout(const Duration(seconds: 5));
     } catch (error) {
       debugPrint('Could not clear saved child FCM token: $error');
     }

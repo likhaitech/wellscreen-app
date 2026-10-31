@@ -288,9 +288,6 @@ export default {
         return jsonResponse(409, { ok: false, error: 'Child notification token not registered' });
       }
       const appName = getStringField(appLimit, 'appName') || packageName;
-      const title = 'App Time Limit Updated';
-      const body = `Your daily limit for ${appName} is now ${durationLabel(limitMinutes)}.`;
-
       const sendResponse = await fetch(
         `https://fcm.googleapis.com/v1/projects/${encodeURIComponent(env.FIREBASE_PROJECT_ID)}/messages:send`,
         {
@@ -302,7 +299,6 @@ export default {
           body: JSON.stringify({
             message: {
               token: childToken,
-              notification: { title, body },
               data: {
                 type: 'app_time_limit_changed',
                 childProfileId,
@@ -311,8 +307,9 @@ export default {
                 limitMinutes: String(limitMinutes),
               },
               android: {
-                priority: 'NORMAL',
-                notification: { channel_id: 'wellscreen_limit_updates' },
+                priority: 'HIGH',
+                ttl: '86400s',
+                collapse_key: 'wellscreen-limit-sync',
               },
             },
           }),
