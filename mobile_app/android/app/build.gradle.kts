@@ -85,5 +85,16 @@ flutter {
 }
 
 dependencies {
+    // Existing Android core library desugaring.
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+
+    // Firebase Android SDK version management.
+    implementation(platform("com.google.firebase:firebase-bom:34.0.0"))
+
+    // Required for native Kotlin background synchronization.
+    implementation("com.google.firebase:firebase-auth")
+    implementation("com.google.firebase:firebase-firestore")
+
+    // Required for standard Kotlin/JUnit unit tests.
+    testImplementation("junit:junit:4.13.2")
 }

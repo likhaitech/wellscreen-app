@@ -40,6 +40,18 @@ class WellScreenAccessibilityService : AccessibilityService() {
     // inside one app for their entire allowance. Re-check the active window
     // while this native service is alive (independent of Flutter lifecycle).
     // Only the limited app triggers a UsageStats query; others are cheap.
+    // Unlike the 5-second foreground block check, this also checks apps
+    // not currently on screen. Works while the AccessibilityService remains
+    // enabled, even if the Flutter Activity is not open.
+    private val warningPollHandler = Handler(Looper.getMainLooper())
+    private val warningPollIntervalMs = 60_000L
+    private val warningPoll = object : Runnable {
+        override fun run() {
+            AppTimeLimitNotifier.scanTenMinuteWarnings(applicationContext)
+            warningPollHandler.postDelayed(this, warningPollIntervalMs)
+        }
+    }
+
     private val limitPollHandler = Handler(Looper.getMainLooper())
     private val limitPollIntervalMs = 5_000L
     private val limitPoll = object : Runnable {
@@ -61,10 +73,14 @@ class WellScreenAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         limitPollHandler.removeCallbacks(limitPoll)
         limitPollHandler.postDelayed(limitPoll, limitPollIntervalMs)
+        warningPollHandler.removeCallbacks(warningPoll)
+        warningPollHandler.post(warningPoll)
+        ScreenTimeReportScheduler.schedule(this)
     }
 
     override fun onDestroy() {
         limitPollHandler.removeCallbacks(limitPoll)
+        warningPollHandler.removeCallbacks(warningPoll)
         super.onDestroy()
     }
 
@@ -124,7 +140,7 @@ class WellScreenAccessibilityService : AccessibilityService() {
         // Silent Android notification only; does not interrupt the app.
         // Polls approximately every 5 seconds even during a long session.
         if (limitStatus != null && !isEmergencyAccessActive(System.currentTimeMillis())) {
-            AppTimeLimitNotifier.maybeNotifyFiveMinutes(this, currentPackage, limitStatus)
+            AppTimeLimitNotifier.maybeNotifyTenMinutes(this, currentPackage, limitStatus)
         }
         val dailyLimitReached = limitStatus?.remainingMilliseconds?.let { it <= 0L } ?: false
 
