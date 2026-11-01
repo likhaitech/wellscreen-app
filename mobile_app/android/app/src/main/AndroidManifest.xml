@@ -1,3 +1,4 @@
+
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- Existing / useful WellScreen permissions -->
@@ -24,12 +25,20 @@
          with no camera (e.g. some tablets) can still install the app and
          fall back to the existing manual 6-digit code entry. -->
     <uses-permission android:name="android.permission.CAMERA" />
-    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
 
     <application
         android:label="WellScreen"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+
+        <!-- Background screen-time reporting and limit synchronization -->
+        <service
+            android:name=".ScreenTimeReportJobService"
+            android:permission="android.permission.BIND_JOB_SERVICE"
+            android:exported="true" />
 
         <!-- Block screen shown when a restricted app is opened -->
         <activity
@@ -83,6 +92,7 @@
         <receiver
             android:name=".SmsSentReceiver"
             android:exported="false" />
+
         <receiver
             android:name=".SmsDeliveredReceiver"
             android:exported="false" />
