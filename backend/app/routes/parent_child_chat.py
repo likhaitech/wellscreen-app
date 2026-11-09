@@ -6,7 +6,7 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from ..services.chat_access_service import (
-    ChatAccessError, activate_grant, authenticated_uid,
+    ChatAccessError, activate_grant, authenticated_uid, chat_push_status, dispatch_chat_event,
     respond_to_request, sweep_chat_notifications,
 )
 
@@ -47,3 +47,30 @@ def sweep(x_chat_cron_secret: str | None = Header(default=None)):
     if not expected or not x_chat_cron_secret or x_chat_cron_secret != expected:
         raise HTTPException(status_code=403, detail="Unauthorized")
     return sweep_chat_notifications()
+
+
+@router.get("/chat/health")
+def chat_health():
+    """Unauthenticated deployment probe; exposes no user data."""
+    return {"status": "ok", "feature": "parent_child_chat", "apiVersion": 2}
+
+
+@router.post("/chat/events/{profile_id}/{kind}/{event_id}/dispatch")
+def dispatch_event(profile_id: str, kind: str, event_id: str,
+                   authorization: str | None = Header(default=None)):
+    try:
+        uid = authenticated_uid(authorization)
+        return dispatch_chat_event(caller_uid=uid, profile_id=profile_id,
+                                   kind=kind, event_id=event_id)
+    except ChatAccessError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+
+
+@router.get("/chat/push/status")
+def push_status(authorization: str | None = Header(default=None)):
+    """Reports self-registration only; never returns FCM token values."""
+    try:
+        uid = authenticated_uid(authorization)
+        return chat_push_status(caller_uid=uid)
+    except ChatAccessError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
