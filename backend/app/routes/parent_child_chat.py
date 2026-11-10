@@ -1,5 +1,6 @@
 """Register via app.include_router(parent_child_chat.router)."""
 from __future__ import annotations
+import logging
 
 import os
 from fastapi import APIRouter, Header, HTTPException
@@ -27,6 +28,10 @@ def decide(profile_id: str, request_id: str, body: DecisionBody,
                                   request_id=request_id, approve=body.approve,
                                   approved_minutes=body.approvedMinutes)
     except ChatAccessError as error:
+        logging.getLogger(__name__).warning(
+            "WellScreen approval rejected: reason=%s",
+            str(error),
+        )
         raise HTTPException(status_code=403, detail=str(error)) from error
 
 
