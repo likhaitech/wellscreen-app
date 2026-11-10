@@ -11,10 +11,10 @@ from typing import Any
 
 from google.api_core.exceptions import AlreadyExists, Conflict
 
-from firebase_admin import auth, firestore, messaging
+from firebase_admin import firestore, messaging
 from google.cloud.firestore_v1 import transactional
 
-from .firebase_service import get_firestore_client
+from .firebase_service import get_auth_module, get_firestore_client
 
 UTC = dt.timezone.utc
 MAX_APPROVED_MINUTES = 180
@@ -26,12 +26,28 @@ class ChatAccessError(ValueError):
 
 
 def authenticated_uid(authorization: str | None) -> str:
+    """Verify the Firebase ID token using an initialized Admin SDK app."""
     if not authorization or not authorization.startswith("Bearer "):
         raise ChatAccessError("Firebase authentication required")
+
+    token = authorization[7:].strip()
+    if not token:
+        raise ChatAccessError("Firebase authentication required")
+
     try:
-        claims = auth.verify_id_token(authorization[7:].strip(), check_revoked=True)
-        return str(claims["uid"])
+        # get_auth_module() first ensures Firebase Admin has been initialized.
+        firebase_auth = get_auth_module()
+        claims = firebase_auth.verify_id_token(token, check_revoked=True)
+        uid = claims.get("uid")
+        if not isinstance(uid, str) or not uid:
+            raise ValueError("Verified Firebase token has no valid UID")
+        return uid
     except Exception as exc:
+        # Never log the ID token or the complete Authorization header.
+        LOGGER.warning(
+            "WellScreen Firebase authentication failed: error_type=%s",
+            type(exc).__name__,
+        )
         raise ChatAccessError("Invalid or expired Firebase session") from exc
 
 
