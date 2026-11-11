@@ -1,24 +1,29 @@
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import 'config/app_config.dart';
 import 'firebase_options.dart';
 import 'screens/splash_screen.dart';
+import 'services/chat_notifications_service.dart';
 import 'services/push_notification_service.dart';
 import 'theme/app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
 
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  // Native JobService requires this public HTTPS URL while Flutter is closed.
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('backend_base_url', AppConfig.backendBaseUrl);
+  } catch (error) {
+    debugPrint('Could not initialize native notification URL: $error');
+  }
 
-  // Must be registered before runApp() - required by firebase_messaging so
-  // the OS can deliver background/terminated-state messages. See
-  // push_notification_service.dart for why this is intentionally minimal.
   FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
-
+  await ChatNotificationsService.instance.initialize();
   runApp(const WellScreenApp());
 }
 
@@ -28,6 +33,7 @@ class WellScreenApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: ChatNotificationsService.navigatorKey,
       title: 'WellScreen',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light(),

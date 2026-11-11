@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../services/emergency_access_service.dart';
+import '../widgets/app_usage_icon.dart';
 import '../services/pattern_detection_service.dart';
 import '../services/push_notification_service.dart';
 import '../theme/app_theme.dart';
@@ -11,6 +14,9 @@ import 'all_apps_screen.dart';
 import 'device_pairing_screen.dart';
 import 'gps_map_screen.dart';
 import 'login_screen.dart';
+import 'parent_notifications_screen.dart';
+import 'parent_child_chat_screen.dart';
+import '../services/chat_notifications_service.dart';
 import 'profile_settings_screen.dart';
 import 'reports_screen.dart';
 import 'rules/rules_screen.dart';
@@ -54,6 +60,10 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
   // Guards the Approve/Deny buttons so a double-tap can't fire
   // respondToRequest() twice for the same request.
   bool _isRespondingToEmergencyAccess = false;
+  Timer? _presenceRefreshTimer;
+  // Android periodically checks in while online; this is an inference,
+  // not an instantaneous network-disconnect signal.
+  static const Duration _presenceFreshness = Duration(minutes: 30);
 
   @override
   void initState() {
@@ -63,6 +73,19 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     // alerts sent via backend/app/services/notification_service.py
     // actually show up while the app is open. See push_notification_service.dart.
     _pushNotificationService.initialize();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) ChatNotificationsService.instance.markDashboardReady();
+    });
+    // Refresh the visible stale/online state even without a new Firestore write.
+    _presenceRefreshTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _presenceRefreshTimer?.cancel();
+    super.dispose();
   }
 
   Stream<QuerySnapshot<Map<String, dynamic>>> childProfilesStream(String uid) {
@@ -209,6 +232,18 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
         .toList();
   }
 
+  String? _usageIconForPackage(Map<String, dynamic>? child, String pkg) {
+    final allApps = latestUsageReport(child)?['allApps'];
+    if (allApps is! List) return null;
+    for (final raw in allApps) {
+      if (raw is Map && raw['packageName'] == pkg) {
+        final icon = raw['iconBase64'];
+        if (icon is String && icon.isNotEmpty) return icon;
+      }
+    }
+    return null;
+  }
+
   Duration usageTotalDuration(Map<String, dynamic>? data) {
     final report = latestUsageReport(data);
     final ms = report?['totalUsageDurationMs'];
@@ -274,6 +309,25 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
           label: label,
           updatedAt: updatedAt,
           hasLocation: hasSharedLocation(child),
+        ),
+      ),
+    );
+  }
+
+  void openFamilyChat() {
+    final childProfileId = _primaryChildId;
+    if (childProfileId == null || childProfileId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pair a child to start chatting.')),
+      );
+      return;
+    }
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ParentChildChatScreen(
+          childProfileId: childProfileId,
+          isParent: true,
         ),
       ),
     );
@@ -393,6 +447,10 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                 _topBar(),
                 const SizedBox(height: 18),
                 _deviceProfileCard(primaryChild),
+                if (_isMonitoringSecurityAlertActive(primaryChild)) ...[
+                  const SizedBox(height: 14),
+                  _monitoringSecurityAlertCard(primaryChild!),
+                ],
                 if (_hasPendingEmergencyAccessRequest(primaryChild)) ...[
                   const SizedBox(height: 22),
                   _emergencyAccessRequestCard(
@@ -464,27 +522,16 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
             ),
           ),
           IconButton(
-            tooltip: 'Alerts',
+            tooltip: 'Notifications',
             onPressed: () {
-              // Bell is a shortcut into ReportsScreen's Alerts tab now,
-              // not a separate screen - everything report-like (usage,
-              // browsing, location, alerts) lives in one place with a
-              // visible tab selector, reached from either entry point.
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => ReportsScreen(
-                    childProfileId: _primaryChildId ?? '',
-                    initialTab: 3,
-                  ),
+                  builder: (_) => const ParentNotificationsScreen(),
                 ),
               );
             },
-            icon: const Icon(
-              Icons.notifications_none_rounded,
-              color: Colors.white,
-              size: 33,
-            ),
+            icon: const ChatUnreadBell(color: Colors.white, size: 33),
           ),
         ],
       ),
@@ -522,6 +569,62 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
   /// second stream - this dashboard already rebuilds on every change to
   /// that doc, so the pending-request card appears/disappears live for
   /// free as soon as the parent responds.
+  /// The backend creates a server-owned alert when lastSeenAt is stale.
+  /// A newer check-in dismisses this banner without claiming uninstall.
+  bool _isMonitoringSecurityAlertActive(Map<String, dynamic>? child) {
+    final raw = child?['monitoringSecurityAlert'];
+    if (raw is! Map || raw['type'] != 'no_recent_connection') return false;
+    final alertedLastSeen = raw['lastSeenAt'];
+    final nowLastSeen = child?['lastSeenAt'];
+    if (alertedLastSeen is! Timestamp) return false;
+    if (nowLastSeen is Timestamp &&
+        nowLastSeen.toDate().isAfter(alertedLastSeen.toDate())) {
+      return false;
+    }
+    return true;
+  }
+
+  Widget _monitoringSecurityAlertCard(Map<String, dynamic> child) {
+    final alert = child['monitoringSecurityAlert'] as Map;
+    final name = (alert['deviceName'] ?? child['name'] ?? 'Child device')
+        .toString();
+    final seen = alert['lastSeenAt'];
+    return _whiteCard(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(
+            Icons.warning_amber_rounded,
+            color: AppColors.warning,
+            size: 30,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'No Recent Connection',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w900,
+                    color: darkText,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  '$name has stopped reporting. The device may be offline, '
+                  'powered off, or monitoring may be disabled or removed. '
+                  'Last seen: ${formatDate(seen)}',
+                  style: const TextStyle(color: grayText, height: 1.35),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   bool _hasPendingEmergencyAccessRequest(Map<String, dynamic>? child) {
     final raw = child?['emergencyAccess'];
     if (raw is! Map) return false;
@@ -686,6 +789,15 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                             childName: childName,
                             childEmail: childEmail,
                             connected: connected,
+                            presenceText: _childPresenceLabel(
+                              child,
+                              connected,
+                              childEmail,
+                            ),
+                            presenceColor: _childPresenceColor(
+                              child,
+                              connected,
+                            ),
                           ),
                         ),
                       ],
@@ -708,6 +820,19 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                         ),
                       ],
                     ),
+                    const SizedBox(height: 10),
+                    // Same width/height as View Map, centered directly below.
+                    LayoutBuilder(
+                      builder: (context, available) => Center(
+                        child: SizedBox(
+                          width: (available.maxWidth - 10) / 2,
+                          child: _smallPurpleButton(
+                            label: 'Chatbox',
+                            onTap: openFamilyChat,
+                          ),
+                        ),
+                      ),
+                    ),
                   ],
                 )
               : Row(
@@ -719,6 +844,12 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                         childName: childName,
                         childEmail: childEmail,
                         connected: connected,
+                        presenceText: _childPresenceLabel(
+                          child,
+                          connected,
+                          childEmail,
+                        ),
+                        presenceColor: _childPresenceColor(child, connected),
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -739,6 +870,14 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                             onTap: openRulesScreen,
                           ),
                         ),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: 130,
+                          child: _smallPurpleButton(
+                            label: 'Chatbox',
+                            onTap: openFamilyChat,
+                          ),
+                        ),
                       ],
                     ),
                   ],
@@ -746,6 +885,38 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
         );
       },
     );
+  }
+
+  /// Pairing status and device connectivity are different concepts.
+  /// Null means we have not received a server-side check-in yet.
+  bool? _childRecentlyOnline(Map<String, dynamic>? child) {
+    final seen = child?['lastSeenAt'];
+    if (seen is! Timestamp) return null;
+    final elapsed = DateTime.now().difference(seen.toDate());
+    if (elapsed.isNegative) return true; // Server clock slightly ahead.
+    return elapsed <= _presenceFreshness;
+  }
+
+  String _childPresenceLabel(
+    Map<String, dynamic>? child,
+    bool paired,
+    String childEmail,
+  ) {
+    if (!paired) return 'Waiting for pairing';
+    final online = _childRecentlyOnline(child);
+    if (online == null) return 'Status unknown - awaiting device check-in';
+    if (online) return 'Online - $childEmail';
+    final seen = child?['lastSeenAt'];
+    return seen is Timestamp
+        ? 'Offline / not recently seen - last check-in: ${formatDate(seen)}'
+        : 'Offline / not recently seen';
+  }
+
+  Color _childPresenceColor(Map<String, dynamic>? child, bool paired) {
+    if (!paired) return Colors.orange;
+    final online = _childRecentlyOnline(child);
+    if (online == null) return AppColors.warning;
+    return online ? teal : AppColors.danger;
   }
 
   Widget _profileAvatar(bool connected) {
@@ -764,6 +935,8 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     required String childName,
     required String childEmail,
     required bool connected,
+    required String presenceText,
+    required Color presenceColor,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -785,14 +958,14 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
               width: 11,
               height: 11,
               decoration: BoxDecoration(
-                color: connected ? teal : Colors.orange,
+                color: presenceColor,
                 borderRadius: BorderRadius.circular(20),
               ),
             ),
             const SizedBox(width: 7),
             Expanded(
               child: Text(
-                connected ? 'Online - $childEmail' : 'Waiting for pairing',
+                presenceText,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
@@ -863,9 +1036,10 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     final minutes = totalDuration.inMinutes.remainder(60);
 
     return _whiteCard(
-      child: SizedBox(
-        height: 170,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 170),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
               'Screen Time\nToday',
@@ -877,7 +1051,7 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                 height: 1.25,
               ),
             ),
-            const Spacer(),
+            const SizedBox(height: 18),
             hasReport
                 ? FittedBox(
                     fit: BoxFit.scaleDown,
@@ -930,6 +1104,7 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
             const SizedBox(height: 8),
             const Text(
               'Warning threshold: 3h',
+              textAlign: TextAlign.center,
               style: TextStyle(color: grayText, fontWeight: FontWeight.w800),
             ),
             const SizedBox(height: 10),
@@ -981,9 +1156,12 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
     }
 
     return _whiteCard(
-      child: SizedBox(
-        height: 170,
+      // Keep the existing visual height as a minimum, but let the card grow
+      // when a status label wraps or Android uses larger text scaling.
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 170),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
               'Usage Pattern',
@@ -994,7 +1172,9 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
                 fontWeight: FontWeight.w900,
               ),
             ),
-            const Spacer(),
+            // A fixed minimum gap works even with unbounded vertical space;
+            // Spacer inside the former fixed-height column caused overflow.
+            const SizedBox(height: 18),
             Icon(statusIcon, color: statusColor, size: 62),
             const SizedBox(height: 6),
             FittedBox(
@@ -1156,27 +1336,33 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
               ),
             )
           else
-            ..._buildTopAppRows(apps),
+            ..._buildTopAppRows(apps, child),
         ],
       ),
     );
   }
 
-  List<Widget> _buildTopAppRows(List<Map<String, dynamic>> apps) {
+  List<Widget> _buildTopAppRows(
+    List<Map<String, dynamic>> apps,
+    Map<String, dynamic>? child,
+  ) {
     final maxDurationMs = apps
         .map((app) => (app['usageDurationMs'] as num?)?.toInt() ?? 0)
         .fold<int>(0, (highest, value) => value > highest ? value : highest);
 
     return apps.map((app) {
       final durationMs = (app['usageDurationMs'] as num?)?.toInt() ?? 0;
-      final displayName =
-          (app['displayName'] ?? app['packageName'] ?? 'Unknown app')
-              .toString();
+      final packageName = (app['packageName'] ?? '').toString();
+      final name = (app['displayName'] ?? '').toString().trim();
+      final displayName = name.isNotEmpty
+          ? name
+          : (packageName.isEmpty ? 'Unknown app' : packageName);
       final ratio = maxDurationMs > 0 ? durationMs / maxDurationMs : 0.0;
 
       return _appUsageRow(
         icon: _iconForApp(displayName),
         iconColor: purple,
+        iconBase64: _usageIconForPackage(child, packageName),
         appName: displayName,
         time: formatDurationLabel(Duration(milliseconds: durationMs)),
         value: ratio.clamp(0.0, 1.0),
@@ -1210,6 +1396,7 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
   Widget _appUsageRow({
     required IconData icon,
     required Color iconColor,
+    String? iconBase64,
     required String appName,
     required String time,
     required double value,
@@ -1218,10 +1405,10 @@ class _ParentDashboardScreenState extends State<ParentDashboardScreen> {
       padding: const EdgeInsets.only(bottom: 17),
       child: Row(
         children: [
-          CircleAvatar(
-            radius: 24,
-            backgroundColor: iconColor,
-            child: Icon(icon, color: Colors.white, size: 28),
+          AppUsageIcon(
+            encoded: iconBase64,
+            fallback: icon,
+            fallbackColor: iconColor,
           ),
           const SizedBox(width: 14),
           Expanded(
