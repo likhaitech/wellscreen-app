@@ -48,7 +48,24 @@ def send_alert_notification(
     db = get_firestore_client()
     recipient_doc = db.collection("users").document(parent_uid).get()
     recipient_data = recipient_doc.to_dict() or {}
-    fcm_token = recipient_data.get("fcmToken")
+    token_field = next(
+        (
+            field
+            for field in (
+                "fcmToken",
+                "chatFcmToken",
+                "limitNotificationToken",
+            )
+            if recipient_data.get(field)
+        ),
+        None,
+    )
+
+    fcm_token = (
+        recipient_data.get(token_field)
+        if token_field
+        else None
+    )
 
     if not fcm_token:
         raise NoDeviceTokenError(
@@ -78,7 +95,7 @@ def send_alert_notification(
         # The token is no longer valid (app uninstalled, token rotated
         # without the new one being saved yet, etc.) - clear it so future
         # sends don't keep failing the same way.
-        db.collection("users").document(parent_uid).update({"fcmToken": None})
+        db.collection("users").document(parent_uid).update({token_field: None})
         return {
             "status": "failed",
             "message_id": None,
