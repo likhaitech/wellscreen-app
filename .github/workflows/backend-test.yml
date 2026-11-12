@@ -1,28 +1,22 @@
 ﻿name: Backend Tests
 
-# Runs the backend's pytest suite (backend/tests/) on every push/PR that
-# touches the backend, so the 89 tests this PR adds (admin auth, admin
-# routes, notifications, system logs/settings, user auth/admin) are
-# verified by actual CI execution instead of a manual local run. Verified
-# locally before adding this file: `pip install -r requirements-dev.txt`
-# then `pytest tests/ -v` from backend/ passes all 89, no emulator or
-# real Firebase project needed - everything Firebase-related is mocked.
-#
-# pull_request is scoped to both ui-dashboard-polish and main (not just
-# main, unlike this repo's other workflows) because this branch's PR
-# targets ui-dashboard-polish - with only `main` in that list, this would
-# never actually run on this PR the same way the repo's existing
-# workflows never have.
+# Runs the backend pytest suite when backend files change.
+# Pushes to any branch are supported, while pull requests target main.
+# Firebase-related dependencies are mocked in the tests, so a real
+# Firebase project or Android emulator is not required.
+
 on:
   push:
     paths:
       - 'backend/**'
       - '.github/workflows/backend-test.yml'
+
   pull_request:
-    branches: [ ui-dashboard-polish, main ]
+    branches: [ main ]
     paths:
       - 'backend/**'
       - '.github/workflows/backend-test.yml'
+
   workflow_dispatch: {}
 
 jobs:

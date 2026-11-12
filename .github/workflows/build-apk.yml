@@ -1,15 +1,16 @@
 ﻿name: Build APK
 
-# Runs flutter analyze and flutter test on every push and pull request
-# against main, so unit test results and static analysis reflect the
-# actual state of the source code at submission time - not a single
-# manual run on one machine. Referenced by the manuscript's Unit Testing
-# section (Chapter III, Testing/Quality Assurance Phase).
+# Runs Flutter analysis, tests, and APK compilation on pushes to main
+# and pull requests targeting main. This verifies that the application
+# can be analyzed, tested, and built before code is merged.
+
 on:
   push:
-    branches: [ main, ui-dashboard-polish ]
+    branches: [ main ]
+
   pull_request:
-    branches: [ main, ui-dashboard-polish ]
+    branches: [ main ]
+
   workflow_dispatch: {}
 
 jobs:
@@ -39,23 +40,10 @@ jobs:
         run: flutter test
 
       - name: Write Firebase config
-        # google-services.json is gitignored (it's real Firebase project
-        # config, incl. an API key - see .gitignore's "Secrets" section)
-        # and was never committed, so CI has no way to see it on its own.
-        # Without this step, `flutter build apk --release` below fails at
-        # Gradle's :app:processReleaseGoogleServices task with "File
-        # google-services.json is missing" (confirmed - see Build Android
-        # APK run #26). This decodes it from a repo secret instead of
-        # hardcoding it here: add GOOGLE_SERVICES_JSON_BASE64 under
-        # Settings > Secrets and variables > Actions, set to
-        # `base64 -w0 google-services.json` (or `base64 -i
-        # google-services.json` on macOS) run on your real file. Base64,
-        # not the raw JSON, so multiline/quoting in the JSON can't break
-        # the workflow YAML - a GitHub Actions secret value doesn't need
-        # to be a real secret's *format*, just its *content*.
-        # If the secret isn't set yet, this warns and continues rather
-        # than failing here, so analyze/test results above still land -
-        # the release-build step will fail same as before until it's set.
+        # google-services.json is gitignored and must be supplied
+        # through the GOOGLE_SERVICES_JSON_BASE64 repository secret.
+        # Without this configuration, the APK build may fail during
+        # the Google Services processing task.
         run: |
           if [ -n "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" ]; then
             echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 -d > android/app/google-services.json
@@ -64,11 +52,9 @@ jobs:
           fi
 
       - name: Build release APK
-        # Signs with the debug key unless android/key.properties is present
-        # (see android/app/build.gradle.kts) - CI has no release keystore,
-        # so this always produces a debug-signed build. That's fine here:
-        # this job verifies the app *builds* and passes tests, it does not
-        # publish a signed release artifact.
+        # Builds the release variant. Without an external release
+        # keystore, the existing Gradle configuration may use
+        # debug signing. This is for build verification, not publishing.
         run: flutter build apk --release
 
       - name: Upload APK artifact
