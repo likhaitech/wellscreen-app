@@ -13,13 +13,13 @@
 # egress, so this workflow is the actual place these tests run for real.
 on:
   push:
-    branches: [ main, ui-dashboard-polish ]
+    branches: [ main ]
     paths:
       - 'firestore.rules'
       - 'firestore_rules_tests/**'
       - '.github/workflows/firestore-rules-test.yml'
   pull_request:
-    branches: [ main, ui-dashboard-polish ]
+    branches: [ main ]
     paths:
       - 'firestore.rules'
       - 'firestore_rules_tests/**'
