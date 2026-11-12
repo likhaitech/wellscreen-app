@@ -8,8 +8,8 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../firebase_options.dart';
 import 'app_time_limit_background_sync.dart';
 
-/// Receives FCM while Flutter UI is not foregrounded. Called in a separate
-/// Android Dart isolate. Do not use BuildContext or a MainActivity channel.
+/// Existing child background time-limit refresh; chat FCM notifications are
+/// displayed by Android automatically while the app is backgrounded.
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   if (message.data['type'] != 'app_time_limit_changed') return;
@@ -26,22 +26,14 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     final synchronized = await AppTimeLimitBackgroundSync.refreshForChild(
       childProfileId,
     );
-    // A high-priority DATA-ONLY FCM message has no automatic system tray
-    // notification. Post a quiet local notification once the limits are
-    // synchronized (and preserve the existing parent alert handler below).
     if (synchronized) {
       await _showBackgroundLimitNotice(message);
     }
   } catch (error) {
-    // FCM is best-effort. Keep enforcement using the last valid local cache;
-    // opening ChildHomeScreen will also resynchronize through its listener.
     debugPrint('Background FCM app-limit refresh failed: $error');
   }
 }
 
-/// Shows an informational notice from a data-only FCM sync while child UI is
-/// backgrounded. Does NOT use MainActivity's MethodChannel (not available in
-/// an Android headless Flutter background engine).
 Future<void> _showBackgroundLimitNotice(RemoteMessage message) async {
   final appName = message.data['appName'] ?? 'your app';
   final minutes = int.tryParse(message.data['limitMinutes'] ?? '');
@@ -76,7 +68,6 @@ Future<void> _showBackgroundLimitNotice(RemoteMessage message) async {
   );
 }
 
-/// Existing parent-device alerts, unchanged except for the handler above.
 class PushNotificationService {
   static const String _channelId = 'wellscreen_alerts';
   static const String _channelName = 'WellScreen Alerts';
@@ -85,23 +76,19 @@ class PushNotificationService {
 
   final FlutterLocalNotificationsPlugin _localNotifications =
       FlutterLocalNotificationsPlugin();
-
   bool _initialized = false;
 
   Future<void> initialize() async {
     if (_initialized) return;
     _initialized = true;
-
     await FirebaseMessaging.instance.requestPermission(
       alert: true,
       badge: true,
       sound: true,
     );
-
     const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
     const initSettings = InitializationSettings(android: androidInit);
     await _localNotifications.initialize(settings: initSettings);
-
     await _localNotifications
         .resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin
@@ -114,36 +101,34 @@ class PushNotificationService {
             importance: Importance.high,
           ),
         );
-
     await _saveTokenToFirestore();
     FirebaseMessaging.instance.onTokenRefresh.listen(
       (_) => _saveTokenToFirestore(),
     );
-
     FirebaseMessaging.onMessage.listen(_showForegroundNotification);
   }
 
   Future<void> _saveTokenToFirestore() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
-
     try {
       final token = await FirebaseMessaging.instance.getToken();
       if (token == null) return;
-
       await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
         'fcmToken': token,
         'fcmTokenUpdatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
     } catch (_) {
-      // Best-effort parent device notification token registration.
+      // Existing best-effort parent token registration.
     }
   }
 
   Future<void> _showForegroundNotification(RemoteMessage message) async {
+    // A single global chat handler displays chat FCM, avoiding duplicate
+    // foreground notifications on the parent device.
+    if (message.data['type'] == 'parent_child_chat') return;
     final notification = message.notification;
     if (notification == null) return;
-
     const androidDetails = AndroidNotificationDetails(
       _channelId,
       _channelName,
@@ -151,7 +136,6 @@ class PushNotificationService {
       importance: Importance.high,
       priority: Priority.high,
     );
-
     await _localNotifications.show(
       id: message.hashCode,
       title: notification.title,
